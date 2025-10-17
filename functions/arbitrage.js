@@ -1,5 +1,5 @@
 const {onSchedule} = require("firebase-functions/v2/scheduler");
-const admin = require("firebase-admin");
+const admin = require("./admin");
 const axios = require("axios");
 
 const db = admin.firestore();

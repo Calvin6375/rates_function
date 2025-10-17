@@ -1,8 +1,6 @@
 // eslint-disable-next-line no-unused-vars
 const functions = require("firebase-functions");
-const admin = require("firebase-admin");
-
-admin.initializeApp();
+const admin = require("./admin");
 
 // Import modules
 const rates = require("./rates"); // your existing fetchBinanceRates

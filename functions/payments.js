@@ -2,7 +2,7 @@
 /* eslint-disable require-jsdoc */
 const {onRequest} = require("firebase-functions/v2/https");
 const functions = require("firebase-functions");
-const admin = require("firebase-admin");
+const admin = require("./admin");
 const crypto = require("crypto");
 
 const firestore = admin.firestore();
@@ -39,20 +39,20 @@ exports.handleTopUpWebhook = onRequest(async (req, res) => {
 
   const secret = getSecret();
   if (!secret) {
-    console.error("IntaSend secret is not configured");
+    console.error("❌ IntaSend secret not configured");
     res.status(500).send("Configuration error");
     return;
   }
 
   if (!verifySignature(secret, req)) {
-    console.error("Invalid InstaSend signature");
+    console.error("❌ Invalid IntaSend signature");
     res.status(403).send("Forbidden");
     return;
   }
 
   const payload = req.body || {};
   if (payload.event !== "payment.completed") {
-    console.log("Ignoring event", payload.event);
+    console.log("ℹ️ Ignoring event:", payload.event);
     res.status(200).send("Ignored");
     return;
   }
@@ -60,39 +60,51 @@ exports.handleTopUpWebhook = onRequest(async (req, res) => {
   const data = payload.data || {};
   const paymentId = data.payment_id;
   const amount = Number(data.amount || 0);
-  const userId = data.metadata && data.metadata.user_id ? data.metadata.user_id : null;
-  const completedAt = data.completed_at || null;
+  const currency = data.currency || "KES";
+  const userId = data.metadata.user_id || null;
+  const completedAt = data.completed_at || new Date().toISOString();
 
-  console.log("Processing payment", {paymentId, amount, userId});
+  console.log("💰 Processing payment", {paymentId, amount, userId});
 
   if (!paymentId || !userId) {
-    console.error("Missing payment_id or user_id");
+    console.error("❌ Missing payment_id or user_id");
     res.status(400).send("Bad Request");
     return;
   }
 
-  const paymentRecord = {...data};
-  if (userId && !paymentRecord.user_id) {
-    paymentRecord.user_id = userId;
+  // Save payment record globally
+  await realtimeDb.ref(`payments/${paymentId}`).set({
+    ...data,
+    user_id: userId,
+    processed_at: new Date().toISOString(),
+  });
+
+  // ✅ Update wallet balance in Realtime Database
+  const walletRef = realtimeDb.ref(`wallet/balance/${userId}`);
+  const snapshot = await walletRef.get();
+
+  let currentBalance = 0;
+  if (snapshot.exists() && snapshot.val().available) {
+    currentBalance = Number(snapshot.val().available);
   }
 
-  await realtimeDb.ref(`payments/${paymentId}`).set(paymentRecord);
+  const newBalance = currentBalance + amount;
 
+  await walletRef.update({
+    available: newBalance,
+    currency: currency,
+    lastUpdated: new Date().toISOString(),
+  });
+
+  // ✅ Also update Firestore user record for analytics
   const userRef = firestore.collection("users").doc(userId);
   const updateData = {
     balance: admin.firestore.FieldValue.increment(amount),
+    lastTopUp: admin.firestore.Timestamp.fromDate(new Date(completedAt)),
   };
-  if (completedAt) {
-    const parsedDate = new Date(completedAt);
-    if (!Number.isNaN(parsedDate.getTime())) {
-      updateData.lastTopUp = admin.firestore.Timestamp.fromDate(parsedDate);
-    }
-  }
-  if (!updateData.lastTopUp) {
-    updateData.lastTopUp = admin.firestore.FieldValue.serverTimestamp();
-  }
-
   await userRef.set(updateData, {merge: true});
+
+  console.log(`✅ Updated ${userId} wallet: ${currentBalance} → ${newBalance} ${currency}`);
 
   res.status(200).send("OK");
 });
