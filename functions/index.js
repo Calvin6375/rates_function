@@ -7,8 +7,10 @@ admin.initializeApp();
 // Import modules
 const rates = require("./rates"); // your existing fetchBinanceRates
 const arbitrage = require("./arbitrage"); // new arbitrage functions
+const payments = require("./payments");
 
 // Export them
 exports.fetchBinanceRates = rates.fetchBinanceRates;
 exports.getBinanceRates = rates.getBinanceRates;
 exports.fetchArbitrageRates = arbitrage.fetchArbitrageRates;
+exports.handleTopUpWebhook = payments.handleTopUpWebhook;
