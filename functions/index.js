@@ -11,4 +11,5 @@ const payments = require("./payments");
 exports.fetchBinanceRates = rates.fetchBinanceRates;
 exports.getBinanceRates = rates.getBinanceRates;
 exports.fetchArbitrageRates = arbitrage.fetchArbitrageRates;
+exports.getArbitrageRates = arbitrage.getArbitrageRates;
 exports.handleTopUpWebhook = payments.handleTopUpWebhook;
