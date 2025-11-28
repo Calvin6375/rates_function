@@ -1,5 +1,5 @@
 const {onSchedule} = require("firebase-functions/v2/scheduler");
-const {onCall, HttpsError} = require("firebase-functions/v2/https");
+const {onCall, onRequest, HttpsError} = require("firebase-functions/v2/https");
 const admin = require("./admin");
 const axios = require("axios");
 
@@ -137,7 +137,7 @@ async function writeRatesAtomically(currencyPair, ratesData) {
  * Scheduled function: Fetch Binance P2P rates
  * Supports multiple currency pairs (KES, NGN, GHS, etc.)
  */
-exports.fetchBinanceRates = onSchedule("*/5 * * * *", async () => {
+exports.fetchBinanceRates = onSchedule("0 0 * * *", async () => {
   // Reset fee cache for new execution
   feeCache = null;
 
@@ -187,6 +187,44 @@ exports.fetchBinanceRates = onSchedule("*/5 * * * *", async () => {
 });
 
 /**
+ * Shared logic for getting Binance rates
+ * @param {string} fiat - Fiat currency code
+ * @param {string} asset - Crypto asset
+ * @returns {Promise<Object>} Rate data
+ */
+async function getBinanceRatesLogic(fiat = "KES", asset = "USDT") {
+  const currencyPair = `${asset}/${fiat}`;
+
+  // Reset fee cache for new execution
+  feeCache = null;
+
+  // Try to get from Firestore first
+  const doc = await db.collection("p2pRates").doc("binance").get();
+  if (doc.exists) {
+    const data = doc.data();
+    // Check if we have data for this currency pair
+    if (data.currencyPair === currencyPair || data.fiat === fiat) {
+      // Check if still valid
+      if (data.validUntil && data.validUntil.toMillis() > Date.now()) {
+        return {
+          ...data,
+          source: "firestore",
+        };
+      }
+    }
+  }
+
+  // If not found or expired, fetch fresh data
+  const ratesData = await fetchBinanceRateData(fiat, asset);
+  await writeRatesAtomically(currencyPair, ratesData);
+
+  return {
+    ...ratesData,
+    source: "fresh",
+  };
+}
+
+/**
  * Callable function: Get Binance rates for a specific currency pair
  * @param {Object} data - Request data with optional fiat and asset
  * @param {Object} context - Call context
@@ -195,37 +233,48 @@ exports.getBinanceRates = onCall(async (request) => {
   try {
     const fiat = request.data?.fiat || "KES";
     const asset = request.data?.asset || "USDT";
-    const currencyPair = `${asset}/${fiat}`;
-
-    // Reset fee cache for new execution
-    feeCache = null;
-
-    // Try to get from Firestore first
-    const doc = await db.collection("p2pRates").doc("binance").get();
-    if (doc.exists) {
-      const data = doc.data();
-      // Check if we have data for this currency pair
-      if (data.currencyPair === currencyPair || data.fiat === fiat) {
-        // Check if still valid
-        if (data.validUntil && data.validUntil.toMillis() > Date.now()) {
-          return {
-            ...data,
-            source: "firestore",
-          };
-        }
-      }
-    }
-
-    // If not found or expired, fetch fresh data
-    const ratesData = await fetchBinanceRateData(fiat, asset);
-    await writeRatesAtomically(currencyPair, ratesData);
-
-    return {
-      ...ratesData,
-      source: "fresh",
-    };
+    return await getBinanceRatesLogic(fiat, asset);
   } catch (err) {
     console.error("Error in getBinanceRates:", err.message);
     throw new HttpsError("internal", `Failed to fetch rates: ${err.message}`);
   }
 });
+
+/**
+ * HTTP endpoint: Get Binance rates with CORS support
+ * GET /fetchBinanceRatesHttp?fiat=KES&asset=USDT
+ */
+exports.fetchBinanceRatesHttp = onRequest(
+    {
+      cors: true,
+    },
+    async (req, res) => {
+      // Handle CORS preflight
+      if (req.method === "OPTIONS") {
+        res.set("Access-Control-Allow-Origin", "*");
+        res.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+        res.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
+        res.status(204).send("");
+        return;
+      }
+
+      try {
+        const fiat = req.query.fiat || req.body?.fiat || "KES";
+        const asset = req.query.asset || req.body?.asset || "USDT";
+
+        const result = await getBinanceRatesLogic(fiat, asset);
+
+        // Set CORS headers
+        res.set("Access-Control-Allow-Origin", "*");
+        res.set("Content-Type", "application/json");
+        res.status(200).json(result);
+      } catch (err) {
+        console.error("Error in fetchBinanceRates HTTP endpoint:", err.message);
+        res.set("Access-Control-Allow-Origin", "*");
+        res.status(500).json({
+          error: "internal",
+          message: `Failed to fetch rates: ${err.message}`,
+        });
+      }
+    },
+);

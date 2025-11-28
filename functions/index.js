@@ -8,8 +8,9 @@ const arbitrage = require("./arbitrage"); // new arbitrage functions
 const payments = require("./payments");
 
 // Export them
-exports.fetchBinanceRates = rates.fetchBinanceRates;
-exports.getBinanceRates = rates.getBinanceRates;
+exports.fetchBinanceRates = rates.fetchBinanceRates; // Scheduled function
+exports.fetchBinanceRatesHttp = rates.fetchBinanceRatesHttp; // HTTP endpoint with CORS
+exports.getBinanceRates = rates.getBinanceRates; // Callable function
 exports.fetchArbitrageRates = arbitrage.fetchArbitrageRates;
 exports.getArbitrageRates = arbitrage.getArbitrageRates;
 exports.handleTopUpWebhook = payments.handleTopUpWebhook;

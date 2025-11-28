@@ -1,0 +1,46 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper function to check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Helper function to check if user owns the document
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    // Users collection - users can read their own data, admins can read all
+    match /users/{userId} {
+      // Allow users to read their own document
+      allow read: if isOwner(userId);
+      // Allow admins to read all user documents (with null check for safety)
+      allow read: if isAuthenticated() && 
+                     exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+                     get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+      // Allow users to write their own document
+      allow write: if isOwner(userId);
+    }
+    
+    // P2P rates collection - public read, admin write
+    match /p2pRates/{document=**} {
+      allow read: if true; // Public read access
+      allow write: if isAuthenticated() && 
+                      get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    
+    // Config collection - public read for fees, admin write
+    match /config/{document=**} {
+      allow read: if true; // Public read access for fee config
+      allow write: if isAuthenticated() && 
+                      get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    
+    // Default: deny all other access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
+

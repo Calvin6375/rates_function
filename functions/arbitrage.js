@@ -197,7 +197,7 @@ async function writeArbitrageAtomically(currencyPair, arbitrageData) {
 /**
  * Scheduled function: Fetch arbitrage rates for multiple currency pairs
  */
-exports.fetchArbitrageRates = onSchedule("*/10 * * * *", async () => {
+exports.fetchArbitrageRates = onSchedule("0 0 * * *", async () => {
   // Reset fee cache for new execution
   feeCache = null;
 
