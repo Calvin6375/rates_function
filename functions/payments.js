@@ -179,55 +179,107 @@ exports.handleTopUpWebhook = onRequest({secrets: [intaSendSecret, intaSendChalle
   });
 
   /**
-   * 🔄 Resolve IntaSend account (phone/MSISDN) → internal wallet/user ID
+   * 🔍 Resolve wallet/user ID using multiple strategies (in priority order):
    *
-   * IntaSend does not know our internal wallet ID – it only sends the payer
-   * account (usually a phone number). Our RTDB wallet structure, however,
-   * is keyed by the internal user/wallet ID (e.g. Firebase Auth UID):
+   * 1. Invoice ID mapping (BEST): Look up wallet/pendingTopups/{invoice_id}
+   *    This mapping is created when you create the IntaSend invoice in your app.
+   *    Store: wallet/pendingTopups/{invoice_id} = { userId: "<firebase-uid>" }
    *
-   *   wallet/balance/{walletId}
+   * 2. Metadata user_id: If IntaSend payload includes metadata.user_id
    *
-   * For the **legacy envelope format** (`event === "payment.completed"`),
-   * `metadata.user_id` is already our internal ID, so we do **not** remap it.
+   * 3. Phone lookup (FALLBACK): Resolve account (phone) → Firestore user doc
    *
-   * For the **flat invoice payload**, we:
-   *   1. Take `payload.account` (phone/MSISDN)
-   *   2. Try to find a matching Firestore user:
-   *        - First, a document whose ID matches the phone number
-   *        - Then, a document where `phoneNumber` (or `phone`) equals it
-   *   3. Use the found document ID as the wallet/user ID
-   *   4. Fall back to using the raw account string if nothing matches
+   * This approach ensures wallet crediting works even if someone pays from
+   * a different phone number than registered.
    */
 
   let walletId = userId;
 
-  // For flat payloads, if we did not receive an explicit metadata.user_id,
-  // try to resolve the wallet by phone/MSISDN (`account`) as a fallback.
-  if (isFlatInvoicePayload && !walletId && account) {
+  // Strategy 1: Look up invoice_id → userId mapping (most reliable)
+  // This mapping should be created when you create the IntaSend invoice
+  if (paymentId && !walletId) {
+    try {
+      const mappingRef = realtimeDb.ref(`wallet/pendingTopups/${paymentId}`);
+      const mappingSnap = await mappingRef.get();
+
+      if (mappingSnap.exists()) {
+        const mapping = mappingSnap.val();
+        walletId = mapping.userId || null;
+
+        console.log("✅ Found wallet ID from invoice mapping", {
+          invoiceId: paymentId,
+          walletId,
+        });
+
+        // Clean up the mapping after use (optional, but recommended)
+        await mappingRef.remove();
+      } else {
+        console.log("ℹ️ Invoice mapping not found (expected if mapping not created)", {
+          invoiceId: paymentId,
+          hint: "Create mapping at wallet/pendingTopups/{invoice_id} when creating invoice",
+        });
+      }
+    } catch (err) {
+      console.error("❌ Failed to lookup invoice mapping", {
+        invoiceId: paymentId,
+        error: err.message,
+      });
+    }
+  }
+
+  // Strategy 2: Fallback to phone lookup (only if invoice mapping didn't work)
+  // Priority: Query by phone field first (finds Firebase UID docs), then direct ID lookup
+  if (!walletId && isFlatInvoicePayload && account) {
     try {
       const usersCol = firestore.collection("users");
 
-      // 1) Direct document ID match (some schemas use phone as doc ID)
-      const directDoc = await usersCol.doc(account).get();
-      if (directDoc.exists) {
-        walletId = directDoc.id;
+      // 1) FIRST: Query by phoneNumber / phone field (finds documents with Firebase UID as doc ID)
+      let querySnap = await usersCol.where("phoneNumber", "==", account).limit(1).get();
+
+      if (querySnap.empty) {
+        querySnap = await usersCol.where("phone", "==", account).limit(1).get();
+      }
+
+      if (!querySnap.empty) {
+        // Use the document ID as wallet ID (this should be the Firebase UID)
+        walletId = querySnap.docs[0].id;
+        console.log("👤 Resolved wallet ID from phone field query", {
+          account,
+          walletId,
+          docId: querySnap.docs[0].id,
+        });
       } else {
-        // 2) Match on phoneNumber / phone field
-        let querySnap = await usersCol.where("phoneNumber", "==", account).limit(1).get();
-
-        if (querySnap.empty) {
-          querySnap = await usersCol.where("phone", "==", account).limit(1).get();
-        }
-
-        if (!querySnap.empty) {
-          walletId = querySnap.docs[0].id;
+        // 2) FALLBACK: Direct document ID match (some schemas use phone as doc ID)
+        const directDoc = await usersCol.doc(account).get();
+        if (directDoc.exists) {
+          const docData = directDoc.data();
+          // Check if this document has a userId/uid field pointing to the real wallet ID
+          walletId = docData.userId || docData.uid || docData.id || null;
+          
+          if (!walletId) {
+            // Last resort: use the doc ID itself (phone number)
+            walletId = directDoc.id;
+            console.warn("⚠️ Using phone number as wallet ID - document has no userId/uid field", {
+              account,
+              walletId,
+              hint: "Create invoice mapping or add userId field to phone-number document",
+            });
+          } else {
+            console.log("👤 Resolved wallet ID from phone document's userId field", {
+              account,
+              walletId,
+            });
+          }
         }
       }
 
-      console.log("👤 Resolved wallet ID from account", {
-        account,
-        walletId,
-      });
+      if (walletId) {
+        console.log("👤 Resolved wallet ID from account (fallback)", {
+          account,
+          walletId,
+          note: walletId === account ? "⚠️ Wallet ID equals phone - ensure invoice mapping is created" : "✅ Using resolved wallet ID",
+        });
+      }
     } catch (err) {
       console.error("❌ Failed to resolve wallet ID from account", {
         account,
@@ -245,7 +297,11 @@ exports.handleTopUpWebhook = onRequest({secrets: [intaSendSecret, intaSendChalle
   if (!walletId) {
     // We cannot update a specific wallet without knowing which user it belongs to.
     // Still record the payment for reconciliation purposes.
-    console.warn("⚠️ Missing user identifier (metadata.user_id or account). Recording payment only.");
+    console.warn("⚠️ Could not resolve wallet ID. Recording payment only.", {
+      invoiceId: paymentId,
+      account,
+      hint: "Ensure wallet/pendingTopups/{invoice_id} mapping exists when creating invoice",
+    });
 
     await realtimeDb.ref(`payments/${paymentId}`).set({
       ...payload,
