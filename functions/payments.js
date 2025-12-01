@@ -181,13 +181,15 @@ exports.handleTopUpWebhook = onRequest({secrets: [intaSendSecret, intaSendChalle
   /**
    * 🔍 Resolve wallet/user ID using multiple strategies (in priority order):
    *
-   * 1. Invoice ID mapping (BEST): Look up wallet/pendingTopups/{invoice_id}
-   *    This mapping is created when you create the IntaSend invoice in your app.
-   *    Store: wallet/pendingTopups/{invoice_id} = { userId: "<firebase-uid>" }
+   * 1. Order lookup (BEST): Query Firestore orders collection by invoice_id
+   *    Orders have userId and metadata.paymentId or metadata.invoiceId
    *
-   * 2. Metadata user_id: If IntaSend payload includes metadata.user_id
+   * 2. RTDB mapping: Look up wallet/pendingTopups/{invoice_id}
+   *    Fallback if order lookup doesn't work
    *
-   * 3. Phone lookup (FALLBACK): Resolve account (phone) → Firestore user doc
+   * 3. Metadata user_id: If IntaSend payload includes metadata.user_id
+   *
+   * 4. Phone lookup (LAST RESORT): Resolve account (phone) → Firestore user doc
    *
    * This approach ensures wallet crediting works even if someone pays from
    * a different phone number than registered.
@@ -195,8 +197,97 @@ exports.handleTopUpWebhook = onRequest({secrets: [intaSendSecret, intaSendChalle
 
   let walletId = userId;
 
-  // Strategy 1: Look up invoice_id → userId mapping (most reliable)
-  // This mapping should be created when you create the IntaSend invoice
+  // Strategy 1: Look up order by invoice_id (most reliable - uses existing order data)
+  if (paymentId && !walletId) {
+    try {
+      const ordersCol = firestore.collection("orders");
+
+      // Try to find order by metadata.paymentId or metadata.invoiceId
+      let orderQuery = ordersCol
+          .where("metadata.paymentId", "==", paymentId)
+          .where("orderType", "==", "topup")
+          .limit(1);
+
+      let orderSnap = await orderQuery.get();
+
+      // If not found, try metadata.invoiceId
+      if (orderSnap.empty) {
+        orderQuery = ordersCol
+            .where("metadata.invoiceId", "==", paymentId)
+            .where("orderType", "==", "topup")
+            .limit(1);
+        orderSnap = await orderQuery.get();
+      }
+
+      // If still not found, try direct invoiceId field
+      if (orderSnap.empty) {
+        orderQuery = ordersCol
+            .where("invoiceId", "==", paymentId)
+            .where("orderType", "==", "topup")
+            .limit(1);
+        orderSnap = await orderQuery.get();
+      }
+
+      // If still not found, try matching by amount + currency for pending topup orders
+      // This is a fallback - less reliable but might work if invoice_id is stored elsewhere
+      if (orderSnap.empty && amount > 0 && currency) {
+        try {
+          orderQuery = ordersCol
+              .where("orderType", "==", "topup")
+              .where("status", "==", "pending")
+              .where("amount", "==", amount)
+              .where("currency", "==", currency)
+              .limit(1);
+          orderSnap = await orderQuery.get();
+
+          if (!orderSnap.empty) {
+            console.log("⚠️ Found order by amount+currency match (less reliable)", {
+              invoiceId: paymentId,
+              amount,
+              currency,
+              orderId: orderSnap.docs[0].id,
+            });
+          }
+        } catch (queryErr) {
+          // Query might fail if composite index doesn't exist - that's okay
+          console.log("ℹ️ Amount+currency query not available (index may be missing)", {
+            error: queryErr.message,
+          });
+        }
+      }
+
+      if (!orderSnap.empty) {
+        const orderDoc = orderSnap.docs[0];
+        const orderData = orderDoc.data();
+        walletId = orderData.userId || null;
+
+        if (walletId) {
+          console.log("✅ Found wallet ID from order lookup", {
+            invoiceId: paymentId,
+            orderId: orderDoc.id,
+            walletId,
+          });
+        } else {
+          console.warn("⚠️ Order found but has no userId field", {
+            invoiceId: paymentId,
+            orderId: orderDoc.id,
+          });
+        }
+      } else {
+        console.log("ℹ️ No order found matching invoice_id", {
+          invoiceId: paymentId,
+          hint: "Ensure order stores invoice_id in metadata.invoiceId or invoiceId field",
+        });
+      }
+    } catch (err) {
+      console.error("❌ Failed to lookup order", {
+        invoiceId: paymentId,
+        error: err.message,
+      });
+    }
+  }
+
+  // Strategy 2: Look up invoice_id → userId mapping in RTDB (fallback)
   if (paymentId && !walletId) {
     try {
       const mappingRef = realtimeDb.ref(`wallet/pendingTopups/${paymentId}`);
@@ -206,21 +297,16 @@ exports.handleTopUpWebhook = onRequest({secrets: [intaSendSecret, intaSendChalle
         const mapping = mappingSnap.val();
         walletId = mapping.userId || null;
 
-        console.log("✅ Found wallet ID from invoice mapping", {
+        console.log("✅ Found wallet ID from RTDB invoice mapping", {
           invoiceId: paymentId,
           walletId,
         });
 
         // Clean up the mapping after use (optional, but recommended)
         await mappingRef.remove();
-      } else {
-        console.log("ℹ️ Invoice mapping not found (expected if mapping not created)", {
-          invoiceId: paymentId,
-          hint: "Create mapping at wallet/pendingTopups/{invoice_id} when creating invoice",
-        });
       }
     } catch (err) {
-      console.error("❌ Failed to lookup invoice mapping", {
+      console.error("❌ Failed to lookup RTDB invoice mapping", {
         invoiceId: paymentId,
         error: err.message,
       });
