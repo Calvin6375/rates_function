@@ -405,32 +405,57 @@ exports.handleTopUpWebhook = onRequest({secrets: [intaSendSecret, intaSendChalle
     processed_at: new Date().toISOString(),
   });
 
-  // ✅ Update wallet balance in Realtime Database
-  const walletRef = realtimeDb.ref(`wallet/balance/${walletId}`);
-  const snapshot = await walletRef.get();
+  // ✅ Update balance using Firestore transaction (master source)
+  // This ensures atomicity and prevents race conditions
+  const {updateBalanceWithTransaction} = require("./utils/firestore");
+  const {syncBalanceToRealtime} = require("./utils/realtime");
 
-  let currentBalance = 0;
-  if (snapshot.exists() && snapshot.val().available) {
-    currentBalance = Number(snapshot.val().available);
+  try {
+    // Step 1: Update Firestore balance using transaction
+    const balanceResult = await updateBalanceWithTransaction(
+        walletId,
+        amount, // Positive amount for credit
+        "topup",
+        {
+          paymentId,
+          currency,
+          completedAt,
+          source: "intasend",
+        },
+    );
+
+    // Step 2: Sync to Realtime Database (cached mirror)
+    await syncBalanceToRealtime(walletId, balanceResult.newBalance);
+
+    // Step 3: Update lastTopUp timestamp in Firestore
+    const userRef = firestore.collection("users").doc(walletId);
+    await userRef.update({
+      lastTopUp: admin.firestore.Timestamp.fromDate(new Date(completedAt)),
+    });
+
+    console.log(`✅ Webhook processed successfully: ${walletId}`, {
+      paymentId,
+      amount,
+      currency,
+      previousBalance: balanceResult.previousBalance,
+      newBalance: balanceResult.newBalance,
+      transactionId: balanceResult.transactionId,
+    });
+
+    res.status(200).send("OK");
+  } catch (error) {
+    console.error("❌ Error processing webhook balance update:", {
+      walletId,
+      paymentId,
+      amount,
+      error: error.message,
+      stack: error.stack,
+    });
+
+    // Return error but don't expose internal details
+    res.status(500).json({
+      error: "internal",
+      message: "Failed to process payment",
+    });
   }
-
-  const newBalance = currentBalance + amount;
-
-  await walletRef.update({
-    available: newBalance,
-    currency: currency,
-    lastUpdated: new Date().toISOString(),
-  });
-
-  // ✅ Also update Firestore user record for analytics
-  const userRef = firestore.collection("users").doc(walletId);
-  const updateData = {
-    balance: admin.firestore.FieldValue.increment(amount),
-    lastTopUp: admin.firestore.Timestamp.fromDate(new Date(completedAt)),
-  };
-  await userRef.set(updateData, {merge: true});
-
-  console.log(`✅ Updated ${walletId} wallet: ${currentBalance} → ${newBalance} ${currency}`);
-
-  res.status(200).send("OK");
 });

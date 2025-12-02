@@ -11,16 +11,51 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
     
+    // Helper function to check if user is admin
+    function isAdmin() {
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    
+    // Helper function to check if request modifies balance field
+    function modifiesBalance() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasAny(['balance']);
+    }
+    
     // Users collection - users can read their own data, admins can read all
     match /users/{userId} {
       // Allow users to read their own document
       allow read: if isOwner(userId);
-      // Allow admins to read all user documents (with null check for safety)
-      allow read: if isAuthenticated() && 
-                     exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-                     get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
-      // Allow users to write their own document
-      allow write: if isOwner(userId);
+      // Allow admins to read all user documents
+      allow read: if isAdmin();
+      
+      // Users can update their own document EXCEPT balance field
+      // Balance can only be modified by Cloud Functions (server-side) or admins
+      allow update: if isOwner(userId) && !modifiesBalance();
+      
+      // Admins can update any field including balance
+      allow update: if isAdmin();
+      
+      // Only admins can create user documents (or Cloud Functions via server SDK)
+      allow create: if isAdmin() || request.auth == null; // null auth = server SDK
+      
+      // Users cannot delete their own documents, only admins
+      allow delete: if isAdmin();
+    }
+    
+    // Transactions collection - users can read their own transactions
+    match /transactions/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      // Only Cloud Functions can write transactions (server SDK)
+      allow write: if false; // Client writes blocked, server SDK bypasses rules
+    }
+    
+    // Admin logs collection - admin read only
+    match /adminLogs/{logId} {
+      allow read: if isAdmin();
+      // Only Cloud Functions can write admin logs (server SDK)
+      allow write: if false; // Client writes blocked, server SDK bypasses rules
     }
     
     // P2P rates collection - public read, admin write

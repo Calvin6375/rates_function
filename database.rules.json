@@ -1,0 +1,62 @@
+{
+  "rules": {
+    "balances": {
+      "$uid": {
+        // Users can read their own balance
+        ".read": "$uid === auth.uid",
+        // No client writes - only Cloud Functions can write balances
+        ".write": "false",
+        "balance": {
+          ".validate": "newData.isNumber() && newData.val() >= 0"
+        },
+        "lastUpdated": {
+          ".validate": "newData.isNumber()"
+        }
+      }
+    },
+    "wallet": {
+      "balance": {
+        "$uid": {
+          // Users can read their own wallet balance
+          ".read": "$uid === auth.uid",
+          // No client writes - only Cloud Functions can write balances
+          ".write": "false"
+        }
+      },
+      "rates": {
+        // Public read access for rates
+        ".read": true,
+        // Only Cloud Functions can write rates
+        ".write": false
+      },
+      "pendingTopups": {
+        "$invoiceId": {
+          // Users cannot read pending topups (internal mapping)
+          ".read": false,
+          // Only Cloud Functions can write pending topups
+          ".write": false
+        }
+      }
+    },
+    "payments": {
+      "$paymentId": {
+        // Users can read payments if they match their user_id
+        ".read": "auth != null && (data.child('user_id').val() === auth.uid || root.child('users').child(auth.uid).child('role').val() === 'admin')",
+        // Only Cloud Functions can write payments
+        ".write": false
+      }
+    },
+    "users": {
+      "$uid": {
+        // Users can read their own data
+        ".read": "$uid === auth.uid || (auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin')",
+        // No client writes - users are managed via Firestore
+        ".write": false
+      }
+    },
+    // Default: deny all other access
+    ".read": false,
+    ".write": false
+  }
+}
+
