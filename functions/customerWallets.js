@@ -57,6 +57,7 @@ app.use((req, res, next) => {
 /**
  * GET /customer-wallets
  * List all customer wallets with pagination
+ * Reads from /users collection (new architecture) and /customerWallets (legacy)
  * Query params: limit (default: 100), offset (default: 0)
  */
 app.get("/customer-wallets", async (req, res) => {
@@ -64,19 +65,47 @@ app.get("/customer-wallets", async (req, res) => {
     const limit = parseInt(req.query.limit) || 100;
     const offset = parseInt(req.query.offset) || 0;
 
-    const walletsRef = db.collection("customerWallets");
-    let query = walletsRef.orderBy("createdAt", "desc").limit(limit);
+    // Helper function to format user data for frontend
+    const formatUserData = (doc) => {
+      const data = doc.data();
+      const docId = doc.id;
+      
+      // Split name into firstName/lastName if needed
+      let firstName = data.firstName || "";
+      let lastName = data.lastName || "";
+      if (!firstName && !lastName && data.name) {
+        const nameParts = data.name.trim().split(" ");
+        firstName = nameParts[0] || "";
+        lastName = nameParts.slice(1).join(" ") || "";
+      }
+
+      return {
+        id: docId,
+        customerId: docId,
+        firstName: firstName,
+        lastName: lastName,
+        email: data.email || "",
+        phone: data.phoneNumber || data.phone || "",
+        cryptoBalance: Number(data.cryptoBalance || data.balance || 0),
+        fiatBalance: Number(data.fiatBalance || data.balance || 0),
+        status: data.status || "Active",
+        createdAt: data.createdAt?.toDate?.()?.toISOString() || null,
+        updatedAt: data.updatedAt?.toDate?.()?.toISOString() || null,
+      };
+    };
+
+    // Try to read from /users collection first (new architecture)
+    const usersRef = db.collection("users");
+    let query = usersRef.orderBy("createdAt", "desc").limit(limit);
 
     if (offset > 0) {
-      // For offset, we need to skip documents
-      // Note: Firestore doesn't support offset directly, so we'll fetch and skip
-      const offsetSnapshot = await walletsRef
+      const offsetSnapshot = await usersRef
           .orderBy("createdAt", "desc")
           .limit(offset)
           .get();
       if (!offsetSnapshot.empty) {
         const lastDoc = offsetSnapshot.docs[offsetSnapshot.docs.length - 1];
-        query = walletsRef
+        query = usersRef
             .orderBy("createdAt", "desc")
             .startAfter(lastDoc)
             .limit(limit);
@@ -84,17 +113,53 @@ app.get("/customer-wallets", async (req, res) => {
     }
 
     const snapshot = await query.get();
-    const wallets = snapshot.docs.map((doc) => ({
-      id: doc.id,
-      ...doc.data(),
-      // Convert Firestore Timestamps to ISO strings for JSON
-      createdAt: doc.data().createdAt?.toDate?.()?.toISOString() || null,
-      updatedAt: doc.data().updatedAt?.toDate?.()?.toISOString() || null,
-    }));
+    let wallets = snapshot.docs.map(formatUserData);
+    let total = snapshot.size;
 
-    // Get total count for pagination info
-    const totalSnapshot = await walletsRef.get();
-    const total = totalSnapshot.size;
+    // If no users found, try legacy customerWallets collection
+    if (wallets.length === 0) {
+      const walletsRef = db.collection("customerWallets");
+      let legacyQuery = walletsRef.orderBy("createdAt", "desc").limit(limit);
+
+      if (offset > 0) {
+        const offsetSnapshot = await walletsRef
+            .orderBy("createdAt", "desc")
+            .limit(offset)
+            .get();
+        if (!offsetSnapshot.empty) {
+          const lastDoc = offsetSnapshot.docs[offsetSnapshot.docs.length - 1];
+          legacyQuery = walletsRef
+              .orderBy("createdAt", "desc")
+              .startAfter(lastDoc)
+              .limit(limit);
+        }
+      }
+
+      const legacySnapshot = await legacyQuery.get();
+      wallets = legacySnapshot.docs.map((doc) => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          customerId: doc.id,
+          firstName: data.firstName || "",
+          lastName: data.lastName || "",
+          email: data.email || "",
+          phone: data.phone || "",
+          cryptoBalance: Number(data.cryptoBalance || 0),
+          fiatBalance: Number(data.fiatBalance || data.balance || 0),
+          status: data.status || "Active",
+          createdAt: data.createdAt?.toDate?.()?.toISOString() || null,
+          updatedAt: data.updatedAt?.toDate?.()?.toISOString() || null,
+        };
+      });
+
+      const totalSnapshot = await walletsRef.get();
+      total = totalSnapshot.size;
+    } else {
+      // Get total count from users collection
+      const totalSnapshot = await usersRef.get();
+      total = totalSnapshot.size;
+    }
 
     res.status(200).json({
       success: true,
@@ -119,16 +184,62 @@ app.get("/customer-wallets", async (req, res) => {
 /**
  * GET /customer-wallets/:id
  * Get a specific customer wallet by ID
+ * 
+ * Supports both:
+ * - New architecture: /users/{uid} (Firebase Auth UIDs)
+ * - Legacy architecture: /customerWallets/{id}
  */
 app.get("/customer-wallets/:id", async (req, res) => {
   try {
     const {id} = req.params;
+    
+    // Try new architecture first: /users/{uid}
+    const userDoc = await db.collection("users").doc(id).get();
+
+    if (userDoc.exists) {
+      // Found in users collection (new architecture)
+      const userData = userDoc.data();
+      
+      // Split name into firstName/lastName if needed
+      let firstName = userData.firstName || "";
+      let lastName = userData.lastName || "";
+      if (!firstName && !lastName && userData.name) {
+        const nameParts = userData.name.trim().split(" ");
+        firstName = nameParts[0] || "";
+        lastName = nameParts.slice(1).join(" ") || "";
+      }
+      
+      // Format response to match frontend structure
+      const response = {
+        id: userDoc.id,
+        customerId: userDoc.id,
+        firstName: firstName,
+        lastName: lastName,
+        email: userData.email || "",
+        phone: userData.phoneNumber || userData.phone || "",
+        cryptoBalance: Number(userData.cryptoBalance || 0),
+        fiatBalance: Number(userData.fiatBalance || userData.balance || 0),
+        status: userData.status || "Active",
+        country: userData.country || null,
+        kycStatus: userData.kycStatus || null,
+        createdAt: userData.createdAt?.toDate?.()?.toISOString() || null,
+        updatedAt: userData.updatedAt?.toDate?.()?.toISOString() || null,
+      };
+
+      res.status(200).json({
+        success: true,
+        data: response,
+      });
+      return;
+    }
+
+    // Fall back to legacy architecture: /customerWallets/{id}
     const walletDoc = await db.collection("customerWallets").doc(id).get();
 
     if (!walletDoc.exists) {
       res.status(404).json({
         success: false,
-        error: "Customer wallet not found",
+        error: "Customer wallet not found in users or customerWallets collection",
       });
       return;
     }
@@ -156,12 +267,16 @@ app.get("/customer-wallets/:id", async (req, res) => {
 /**
  * PUT /customer-wallets/:id
  * Update customer wallet details
- * Body: { name, email, phone, status, etc. }
+ * Body: { firstName, lastName, name, email, phone, status, etc. }
+ * 
+ * Supports both:
+ * - New architecture: /users/{uid} (Firebase Auth UIDs)
+ * - Legacy architecture: /customerWallets/{id}
  */
 app.put("/customer-wallets/:id", async (req, res) => {
   try {
     const {id} = req.params;
-    const updateData = req.body;
+    let updateData = req.body;
 
     // Don't allow updating balance directly through this endpoint
     // Use credit/debit endpoints instead
@@ -169,16 +284,86 @@ app.put("/customer-wallets/:id", async (req, res) => {
     delete updateData.id;
     delete updateData.createdAt;
 
+    // Handle firstName/lastName - keep them separate for users collection
+    // If name is provided, split it into firstName/lastName
+    if (updateData.name && !updateData.firstName && !updateData.lastName) {
+      const nameParts = updateData.name.trim().split(" ");
+      updateData.firstName = nameParts[0] || "";
+      updateData.lastName = nameParts.slice(1).join(" ") || "";
+      delete updateData.name;
+    }
+    
+    // Map phone -> phoneNumber for users collection
+    if (updateData.phone && !updateData.phoneNumber) {
+      updateData.phoneNumber = updateData.phone;
+      delete updateData.phone;
+    }
+
     // Add updatedAt timestamp
     updateData.updatedAt = admin.firestore.FieldValue.serverTimestamp();
 
+    // Try new architecture first: /users/{uid}
+    let userRef = db.collection("users").doc(id);
+    let userDoc = await userRef.get();
+    let isUserCollection = false;
+
+    if (userDoc.exists) {
+      // Found in users collection (new architecture)
+      isUserCollection = true;
+      
+      // Map status field if provided (users collection might not have status)
+      if (updateData.status) {
+        // Store status in a custom field or skip if not applicable
+        // For now, we'll store it but users collection might not use status
+        updateData.status = updateData.status;
+      }
+
+      await userRef.update(updateData);
+
+      // Fetch updated document
+      const updatedDoc = await userRef.get();
+      const updatedData = updatedDoc.data();
+
+      // Format response to match frontend structure
+      let firstName = updatedData.firstName || "";
+      let lastName = updatedData.lastName || "";
+      if (!firstName && !lastName && updatedData.name) {
+        const nameParts = updatedData.name.trim().split(" ");
+        firstName = nameParts[0] || "";
+        lastName = nameParts.slice(1).join(" ") || "";
+      }
+
+      const response = {
+        id: updatedDoc.id,
+        customerId: updatedDoc.id,
+        firstName: firstName,
+        lastName: lastName,
+        email: updatedData.email || "",
+        phone: updatedData.phoneNumber || updatedData.phone || "",
+        cryptoBalance: Number(updatedData.cryptoBalance || 0),
+        fiatBalance: Number(updatedData.fiatBalance || updatedData.balance || 0),
+        status: updatedData.status || "Active",
+        country: updatedData.country || null,
+        kycStatus: updatedData.kycStatus || null,
+        createdAt: updatedData.createdAt?.toDate?.()?.toISOString() || null,
+        updatedAt: updatedData.updatedAt?.toDate?.()?.toISOString() || null,
+      };
+
+      res.status(200).json({
+        success: true,
+        data: response,
+      });
+      return;
+    }
+
+    // Fall back to legacy architecture: /customerWallets/{id}
     const walletRef = db.collection("customerWallets").doc(id);
     const walletDoc = await walletRef.get();
 
     if (!walletDoc.exists) {
       res.status(404).json({
         success: false,
-        error: "Customer wallet not found",
+        error: "Customer wallet not found in users or customerWallets collection",
       });
       return;
     }
@@ -212,6 +397,10 @@ app.put("/customer-wallets/:id", async (req, res) => {
  * POST /customer-wallets/:id/credit
  * Credit money to a customer wallet
  * Body: { amount: number, description?: string }
+ * 
+ * Supports both:
+ * - New architecture: /users/{uid} (uses updateBalanceWithTransaction)
+ * - Legacy architecture: /customerWallets/{id}
  */
 app.post("/customer-wallets/:id/credit", async (req, res) => {
   try {
@@ -226,13 +415,113 @@ app.post("/customer-wallets/:id/credit", async (req, res) => {
       return;
     }
 
+    // Try new architecture first: /users/{uid}
+    const userDoc = await db.collection("users").doc(id).get();
+
+    if (userDoc.exists) {
+      // Use Firestore transaction to update fiatBalance
+      const userRef = db.collection("users").doc(id);
+      const userData = userDoc.data();
+      const currentFiatBalance = Number(userData.fiatBalance || 0);
+      const currentBalance = Number(userData.balance || currentFiatBalance);
+      const newFiatBalance = currentFiatBalance + amount;
+      const newBalance = currentBalance + amount;
+
+      // Update both fiatBalance and balance using Firestore transaction
+      // balance field is used by balanceSync trigger and client apps
+      await db.runTransaction(async (transaction) => {
+        const doc = await transaction.get(userRef);
+        if (!doc.exists) {
+          throw new Error("User not found");
+        }
+        
+        const currentData = doc.data();
+        const currentFiatBalance = Number(currentData.fiatBalance || 0);
+        const currentBalance = Number(currentData.balance || currentFiatBalance);
+        const newFiatBalance = currentFiatBalance + amount;
+        const newBalance = currentBalance + amount;
+        
+        transaction.update(userRef, {
+          fiatBalance: newFiatBalance,
+          balance: newBalance, // Also update balance field for sync trigger
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      });
+
+      // Log transaction
+      const {logTransaction} = require("./utils/transactions");
+      try {
+        await logTransaction(
+            id,
+            "credit",
+            amount,
+            "completed",
+            currentFiatBalance,
+            newFiatBalance,
+            {
+              source: "admin_api",
+              description: description || "Wallet credit",
+              currency: "fiat",
+            },
+        );
+      } catch (logError) {
+        console.error("Failed to log transaction:", logError.message);
+      }
+
+      // Sync to Realtime DB (always sync, not conditional)
+      const {syncBalanceToRealtime} = require("./utils/realtime");
+      try {
+        // Get currency from user data or default to USD for fiat balance
+        const currency = updatedData.currency || updatedData.fiatCurrency || "USD";
+        await syncBalanceToRealtime(id, newFiatBalance, currency);
+      } catch (syncError) {
+        console.error("Failed to sync to Realtime DB:", syncError.message);
+      }
+
+      // Fetch updated user
+      const updatedDoc = await db.collection("users").doc(id).get();
+      const updatedData = updatedDoc.data();
+
+      // Format response
+      let firstName = updatedData.firstName || "";
+      let lastName = updatedData.lastName || "";
+      if (!firstName && !lastName && updatedData.name) {
+        const nameParts = updatedData.name.trim().split(" ");
+        firstName = nameParts[0] || "";
+        lastName = nameParts.slice(1).join(" ") || "";
+      }
+
+      res.status(200).json({
+        success: true,
+        data: {
+          id: updatedDoc.id,
+          customerId: updatedDoc.id,
+          firstName: firstName,
+          lastName: lastName,
+          email: updatedData.email || "",
+          phone: updatedData.phoneNumber || updatedData.phone || "",
+          cryptoBalance: Number(updatedData.cryptoBalance || 0),
+          fiatBalance: newFiatBalance,
+          status: updatedData.status || "Active",
+        },
+        transaction: {
+          type: "credit",
+          amount,
+          previousBalance: currentFiatBalance,
+          newBalance: newFiatBalance,
+        },
+      });
+      return;
+    }
+
+    // Fall back to legacy architecture: /customerWallets/{id}
     const walletRef = db.collection("customerWallets").doc(id);
     const walletDoc = await walletRef.get();
 
     if (!walletDoc.exists) {
       res.status(404).json({
         success: false,
-        error: "Customer wallet not found",
+        error: "Customer wallet not found in users or customerWallets collection",
       });
       return;
     }
@@ -292,6 +581,10 @@ app.post("/customer-wallets/:id/credit", async (req, res) => {
  * POST /customer-wallets/:id/debit
  * Debit money from a customer wallet
  * Body: { amount: number, description?: string }
+ * 
+ * Supports both:
+ * - New architecture: /users/{uid} (uses updateBalanceWithTransaction)
+ * - Legacy architecture: /customerWallets/{id}
  */
 app.post("/customer-wallets/:id/debit", async (req, res) => {
   try {
@@ -306,13 +599,129 @@ app.post("/customer-wallets/:id/debit", async (req, res) => {
       return;
     }
 
+    // Try new architecture first: /users/{uid}
+    const userDoc = await db.collection("users").doc(id).get();
+
+    if (userDoc.exists) {
+      // Use Firestore transaction to update both fiatBalance and balance
+      const userRef = db.collection("users").doc(id);
+      const userData = userDoc.data();
+      const currentFiatBalance = Number(userData.fiatBalance || 0);
+      const currentBalance = Number(userData.balance || currentFiatBalance);
+
+      if (currentFiatBalance < amount) {
+        res.status(400).json({
+          success: false,
+          error: "Insufficient balance",
+          currentBalance: currentFiatBalance,
+          requestedAmount: amount,
+        });
+        return;
+      }
+
+      const newFiatBalance = currentFiatBalance - amount;
+      const newBalance = currentBalance - amount;
+
+      // Update both fiatBalance and balance using Firestore transaction
+      // balance field is used by balanceSync trigger and client apps
+      await db.runTransaction(async (transaction) => {
+        const doc = await transaction.get(userRef);
+        if (!doc.exists) {
+          throw new Error("User not found");
+        }
+        
+        const currentData = doc.data();
+        const currentFiatBalance = Number(currentData.fiatBalance || 0);
+        const currentBalance = Number(currentData.balance || currentFiatBalance);
+        
+        if (currentFiatBalance < amount) {
+          throw new Error("Insufficient balance");
+        }
+        
+        const newFiatBalance = currentFiatBalance - amount;
+        const newBalance = currentBalance - amount;
+        
+        transaction.update(userRef, {
+          fiatBalance: newFiatBalance,
+          balance: newBalance, // Also update balance field for sync trigger
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      });
+
+      // Log transaction
+      const {logTransaction} = require("./utils/transactions");
+      try {
+        await logTransaction(
+            id,
+            "debit",
+            amount,
+            "completed",
+            currentFiatBalance,
+            newFiatBalance,
+            {
+              source: "admin_api",
+              description: description || "Wallet debit",
+              currency: "fiat",
+            },
+        );
+      } catch (logError) {
+        console.error("Failed to log transaction:", logError.message);
+      }
+
+      // Sync to Realtime DB (always sync, not conditional)
+      const {syncBalanceToRealtime} = require("./utils/realtime");
+      try {
+        // Get currency from user data or default to USD for fiat balance
+        const currency = updatedData.currency || updatedData.fiatCurrency || "USD";
+        await syncBalanceToRealtime(id, newFiatBalance, currency);
+      } catch (syncError) {
+        console.error("Failed to sync to Realtime DB:", syncError.message);
+      }
+
+      // Fetch updated user
+      const updatedDoc = await db.collection("users").doc(id).get();
+      const updatedData = updatedDoc.data();
+
+      // Format response
+      let firstName = updatedData.firstName || "";
+      let lastName = updatedData.lastName || "";
+      if (!firstName && !lastName && updatedData.name) {
+        const nameParts = updatedData.name.trim().split(" ");
+        firstName = nameParts[0] || "";
+        lastName = nameParts.slice(1).join(" ") || "";
+      }
+
+      res.status(200).json({
+        success: true,
+        data: {
+          id: updatedDoc.id,
+          customerId: updatedDoc.id,
+          firstName: firstName,
+          lastName: lastName,
+          email: updatedData.email || "",
+          phone: updatedData.phoneNumber || updatedData.phone || "",
+          cryptoBalance: Number(updatedData.cryptoBalance || 0),
+          fiatBalance: newFiatBalance,
+          status: updatedData.status || "Active",
+        },
+        transaction: {
+          type: "debit",
+          amount,
+          previousBalance: currentFiatBalance,
+          newBalance: newFiatBalance,
+        },
+      });
+      return;
+    }
+
+    // Fall back to legacy architecture: /customerWallets/{id}
     const walletRef = db.collection("customerWallets").doc(id);
     const walletDoc = await walletRef.get();
 
     if (!walletDoc.exists) {
       res.status(404).json({
         success: false,
-        error: "Customer wallet not found",
+        error: "Customer wallet not found in users or customerWallets collection",
       });
       return;
     }

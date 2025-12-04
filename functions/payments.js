@@ -425,7 +425,7 @@ exports.handleTopUpWebhook = onRequest({secrets: [intaSendSecret, intaSendChalle
     );
 
     // Step 2: Sync to Realtime Database (cached mirror)
-    await syncBalanceToRealtime(walletId, balanceResult.newBalance);
+    await syncBalanceToRealtime(walletId, balanceResult.newBalance, currency);
 
     // Step 3: Update lastTopUp timestamp in Firestore
     const userRef = firestore.collection("users").doc(walletId);
