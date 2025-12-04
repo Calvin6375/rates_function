@@ -11,10 +11,10 @@ const realtimeDb = admin.database();
  */
 async function syncBalanceToRealtime(userId, balance, currency = "USD") {
   try {
-    // Write to wallet/${userId}/balance (expected by client app)
-    // Client expects: wallet/{userId}/balance with structure:
+    // Write to wallet/${userId}/fiat/${currency} (expected by Flutter app)
+    // Client expects: wallet/{userId}/fiat/{currency} with structure:
     // { balance: number, currency: string, createdAt: timestamp, updatedAt: timestamp }
-    const balanceRef = realtimeDb.ref(`wallet/${userId}/balance`);
+    const balanceRef = realtimeDb.ref(`wallet/${userId}/fiat/${currency}`);
     
     // Get existing data to preserve createdAt if it exists
     const existingSnap = await balanceRef.get();
@@ -36,7 +36,7 @@ async function syncBalanceToRealtime(userId, balance, currency = "USD") {
     
     await balanceRef.set(updateData);
 
-    console.log(`✅ Synced balance to Realtime DB: wallet/${userId}/balance = ${balance} ${currency}`);
+    console.log(`✅ Synced balance to Realtime DB: wallet/${userId}/fiat/${currency} = ${balance} ${currency}`);
   } catch (error) {
     console.error("❌ Error syncing balance to Realtime DB:", {
       userId,
@@ -52,10 +52,10 @@ async function syncBalanceToRealtime(userId, balance, currency = "USD") {
  * @param {string} userId - User ID
  * @returns {Promise<number>} Cached balance
  */
-async function getBalanceFromRealtime(userId) {
+async function getBalanceFromRealtime(userId, currency = "USD") {
   try {
-    // Read from wallet/${userId}/balance (expected by client app)
-    const balanceRef = realtimeDb.ref(`wallet/${userId}/balance`);
+    // Read from wallet/${userId}/fiat/${currency} (expected by client app)
+    const balanceRef = realtimeDb.ref(`wallet/${userId}/fiat/${currency}`);
     const snapshot = await balanceRef.get();
 
     if (!snapshot.exists()) {
@@ -85,10 +85,10 @@ async function getBalanceFromRealtime(userId) {
  */
 async function initializeBalanceInRealtime(userId, initialBalance = 0, currency = "USD") {
   try {
-    // Initialize at wallet/${userId}/balance (expected by client app)
-    // Client expects: wallet/{userId}/balance with structure:
+    // Initialize at wallet/${userId}/fiat/${currency} (expected by client app)
+    // Client expects: wallet/{userId}/fiat/{currency} with structure:
     // { balance: number, currency: string, createdAt: timestamp, updatedAt: timestamp }
-    const balanceRef = realtimeDb.ref(`wallet/${userId}/balance`);
+    const balanceRef = realtimeDb.ref(`wallet/${userId}/fiat/${currency}`);
     await balanceRef.set({
       balance: initialBalance,
       currency: currency,
@@ -96,7 +96,7 @@ async function initializeBalanceInRealtime(userId, initialBalance = 0, currency 
       updatedAt: admin.database.ServerValue.TIMESTAMP,
     });
 
-    console.log(`✅ Initialized balance in Realtime DB: wallet/${userId}/balance = ${initialBalance} ${currency}`);
+    console.log(`✅ Initialized balance in Realtime DB: wallet/${userId}/fiat/${currency} = ${initialBalance} ${currency}`);
   } catch (error) {
     console.error("❌ Error initializing balance in Realtime DB:", {
       userId,

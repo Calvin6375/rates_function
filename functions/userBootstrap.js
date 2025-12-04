@@ -37,9 +37,10 @@ exports.userBootstrap = functions.auth.user().onCreate(async (user) => {
       // Still ensure Realtime DB balance exists
       const existingData = userDoc.data();
       const existingBalance = Number(existingData.balance || 0);
+      const currency = existingData.currency || existingData.fiatCurrency || "USD";
       
       try {
-        await initializeBalanceInRealtime(uid, existingBalance);
+        await initializeBalanceInRealtime(uid, existingBalance, currency);
       } catch (rtdbError) {
         console.error("⚠️ Failed to sync existing balance to Realtime DB:", rtdbError.message);
       }

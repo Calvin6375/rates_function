@@ -160,6 +160,14 @@ exports.updateUserBalance = onCall(async (request) => {
     // Get current balance for logging
     const beforeBalance = await getUserBalance(userId);
 
+    // Get user document to extract currency
+    const userDoc = await firestore.collection("users").doc(userId).get();
+    if (!userDoc.exists) {
+      throw new HttpsError("not-found", `User ${userId} not found`);
+    }
+    const userData = userDoc.data();
+    const currency = userData.currency || userData.fiatCurrency || "USD";
+
     // Update balance using transaction
     const result = await updateBalanceWithTransaction(
         userId,
@@ -173,8 +181,8 @@ exports.updateUserBalance = onCall(async (request) => {
         },
     );
 
-    // Sync to Realtime DB
-    await syncBalanceToRealtime(userId, result.newBalance);
+    // Sync to Realtime DB with currency
+    await syncBalanceToRealtime(userId, result.newBalance, currency);
 
     // Log admin action
     await logAdminAction(
