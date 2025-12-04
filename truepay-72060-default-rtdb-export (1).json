@@ -1,0 +1,558 @@
+{
+  "payments": {
+    "08XNVMZ": {
+      "account": "254742844875",
+      "api_ref": "",
+      "challenge": "7Cq.AZt.xL8878X",
+      "charges": "0.33",
+      "clearing_status": "AVAILABLE",
+      "created_at": "2025-11-29T09:44:06.427842+03:00",
+      "currency": "KES",
+      "host": "127.0.0.1",
+      "invoice_id": "08XNVMZ",
+      "net_amount": "10.66",
+      "processed_at": "2025-11-29T06:44:38.350Z",
+      "provider": "M-PESA",
+      "retry_count": 0,
+      "state": "COMPLETE",
+      "updated_at": "2025-11-29T09:44:37.998956+03:00",
+      "user_id": "254742844875",
+      "value": "11.00"
+    },
+    "KQQLGZP": {
+      "account": "254742844875",
+      "api_ref": "",
+      "challenge": "7Cq.AZt.xL8878X",
+      "charges": "0.33",
+      "clearing_status": "AVAILABLE",
+      "created_at": "2025-11-29T12:04:27.266075+03:00",
+      "currency": "KES",
+      "host": "127.0.0.1",
+      "invoice_id": "KQQLGZP",
+      "net_amount": "10.66",
+      "processed_at": "2025-11-29T09:04:58.956Z",
+      "provider": "M-PESA",
+      "retry_count": 0,
+      "state": "COMPLETE",
+      "updated_at": "2025-11-29T12:04:58.281161+03:00",
+      "user_id": "254742844875",
+      "value": "11.00"
+    },
+    "Y5JVGZG": {
+      "account": "254742844875",
+      "api_ref": "",
+      "charges": "0.33",
+      "clearing_status": "AVAILABLE",
+      "created_at": "2025-11-28T17:46:28.409273+03:00",
+      "currency": "KES",
+      "host": "127.0.0.1",
+      "invoice_id": "Y5JVGZG",
+      "net_amount": "46.66",
+      "processed_at": "2025-11-29T06:34:50.632Z",
+      "provider": "M-PESA",
+      "retry_count": 0,
+      "state": "COMPLETE",
+      "updated_at": "2025-11-28T17:46:58.458046+03:00",
+      "user_id": "254742844875",
+      "value": "11.00"
+    },
+    "Y6X6G89": {
+      "account": "calvinrumba8@gmail.com",
+      "api_ref": "",
+      "challenge": "7Cq.AZt.xL8878X",
+      "charges": "0.00",
+      "created_at": "2025-11-28T17:46:12.879903+03:00",
+      "currency": "KES",
+      "failed_reason": "Expired session",
+      "host": "127.0.0.1",
+      "invoice_id": "Y6X6G89",
+      "net_amount": "11.00",
+      "processed_at": "2025-11-29T21:00:04.879Z",
+      "provider": "PESALINK",
+      "retry_count": 0,
+      "state": "CANCELED",
+      "updated_at": "2025-11-30T00:00:00.612353+03:00",
+      "value": "11.00"
+    },
+    "YGN7OP8": {
+      "account": "254742844875",
+      "api_ref": "",
+      "challenge": "7Cq.AZt.xL8878X",
+      "charges": "0.00",
+      "created_at": "2025-11-29T09:43:34.438230+03:00",
+      "currency": "KES",
+      "failed_code": "1037",
+      "failed_reason": "DS timeout user cannot be reached.",
+      "host": "127.0.0.1",
+      "invoice_id": "YGN7OP8",
+      "net_amount": "11.00",
+      "processed_at": "2025-11-29T06:43:59.179Z",
+      "provider": "M-PESA",
+      "retry_count": 0,
+      "state": "FAILED",
+      "updated_at": "2025-11-29T09:43:58.868368+03:00",
+      "user_id": "254742844875",
+      "value": "11.00"
+    },
+    "payment_1764314016476_g24vew2gj": {
+      "amount": 50,
+      "checkout_url": "https://payment.intasend.com/checkout/7b6eb23f-efe6-4a1b-98b1-69f14360eac9/express/",
+      "created_at": "2025-11-28T07:13:36.476Z",
+      "currency": "KES",
+      "customer_info": {
+        "email": "calvinrumba8@gmail.com",
+        "first_name": "Calvin",
+        "last_name": "Rumba"
+      },
+      "intasend_checkout_id": "7b6eb23f-efe6-4a1b-98b1-69f14360eac9",
+      "link_opened_at": "2025-11-28T07:13:38.625Z",
+      "metadata": {
+        "intasend_response": {
+          "ach_tarrif": "BUSINESS-PAYS",
+          "amount": 50,
+          "bank_tarrif": "CUSTOMER-PAYS",
+          "bitcoin_tarrif": "BUSINESS-PAYS",
+          "card_tarrif": "CUSTOMER-PAYS",
+          "channel": "WEBSITE",
+          "created_at": "2025-11-28T10:13:34.011534+03:00",
+          "currency": "KES",
+          "email": "calvinrumba8@gmail.com",
+          "first_name": "Calvin",
+          "host": "127.0.0.1",
+          "id": "7b6eb23f-efe6-4a1b-98b1-69f14360eac9",
+          "is_mobile": false,
+          "last_name": "Rumba",
+          "layout": "tabs",
+          "merchant_email": "calvinrumba8@gmail.com",
+          "merchant_full_name": "Rukizi",
+          "merchant_id": "KNDV740",
+          "merchant_name": "INTASEND",
+          "merchant_origin": "rukiziafrica.app",
+          "method": "M-PESA",
+          "methods": [
+            "pesalink",
+            "cashapp",
+            "mpesa"
+          ],
+          "mobile_tarrif": "CUSTOMER-PAYS",
+          "paid": false,
+          "pyusd_tarrif": "BUSINESS-PAYS",
+          "signature": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzY29wZSI6ImV4cHJlc3MtY2hlY2tvdXQiLCJpc3MiOiJJbnRhU2VuZCBTb2x1dGlvbnMgTGltaXRlZCIsImF1ZCI6WyI3YjZlYjIzZi1lZmU2LTRhMWItOThiMS02OWYxNDM2MGVhYzkiXSwiaWF0IjoxNzY0MzE0MDE0LCJleHAiOjE3NjQzMTU4MTQsImFjY291bnRJRCI6IktORFY3NDAiLCJyZWZlcmVuY2UiOiI3YjZlYjIzZi1lZmU2LTRhMWItOThiMS02OWYxNDM2MGVhYzkifQ.VG44neQzURrieyR2b5pnFlc8wZpf0AwVdspNc5YCg98",
+          "styles": {
+            "borderRadius": "10px",
+            "componentBackgroundColor": "#F7FAFC",
+            "ctaBgColor": "#056BD5",
+            "ctaFontColor": "#fff",
+            "fontFamily": "Times New Roman, serif",
+            "fontWeight": "light",
+            "inputBackgroundColor": "#FFFFFF",
+            "inputBorderColor": "#CCCCCC",
+            "inputBorderRadius": "10px",
+            "inputLabelColor": "#000000",
+            "inputTextColor": "#000",
+            "selectedBorderColor": "2px solid #056BD5",
+            "selectedCardBackgroundColor": "#FFFFFF",
+            "selectedCardShadow": "0px 0px 7px rgba(5, 107, 213, 0.5)",
+            "selectedFontColor": "#056BD5",
+            "unselectedBorderColor": "2px solid #A0AEC0",
+            "unselectedCardBackgroundColor": "#FFFFFF",
+            "unselectedCardShadow": "none",
+            "unselectedFontColor": "#333333"
+          },
+          "tracking_id": "",
+          "updated_at": "2025-11-28T10:13:34.011548+03:00",
+          "url": "https://payment.intasend.com/checkout/7b6eb23f-efe6-4a1b-98b1-69f14360eac9/express/"
+        },
+        "test_mode": false
+      },
+      "payment_id": "payment_1764314016476_g24vew2gj",
+      "payment_method": "intasend",
+      "platform": "mobile_app",
+      "status": "link_opened",
+      "updated_at": "2025-11-28T07:13:38.625Z",
+      "user_email": "calvinrumba27@gmail.com",
+      "user_id": "82XqLAxq2udeYzrR89tvrEbYXbB2"
+    },
+    "payment_1764341156309_3nqaipwun": {
+      "amount": 10,
+      "checkout_url": "https://payment.intasend.com/checkout/e3a5fd69-def9-4b83-9eec-30954be82cec/express/",
+      "created_at": "2025-11-28T14:45:56.309Z",
+      "currency": "KES",
+      "customer_info": {
+        "email": "calvinrumba8@gmail.com",
+        "first_name": "calvin",
+        "last_name": "rumba"
+      },
+      "intasend_checkout_id": "e3a5fd69-def9-4b83-9eec-30954be82cec",
+      "link_opened_at": "2025-11-28T14:45:58.145Z",
+      "metadata": {
+        "intasend_response": {
+          "ach_tarrif": "BUSINESS-PAYS",
+          "amount": 10,
+          "bank_tarrif": "CUSTOMER-PAYS",
+          "bitcoin_tarrif": "BUSINESS-PAYS",
+          "card_tarrif": "CUSTOMER-PAYS",
+          "channel": "WEBSITE",
+          "created_at": "2025-11-28T17:45:54.063103+03:00",
+          "currency": "KES",
+          "email": "calvinrumba8@gmail.com",
+          "first_name": "calvin",
+          "host": "127.0.0.1",
+          "id": "e3a5fd69-def9-4b83-9eec-30954be82cec",
+          "is_mobile": false,
+          "last_name": "rumba",
+          "layout": "tabs",
+          "merchant_email": "calvinrumba8@gmail.com",
+          "merchant_full_name": "Rukizi",
+          "merchant_id": "KNDV740",
+          "merchant_name": "INTASEND",
+          "merchant_origin": "rukiziafrica.app",
+          "method": "M-PESA",
+          "methods": [
+            "pesalink",
+            "cashapp",
+            "mpesa"
+          ],
+          "mobile_tarrif": "CUSTOMER-PAYS",
+          "paid": false,
+          "pyusd_tarrif": "BUSINESS-PAYS",
+          "signature": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzY29wZSI6ImV4cHJlc3MtY2hlY2tvdXQiLCJpc3MiOiJJbnRhU2VuZCBTb2x1dGlvbnMgTGltaXRlZCIsImF1ZCI6WyJlM2E1ZmQ2OS1kZWY5LTRiODMtOWVlYy0zMDk1NGJlODJjZWMiXSwiaWF0IjoxNzY0MzQxMTU0LCJleHAiOjE3NjQzNDI5NTQsImFjY291bnRJRCI6IktORFY3NDAiLCJyZWZlcmVuY2UiOiJlM2E1ZmQ2OS1kZWY5LTRiODMtOWVlYy0zMDk1NGJlODJjZWMifQ.fa5T5r-ESqRczFZPngNkcP2TEueyyk5nfoOcb9YLqmQ",
+          "styles": {
+            "borderRadius": "10px",
+            "componentBackgroundColor": "#F7FAFC",
+            "ctaBgColor": "#056BD5",
+            "ctaFontColor": "#fff",
+            "fontFamily": "Times New Roman, serif",
+            "fontWeight": "light",
+            "inputBackgroundColor": "#FFFFFF",
+            "inputBorderColor": "#CCCCCC",
+            "inputBorderRadius": "10px",
+            "inputLabelColor": "#000000",
+            "inputTextColor": "#000",
+            "selectedBorderColor": "2px solid #056BD5",
+            "selectedCardBackgroundColor": "#FFFFFF",
+            "selectedCardShadow": "0px 0px 7px rgba(5, 107, 213, 0.5)",
+            "selectedFontColor": "#056BD5",
+            "unselectedBorderColor": "2px solid #A0AEC0",
+            "unselectedCardBackgroundColor": "#FFFFFF",
+            "unselectedCardShadow": "none",
+            "unselectedFontColor": "#333333"
+          },
+          "tracking_id": "",
+          "updated_at": "2025-11-28T17:45:54.063118+03:00",
+          "url": "https://payment.intasend.com/checkout/e3a5fd69-def9-4b83-9eec-30954be82cec/express/"
+        },
+        "test_mode": false
+      },
+      "payment_id": "payment_1764341156309_3nqaipwun",
+      "payment_method": "intasend",
+      "platform": "mobile_app",
+      "status": "link_opened",
+      "updated_at": "2025-11-28T14:45:58.145Z",
+      "user_email": "calvinrumba27@gmail.com",
+      "user_id": "82XqLAxq2udeYzrR89tvrEbYXbB2"
+    },
+    "payment_1764398586713_dkyidxf6g": {
+      "amount": 10,
+      "checkout_url": "https://payment.intasend.com/checkout/9bab492e-03cc-4446-aa2c-05da6c1fde5c/express/",
+      "created_at": "2025-11-29T06:43:06.714Z",
+      "currency": "KES",
+      "customer_info": {
+        "email": "calvinrumba27@gmail.com",
+        "first_name": "Calvin",
+        "last_name": "Rumba"
+      },
+      "intasend_checkout_id": "9bab492e-03cc-4446-aa2c-05da6c1fde5c",
+      "link_opened_at": "2025-11-29T06:43:08.651Z",
+      "metadata": {
+        "intasend_response": {
+          "ach_tarrif": "BUSINESS-PAYS",
+          "amount": 10,
+          "bank_tarrif": "CUSTOMER-PAYS",
+          "bitcoin_tarrif": "BUSINESS-PAYS",
+          "card_tarrif": "CUSTOMER-PAYS",
+          "channel": "WEBSITE",
+          "created_at": "2025-11-29T09:43:04.381816+03:00",
+          "currency": "KES",
+          "email": "calvinrumba27@gmail.com",
+          "first_name": "Calvin",
+          "host": "127.0.0.1",
+          "id": "9bab492e-03cc-4446-aa2c-05da6c1fde5c",
+          "is_mobile": false,
+          "last_name": "Rumba",
+          "layout": "tabs",
+          "merchant_email": "calvinrumba8@gmail.com",
+          "merchant_full_name": "Rukizi",
+          "merchant_id": "KNDV740",
+          "merchant_name": "INTASEND",
+          "merchant_origin": "rukiziafrica.app",
+          "method": "M-PESA",
+          "methods": [
+            "pesalink",
+            "cashapp",
+            "mpesa"
+          ],
+          "mobile_tarrif": "CUSTOMER-PAYS",
+          "paid": false,
+          "pyusd_tarrif": "BUSINESS-PAYS",
+          "signature": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzY29wZSI6ImV4cHJlc3MtY2hlY2tvdXQiLCJpc3MiOiJJbnRhU2VuZCBTb2x1dGlvbnMgTGltaXRlZCIsImF1ZCI6WyI5YmFiNDkyZS0wM2NjLTQ0NDYtYWEyYy0wNWRhNmMxZmRlNWMiXSwiaWF0IjoxNzY0Mzk4NTg0LCJleHAiOjE3NjQ0MDAzODQsImFjY291bnRJRCI6IktORFY3NDAiLCJyZWZlcmVuY2UiOiI5YmFiNDkyZS0wM2NjLTQ0NDYtYWEyYy0wNWRhNmMxZmRlNWMifQ.tmMZCWeQWfivYGGu9G75XJn78VKk5JPytBN696PNkI0",
+          "styles": {
+            "borderRadius": "10px",
+            "componentBackgroundColor": "#F7FAFC",
+            "ctaBgColor": "#056BD5",
+            "ctaFontColor": "#fff",
+            "fontFamily": "Times New Roman, serif",
+            "fontWeight": "light",
+            "inputBackgroundColor": "#FFFFFF",
+            "inputBorderColor": "#CCCCCC",
+            "inputBorderRadius": "10px",
+            "inputLabelColor": "#000000",
+            "inputTextColor": "#000",
+            "selectedBorderColor": "2px solid #056BD5",
+            "selectedCardBackgroundColor": "#FFFFFF",
+            "selectedCardShadow": "0px 0px 7px rgba(5, 107, 213, 0.5)",
+            "selectedFontColor": "#056BD5",
+            "unselectedBorderColor": "2px solid #A0AEC0",
+            "unselectedCardBackgroundColor": "#FFFFFF",
+            "unselectedCardShadow": "none",
+            "unselectedFontColor": "#333333"
+          },
+          "tracking_id": "",
+          "updated_at": "2025-11-29T09:43:04.381834+03:00",
+          "url": "https://payment.intasend.com/checkout/9bab492e-03cc-4446-aa2c-05da6c1fde5c/express/"
+        },
+        "test_mode": false
+      },
+      "payment_id": "payment_1764398586713_dkyidxf6g",
+      "payment_method": "intasend",
+      "platform": "mobile_app",
+      "status": "link_opened",
+      "updated_at": "2025-11-29T06:43:08.651Z",
+      "user_email": "calvinrumba27@gmail.com",
+      "user_id": "82XqLAxq2udeYzrR89tvrEbYXbB2"
+    },
+    "payment_1764407044399_b755bza6e": {
+      "amount": 10,
+      "checkout_url": "https://payment.intasend.com/checkout/59567f4b-6df4-49fa-a5b8-90f0ea824c37/express/",
+      "created_at": "2025-11-29T09:04:04.399Z",
+      "currency": "KES",
+      "customer_info": {
+        "email": "calvinrumba27@gmail.com",
+        "first_name": "Calvin",
+        "last_name": "Rumba"
+      },
+      "intasend_checkout_id": "59567f4b-6df4-49fa-a5b8-90f0ea824c37",
+      "link_opened_at": "2025-11-29T09:04:06.330Z",
+      "metadata": {
+        "intasend_response": {
+          "ach_tarrif": "BUSINESS-PAYS",
+          "amount": 10,
+          "bank_tarrif": "CUSTOMER-PAYS",
+          "bitcoin_tarrif": "BUSINESS-PAYS",
+          "card_tarrif": "CUSTOMER-PAYS",
+          "channel": "WEBSITE",
+          "created_at": "2025-11-29T12:04:02.234549+03:00",
+          "currency": "KES",
+          "email": "calvinrumba27@gmail.com",
+          "first_name": "Calvin",
+          "host": "127.0.0.1",
+          "id": "59567f4b-6df4-49fa-a5b8-90f0ea824c37",
+          "is_mobile": false,
+          "last_name": "Rumba",
+          "layout": "tabs",
+          "merchant_email": "calvinrumba8@gmail.com",
+          "merchant_full_name": "Rukizi",
+          "merchant_id": "KNDV740",
+          "merchant_name": "INTASEND",
+          "merchant_origin": "rukiziafrica.app",
+          "method": "M-PESA",
+          "methods": [
+            "pesalink",
+            "cashapp",
+            "mpesa"
+          ],
+          "mobile_tarrif": "CUSTOMER-PAYS",
+          "paid": false,
+          "pyusd_tarrif": "BUSINESS-PAYS",
+          "signature": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzY29wZSI6ImV4cHJlc3MtY2hlY2tvdXQiLCJpc3MiOiJJbnRhU2VuZCBTb2x1dGlvbnMgTGltaXRlZCIsImF1ZCI6WyI1OTU2N2Y0Yi02ZGY0LTQ5ZmEtYTViOC05MGYwZWE4MjRjMzciXSwiaWF0IjoxNzY0NDA3MDQyLCJleHAiOjE3NjQ0MDg4NDIsImFjY291bnRJRCI6IktORFY3NDAiLCJyZWZlcmVuY2UiOiI1OTU2N2Y0Yi02ZGY0LTQ5ZmEtYTViOC05MGYwZWE4MjRjMzcifQ.zhM0OPZlubi3oCtTyseldPEe-g9JMQ8V2qInVbY8BPo",
+          "styles": {
+            "borderRadius": "10px",
+            "componentBackgroundColor": "#F7FAFC",
+            "ctaBgColor": "#056BD5",
+            "ctaFontColor": "#fff",
+            "fontFamily": "Times New Roman, serif",
+            "fontWeight": "light",
+            "inputBackgroundColor": "#FFFFFF",
+            "inputBorderColor": "#CCCCCC",
+            "inputBorderRadius": "10px",
+            "inputLabelColor": "#000000",
+            "inputTextColor": "#000",
+            "selectedBorderColor": "2px solid #056BD5",
+            "selectedCardBackgroundColor": "#FFFFFF",
+            "selectedCardShadow": "0px 0px 7px rgba(5, 107, 213, 0.5)",
+            "selectedFontColor": "#056BD5",
+            "unselectedBorderColor": "2px solid #A0AEC0",
+            "unselectedCardBackgroundColor": "#FFFFFF",
+            "unselectedCardShadow": "none",
+            "unselectedFontColor": "#333333"
+          },
+          "tracking_id": "",
+          "updated_at": "2025-11-29T12:04:02.234564+03:00",
+          "url": "https://payment.intasend.com/checkout/59567f4b-6df4-49fa-a5b8-90f0ea824c37/express/"
+        },
+        "test_mode": false
+      },
+      "payment_id": "payment_1764407044399_b755bza6e",
+      "payment_method": "intasend",
+      "platform": "mobile_app",
+      "status": "link_opened",
+      "updated_at": "2025-11-29T09:04:06.330Z",
+      "user_email": "calvinrumba27@gmail.com",
+      "user_id": "82XqLAxq2udeYzrR89tvrEbYXbB2"
+    }
+  },
+  "users": {
+    "82XqLAxq2udeYzrR89tvrEbYXbB2": {
+      "payments": {
+        "payment_1764314016476_g24vew2gj": {
+          "amount": 50,
+          "created_at": "2025-11-28T07:13:36.476Z",
+          "currency": "KES",
+          "payment_id": "payment_1764314016476_g24vew2gj",
+          "status": "link_opened",
+          "updated_at": "2025-11-28T07:13:38.625Z"
+        },
+        "payment_1764341156309_3nqaipwun": {
+          "amount": 10,
+          "created_at": "2025-11-28T14:45:56.309Z",
+          "currency": "KES",
+          "payment_id": "payment_1764341156309_3nqaipwun",
+          "status": "link_opened",
+          "updated_at": "2025-11-28T14:45:58.145Z"
+        },
+        "payment_1764398586713_dkyidxf6g": {
+          "amount": 10,
+          "created_at": "2025-11-29T06:43:06.714Z",
+          "currency": "KES",
+          "payment_id": "payment_1764398586713_dkyidxf6g",
+          "status": "link_opened",
+          "updated_at": "2025-11-29T06:43:08.651Z"
+        },
+        "payment_1764407044399_b755bza6e": {
+          "amount": 10,
+          "created_at": "2025-11-29T09:04:04.399Z",
+          "currency": "KES",
+          "payment_id": "payment_1764407044399_b755bza6e",
+          "status": "link_opened",
+          "updated_at": "2025-11-29T09:04:06.330Z"
+        }
+      }
+    }
+  },
+  "wallet": {
+    "3mRTw4DvHCXPTVbzAt7OQWOqlNF3": {
+      "balance": {
+        "balance": 0,
+        "createdAt": 1764873302559,
+        "currency": "USD",
+        "updatedAt": 1764873302559
+      },
+      "fiat": {
+        "USD": {
+          "balance": 8,
+          "createdAt": 1764873776010,
+          "currency": "USD",
+          "updatedAt": 1764873776010
+        }
+      }
+    },
+    "82XqLAxq2udeYzrR89tvrEbYXbB2": {
+      "balance": 110,
+      "crypto": {
+        "USDT": {
+          "balance": 0,
+          "createdAt": "2025-11-26T18:44:06.037719",
+          "currency": "USDT",
+          "updatedAt": "2025-11-26T18:44:06.037719"
+        }
+      },
+      "lastUpdated": 1764818482059
+    },
+    "T1wAFhSWtvXDGrRQz2yD7efxSZ52": {
+      "balance": {
+        "balance": 0,
+        "createdAt": "2025-11-27T10:57:49.178Z",
+        "currency": "USD",
+        "updatedAt": "2025-11-27T10:57:49.178Z"
+      },
+      "crypto": {
+        "USDT": {
+          "balance": 0,
+          "createdAt": "2025-11-27T10:57:49.178Z",
+          "currency": "USDT",
+          "updatedAt": "2025-11-27T10:57:49.178Z"
+        }
+      }
+    },
+    "balance": {
+      "254742844875": {
+        "available": 506.93999999999994,
+        "currency": "KES",
+        "lastUpdated": "2025-11-29T09:04:58.965Z"
+      },
+      "3mRTw4DvHCXPTVbzAt7OQWOqlNF3": {
+        "lastUpdated": 1764873345320
+      }
+    },
+    "i3kLgYsynlYvLumOYFZFyTpNhX83": {
+      "balance": {
+        "balance": 0,
+        "createdAt": "2025-12-02T01:55:22.302Z",
+        "currency": "USD",
+        "updatedAt": "2025-12-02T01:55:22.302Z"
+      },
+      "crypto": {
+        "USDT": {
+          "balance": 0,
+          "createdAt": "2025-12-02T01:55:22.302Z",
+          "currency": "USDT",
+          "updatedAt": "2025-12-02T01:55:22.302Z"
+        }
+      }
+    },
+    "rates": {
+      "arbitrage": {
+        "USD": {
+          "KES": {
+            "currencyPair": "USD/KES",
+            "customerPayout": 133381.28772635813,
+            "feePercentage": 1.5,
+            "fiat": "KES",
+            "localRate": 134.6,
+            "localReceived": 135412.47484909455,
+            "profit": 2031.1871227364172,
+            "updatedAt": 1764806405463,
+            "usdAmount": 1000,
+            "usdRate": 0.994,
+            "usdtBought": 1006.0362173038229,
+            "validUntil": 1764807005227
+          }
+        }
+      },
+      "binance": {
+        "USDT": {
+          "KES": {
+            "asset": "USDT",
+            "currencyPair": "USDT/KES",
+            "customerPrice": 130.90455,
+            "feePercentage": 1.5,
+            "fiat": "KES",
+            "marketPrice": 128.97,
+            "updatedAt": 1764806409825,
+            "validUntil": 1764806709604
+          }
+        }
+      }
+    }
+  }
+}

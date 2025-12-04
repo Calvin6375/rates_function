@@ -39,3 +39,4 @@ exports.updateUserProfile = adminActions.updateUserProfile; // Admin: Update use
 exports.updateUserBalance = adminActions.updateUserBalance; // Admin: Update user balance
 exports.getUserData = adminActions.getUserData; // Admin: Get user data
 exports.updateKYCStatus = adminActions.updateKYCStatus; // Admin: Update KYC status
+exports.syncUserBalanceToRealtime = adminActions.syncUserBalanceToRealtime; // Admin: Manually sync balance to Realtime DB

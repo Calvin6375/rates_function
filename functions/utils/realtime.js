@@ -36,12 +36,38 @@ async function syncBalanceToRealtime(userId, balance, currency = "USD") {
     
     await balanceRef.set(updateData);
 
+    // Clean up old balance paths if they exist
+    try {
+      const oldBalanceRef = realtimeDb.ref(`wallet/${userId}/balance`);
+      const oldSnap = await oldBalanceRef.get();
+      
+      // If old path exists and is different from new path, remove it
+      if (oldSnap.exists()) {
+        const oldData = oldSnap.val();
+        // Check if it's an object (old structure) vs just a number
+        if (typeof oldData === "object" && oldData !== null) {
+          // It's the old structured format, remove it
+          await oldBalanceRef.remove();
+          console.log(`🧹 Cleaned up old balance path: wallet/${userId}/balance`);
+        } else if (typeof oldData === "number") {
+          // It's a direct number value, remove it too
+          await oldBalanceRef.remove();
+          console.log(`🧹 Cleaned up old numeric balance path: wallet/${userId}/balance`);
+        }
+      }
+    } catch (cleanupError) {
+      // Don't fail the sync if cleanup fails
+      console.warn(`⚠️ Failed to clean up old balance path (non-critical):`, cleanupError.message);
+    }
+
     console.log(`✅ Synced balance to Realtime DB: wallet/${userId}/fiat/${currency} = ${balance} ${currency}`);
   } catch (error) {
     console.error("❌ Error syncing balance to Realtime DB:", {
       userId,
       balance,
+      currency,
       error: error.message,
+      stack: error.stack,
     });
     throw error;
   }

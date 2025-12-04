@@ -42,20 +42,54 @@ exports.syncBalance = onDocumentUpdated(
           source: afterData.balance !== undefined ? "balance" : "fiatBalance",
         });
 
-        // Sync to Realtime Database
-        await syncBalanceToRealtime(uid, afterBalance, currency);
+        // Sync to Realtime Database with retry logic
+        let syncAttempts = 0;
+        const maxRetries = 3;
+        let lastError = null;
 
-        console.log(`✅ Balance synced to Realtime DB: ${uid}`, {
-          balance: afterBalance,
-        });
+        while (syncAttempts < maxRetries) {
+          try {
+            await syncBalanceToRealtime(uid, afterBalance, currency);
+            console.log(`✅ Balance synced to Realtime DB: ${uid}`, {
+              balance: afterBalance,
+              currency,
+              attempts: syncAttempts + 1,
+            });
+            break; // Success, exit retry loop
+          } catch (syncError) {
+            syncAttempts++;
+            lastError = syncError;
+            console.warn(`⚠️ Sync attempt ${syncAttempts}/${maxRetries} failed for ${uid}:`, syncError.message);
+            
+            if (syncAttempts < maxRetries) {
+              // Wait before retry (exponential backoff)
+              await new Promise((resolve) => setTimeout(resolve, 1000 * syncAttempts));
+            }
+          }
+        }
+
+        if (syncAttempts >= maxRetries && lastError) {
+          // All retries failed, log but don't throw
+          console.error("❌ All sync retry attempts failed:", {
+            userId: uid,
+            error: lastError.message,
+            attempts: maxRetries,
+          });
+          return {
+            success: false,
+            error: lastError.message,
+            userId: uid,
+          };
+        }
 
         return {
           success: true,
           userId: uid,
           balance: afterBalance,
+          currency,
         };
       } catch (error) {
-        console.error("❌ Error syncing balance:", {
+        console.error("❌ Error in balance sync trigger:", {
           userId: event.params?.uid,
           error: error.message,
           stack: error.stack,

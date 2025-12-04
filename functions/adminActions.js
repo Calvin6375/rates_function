@@ -160,14 +160,6 @@ exports.updateUserBalance = onCall(async (request) => {
     // Get current balance for logging
     const beforeBalance = await getUserBalance(userId);
 
-    // Get user document to extract currency
-    const userDoc = await firestore.collection("users").doc(userId).get();
-    if (!userDoc.exists) {
-      throw new HttpsError("not-found", `User ${userId} not found`);
-    }
-    const userData = userDoc.data();
-    const currency = userData.currency || userData.fiatCurrency || "USD";
-
     // Update balance using transaction
     const result = await updateBalanceWithTransaction(
         userId,
@@ -181,8 +173,26 @@ exports.updateUserBalance = onCall(async (request) => {
         },
     );
 
-    // Sync to Realtime DB with currency
-    await syncBalanceToRealtime(userId, result.newBalance, currency);
+    // Get user document AFTER update to ensure we have latest currency
+    const userDoc = await firestore.collection("users").doc(userId).get();
+    if (!userDoc.exists) {
+      throw new HttpsError("not-found", `User ${userId} not found`);
+    }
+    const userData = userDoc.data();
+    const currency = userData.currency || userData.fiatCurrency || "USD";
+
+    // Sync to Realtime DB with currency (with retry on failure)
+    try {
+      await syncBalanceToRealtime(userId, result.newBalance, currency);
+      console.log(`✅ Successfully synced balance to Realtime DB: ${userId}`);
+    } catch (syncError) {
+      // Log error but don't fail the admin action - the Cloud Function trigger will retry
+      console.error(`⚠️ Failed to sync balance to Realtime DB (will retry via trigger):`, {
+        userId,
+        error: syncError.message,
+      });
+      // The balanceSync Cloud Function will handle the sync automatically
+    }
 
     // Log admin action
     await logAdminAction(
@@ -378,6 +388,75 @@ exports.updateKYCStatus = onCall(async (request) => {
     }
 
     throw new HttpsError("internal", `Failed to update KYC status: ${error.message}`);
+  }
+});
+
+/**
+ * Callable Function: Sync User Balance to Realtime DB (Manual)
+ * Admin-only function to manually sync user balance to Realtime Database
+ * Useful for fixing discrepancies between Firestore and Realtime DB
+ * 
+ * @param {Object} request.data - Request data
+ * @param {string} request.data.userId - Target user ID
+ * @param {string} request.auth.uid - Admin user ID
+ */
+exports.syncUserBalanceToRealtime = onCall(async (request) => {
+  try {
+    const adminId = request.auth?.uid;
+    if (!adminId) {
+      throw new HttpsError("unauthenticated", "Authentication required");
+    }
+
+    // Verify admin role
+    const isAdminUser = await verifyAdmin(adminId);
+    if (!isAdminUser) {
+      throw new HttpsError("permission-denied", "Admin access required");
+    }
+
+    const {userId} = request.data || {};
+
+    if (!userId) {
+      throw new HttpsError("invalid-argument", "userId is required");
+    }
+
+    // Get user document from Firestore (source of truth)
+    const userDoc = await firestore.collection("users").doc(userId).get();
+
+    if (!userDoc.exists) {
+      throw new HttpsError("not-found", `User ${userId} not found`);
+    }
+
+    const userData = userDoc.data();
+    const balance = Number(userData.balance || 0);
+    const currency = userData.currency || userData.fiatCurrency || "USD";
+
+    // Sync to Realtime DB
+    await syncBalanceToRealtime(userId, balance, currency);
+
+    console.log(`✅ Admin ${adminId} manually synced balance for user ${userId}`, {
+      balance,
+      currency,
+    });
+
+    return {
+      success: true,
+      userId,
+      balance,
+      currency,
+      message: "Balance synced successfully",
+    };
+  } catch (error) {
+    console.error("❌ Error manually syncing balance:", {
+      adminId: request.auth?.uid,
+      userId: request.data?.userId,
+      error: error.message,
+    });
+
+    if (error instanceof HttpsError) {
+      throw error;
+    }
+
+    throw new HttpsError("internal", `Failed to sync balance: ${error.message}`);
   }
 });
 
