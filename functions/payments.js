@@ -175,34 +175,126 @@ exports.handleTopUpWebhook = onRequest({
     completedAt = payload.updated_at || payload.created_at || new Date().toISOString();
   }
 
+  // Extract state from payload (IntaSend sends state field)
+  const paymentState = payload.state || null;
+
+  // Only process COMPLETE payments (per IntaSend documentation)
+  // IntaSend sends webhooks for: PENDING, PROCESSING, COMPLETE, FAILED
+  // We only want to credit wallet on COMPLETE state
+  if (paymentState && paymentState !== "COMPLETE") {
+    console.log(`ℹ️ Payment ${paymentId} is in ${paymentState} state, skipping balance update`, {
+      state: paymentState,
+      invoiceId: paymentId,
+    });
+    res.status(200).send("OK - Payment not complete yet");
+    return;
+  }
+
   console.log("💰 Processing payment", {
     paymentId,
     amount,
     currency,
     userId,
     account,
+    state: paymentState,
   });
 
   /**
    * 🔍 Resolve wallet/user ID using multiple strategies (in priority order):
    *
-   * 1. Order lookup (BEST): Query Firestore orders collection by invoice_id
+   * 1. Phone number lookup (PRIMARY): Query Firestore users by phoneNumber/phone
+   *    This is the most reliable since IntaSend always provides account (phone) field
+   *
+   * 2. Order lookup by invoice_id: Query Firestore orders collection
    *    Orders have userId and metadata.paymentId or metadata.invoiceId
    *
-   * 2. RTDB mapping: Look up wallet/pendingTopups/{invoice_id}
+   * 3. RTDB mapping: Look up wallet/pendingTopups/{invoice_id}
    *    Fallback if order lookup doesn't work
    *
-   * 3. Metadata user_id: If IntaSend payload includes metadata.user_id
+   * 4. Metadata user_id: If IntaSend payload includes metadata.user_id
    *
-   * 4. Phone lookup (LAST RESORT): Resolve account (phone) → Firestore user doc
-   *
-   * This approach ensures wallet crediting works even if someone pays from
-   * a different phone number than registered.
+   * Phone number is now PRIMARY because it's the most reliable identifier
+   * from IntaSend webhook payloads.
    */
 
   let walletId = userId;
 
-  // Strategy 1: Look up order by invoice_id (most reliable - uses existing order data)
+  // Strategy 1: Phone number lookup (PRIMARY - most reliable from IntaSend)
+  // IntaSend always provides account field (phone number) in webhook payload
+  if (!walletId && account) {
+    try {
+      const usersCol = firestore.collection("users");
+
+      // Normalize phone number (remove leading +, ensure consistent format)
+      const normalizedPhone = account.replace(/^\+/, "").trim();
+
+      // Try multiple phone number field variations
+      let querySnap = await usersCol.where("phoneNumber", "==", normalizedPhone).limit(1).get();
+
+      if (querySnap.empty) {
+        // Try with + prefix
+        querySnap = await usersCol.where("phoneNumber", "==", `+${normalizedPhone}`).limit(1).get();
+      }
+
+      if (querySnap.empty) {
+        // Try phone field
+        querySnap = await usersCol.where("phone", "==", normalizedPhone).limit(1).get();
+      }
+
+      if (querySnap.empty) {
+        // Try phone field with + prefix
+        querySnap = await usersCol.where("phone", "==", `+${normalizedPhone}`).limit(1).get();
+      }
+
+      if (querySnap.empty) {
+        // Try original account value (as-is)
+        querySnap = await usersCol.where("phoneNumber", "==", account).limit(1).get();
+      }
+
+      if (querySnap.empty) {
+        querySnap = await usersCol.where("phone", "==", account).limit(1).get();
+      }
+
+      if (!querySnap.empty) {
+        // Use the document ID as wallet ID (Firebase UID)
+        walletId = querySnap.docs[0].id;
+        console.log("✅ Found wallet ID from phone number lookup (PRIMARY)", {
+          account,
+          normalizedPhone,
+          walletId,
+          docId: querySnap.docs[0].id,
+        });
+      } else {
+        // Fallback: Try direct document ID match (some schemas use phone as doc ID)
+        const directDoc = await usersCol.doc(normalizedPhone).get();
+        if (!directDoc.exists) {
+          const directDocWithPlus = await usersCol.doc(`+${normalizedPhone}`).get();
+          if (directDocWithPlus.exists) {
+            const docData = directDocWithPlus.data();
+            walletId = docData.userId || docData.uid || docData.id || directDocWithPlus.id;
+            console.log("✅ Found wallet ID from phone document ID (with +)", {
+              account,
+              walletId,
+            });
+          }
+        } else {
+          const docData = directDoc.data();
+          walletId = docData.userId || docData.uid || docData.id || directDoc.id;
+          console.log("✅ Found wallet ID from phone document ID", {
+            account,
+            walletId,
+          });
+        }
+      }
+    } catch (err) {
+      console.error("❌ Failed to lookup user by phone number", {
+        account,
+        error: err.message,
+      });
+    }
+  }
+
+  // Strategy 2: Look up order by invoice_id (secondary - uses existing order data)
   if (paymentId && !walletId) {
     try {
       const ordersCol = firestore.collection("orders");
@@ -264,9 +356,35 @@ exports.handleTopUpWebhook = onRequest({
       if (!orderSnap.empty) {
         const orderDoc = orderSnap.docs[0];
         const orderData = orderDoc.data();
-        walletId = orderData.userId || null;
-
-        if (walletId) {
+        
+        // Get userId from order
+        const orderUserId = orderData.userId || null;
+        
+        // If we have phone number, verify it matches the order's phone number
+        if (orderUserId && account && orderData.phoneNumber) {
+          const normalizedOrderPhone = String(orderData.phoneNumber).replace(/^\+/, "").trim();
+          const normalizedAccount = account.replace(/^\+/, "").trim();
+          
+          if (normalizedOrderPhone === normalizedAccount) {
+            walletId = orderUserId;
+            console.log("✅ Found wallet ID from order lookup (phone verified)", {
+              invoiceId: paymentId,
+              orderId: orderDoc.id,
+              walletId,
+              phoneMatch: true,
+            });
+          } else {
+            console.warn("⚠️ Order phone number doesn't match webhook account", {
+              invoiceId: paymentId,
+              orderId: orderDoc.id,
+              orderPhone: orderData.phoneNumber,
+              webhookAccount: account,
+            });
+            // Still use the userId if phone doesn't match (might be different payment method)
+            walletId = orderUserId;
+          }
+        } else if (orderUserId) {
+          walletId = orderUserId;
           console.log("✅ Found wallet ID from order lookup", {
             invoiceId: paymentId,
             orderId: orderDoc.id,
@@ -292,7 +410,7 @@ exports.handleTopUpWebhook = onRequest({
     }
   }
 
-  // Strategy 2: Look up invoice_id → userId mapping in RTDB (fallback)
+  // Strategy 3: Look up invoice_id → userId mapping in RTDB (fallback)
   if (paymentId && !walletId) {
     try {
       const mappingRef = realtimeDb.ref(`wallet/pendingTopups/${paymentId}`);
@@ -318,66 +436,8 @@ exports.handleTopUpWebhook = onRequest({
     }
   }
 
-  // Strategy 2: Fallback to phone lookup (only if invoice mapping didn't work)
-  // Priority: Query by phone field first (finds Firebase UID docs), then direct ID lookup
-  if (!walletId && isFlatInvoicePayload && account) {
-    try {
-      const usersCol = firestore.collection("users");
-
-      // 1) FIRST: Query by phoneNumber / phone field (finds documents with Firebase UID as doc ID)
-      let querySnap = await usersCol.where("phoneNumber", "==", account).limit(1).get();
-
-      if (querySnap.empty) {
-        querySnap = await usersCol.where("phone", "==", account).limit(1).get();
-      }
-
-      if (!querySnap.empty) {
-        // Use the document ID as wallet ID (this should be the Firebase UID)
-        walletId = querySnap.docs[0].id;
-        console.log("👤 Resolved wallet ID from phone field query", {
-          account,
-          walletId,
-          docId: querySnap.docs[0].id,
-        });
-      } else {
-        // 2) FALLBACK: Direct document ID match (some schemas use phone as doc ID)
-        const directDoc = await usersCol.doc(account).get();
-        if (directDoc.exists) {
-          const docData = directDoc.data();
-          // Check if this document has a userId/uid field pointing to the real wallet ID
-          walletId = docData.userId || docData.uid || docData.id || null;
-          
-          if (!walletId) {
-            // Last resort: use the doc ID itself (phone number)
-            walletId = directDoc.id;
-            console.warn("⚠️ Using phone number as wallet ID - document has no userId/uid field", {
-              account,
-              walletId,
-              hint: "Create invoice mapping or add userId field to phone-number document",
-            });
-          } else {
-            console.log("👤 Resolved wallet ID from phone document's userId field", {
-              account,
-              walletId,
-            });
-          }
-        }
-      }
-
-      if (walletId) {
-        console.log("👤 Resolved wallet ID from account (fallback)", {
-          account,
-          walletId,
-          note: walletId === account ? "⚠️ Wallet ID equals phone - ensure invoice mapping is created" : "✅ Using resolved wallet ID",
-        });
-      }
-    } catch (err) {
-      console.error("❌ Failed to resolve wallet ID from account", {
-        account,
-        error: err.message,
-      });
-    }
-  }
+  // Strategy 4: Metadata user_id (if provided in IntaSend payload)
+  // This is already set in userId variable at the start, so no additional lookup needed
 
   if (!paymentId) {
     console.error("❌ Missing payment identifier (invoice_id or payment_id)");
@@ -403,7 +463,24 @@ exports.handleTopUpWebhook = onRequest({
     return;
   }
 
-  // Save payment record globally
+  // Check if payment was already processed (prevent duplicate credits)
+  const paymentRecordRef = realtimeDb.ref(`payments/${paymentId}`);
+  const existingPayment = await paymentRecordRef.get();
+  
+  if (existingPayment.exists()) {
+    const existingData = existingPayment.val();
+    if (existingData.user_id === walletId && existingData.processed_at) {
+      console.log("ℹ️ Payment already processed, skipping duplicate", {
+        paymentId,
+        walletId,
+        processedAt: existingData.processed_at,
+      });
+      res.status(200).send("OK - Already processed");
+      return;
+    }
+  }
+
+  // Save payment record globally (before processing to prevent duplicates)
   await realtimeDb.ref(`payments/${paymentId}`).set({
     ...payload,
     user_id: walletId,
@@ -426,13 +503,49 @@ exports.handleTopUpWebhook = onRequest({
           currency,
           completedAt,
           source: "intasend",
+          account: account, // Include phone number in transaction metadata
         },
     );
 
     // Step 2: Sync to Realtime Database (cached mirror)
     await syncBalanceToRealtime(walletId, balanceResult.newBalance, currency);
 
-    // Step 3: Update lastTopUp timestamp in Firestore
+    // Step 3: Update order status to "completed" in Firestore
+    if (paymentId) {
+      try {
+        const ordersCol = firestore.collection("orders");
+        // Find order by invoiceId
+        let orderQuery = ordersCol
+            .where("invoiceId", "==", paymentId)
+            .where("orderType", "==", "topup")
+            .limit(1);
+        
+        let orderSnap = await orderQuery.get();
+        
+        if (orderSnap.empty) {
+          // Try metadata.invoiceId
+          orderQuery = ordersCol
+              .where("metadata.invoiceId", "==", paymentId)
+              .where("orderType", "==", "topup")
+              .limit(1);
+          orderSnap = await orderQuery.get();
+        }
+        
+        if (!orderSnap.empty) {
+          const orderRef = ordersCol.doc(orderSnap.docs[0].id);
+          await orderRef.update({
+            status: "completed",
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+          console.log(`✅ Updated order status to completed: ${orderSnap.docs[0].id}`);
+        }
+      } catch (orderUpdateError) {
+        // Don't fail the webhook if order update fails
+        console.warn("⚠️ Failed to update order status (non-critical):", orderUpdateError.message);
+      }
+    }
+
+    // Step 4: Update lastTopUp timestamp in Firestore
     const userRef = firestore.collection("users").doc(walletId);
     await userRef.update({
       lastTopUp: admin.firestore.Timestamp.fromDate(new Date(completedAt)),
@@ -442,6 +555,7 @@ exports.handleTopUpWebhook = onRequest({
       paymentId,
       amount,
       currency,
+      account: account,
       previousBalance: balanceResult.previousBalance,
       newBalance: balanceResult.newBalance,
       transactionId: balanceResult.transactionId,
@@ -505,6 +619,7 @@ exports.createPayment = onCall(
       const currency = data.currency || "KES";
       const invoiceId = data.invoiceId || null;
       const checkoutUrl = data.checkoutUrl || null;
+      const phoneNumber = data.phoneNumber || null; // Phone number for webhook lookup
       const metadata = data.metadata || {};
 
       // Validate required fields
@@ -541,6 +656,20 @@ exports.createPayment = onCall(
           invoiceId: extractedInvoiceId,
         });
 
+        // Get user's phone number from Firestore if not provided
+        let userPhoneNumber = phoneNumber;
+        if (!userPhoneNumber) {
+          try {
+            const userDoc = await firestore.collection("users").doc(userId).get();
+            if (userDoc.exists) {
+              const userData = userDoc.data();
+              userPhoneNumber = userData.phoneNumber || userData.phone || null;
+            }
+          } catch (err) {
+            console.warn("⚠️ Could not fetch user phone number:", err.message);
+          }
+        }
+
         // Create order document in Firestore
         const orderData = {
           userId: userId,
@@ -549,11 +678,13 @@ exports.createPayment = onCall(
           amount: amount,
           currency: currency,
           invoiceId: extractedInvoiceId,
+          phoneNumber: userPhoneNumber, // Store phone number for webhook lookup
           metadata: {
             ...metadata,
             invoiceId: extractedInvoiceId,
             paymentId: extractedInvoiceId, // Also store as paymentId for webhook lookup
             checkoutUrl: checkoutUrl,
+            phoneNumber: userPhoneNumber, // Include in metadata too
             createdAt: new Date().toISOString(),
           },
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -573,8 +704,22 @@ exports.createPayment = onCall(
           orderId: orderId,
           amount: amount,
           currency: currency,
+          phoneNumber: userPhoneNumber, // Store phone number for webhook lookup
           createdAt: new Date().toISOString(),
         });
+
+        // Also create phone number to invoice mapping for direct lookup
+        if (userPhoneNumber) {
+          const phoneMappingRef = realtimeDb.ref(`wallet/phoneToInvoice/${userPhoneNumber}/${extractedInvoiceId}`);
+          await phoneMappingRef.set({
+            userId: userId,
+            orderId: orderId,
+            invoiceId: extractedInvoiceId,
+            amount: amount,
+            currency: currency,
+            createdAt: new Date().toISOString(),
+          });
+        }
 
         console.log(`✅ Created invoice mapping in RTDB: ${extractedInvoiceId}`);
 

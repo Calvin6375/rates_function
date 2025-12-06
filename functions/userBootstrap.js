@@ -55,11 +55,51 @@ exports.userBootstrap = onCall(
         const userDoc = await userRef.get();
 
         if (userDoc.exists) {
-          console.log(`ℹ️ User document already exists: ${uid}, skipping bootstrap`);
+          console.log(`ℹ️ User document already exists: ${uid}, merging bootstrap data`);
           
-          // Still ensure Realtime DB balance exists
           const existingData = userDoc.data();
-          const existingBalance = Number(existingData.balance || 0);
+          
+          // Merge only missing fields (preserve existing data from frontend)
+          const updates = {};
+          
+          // Only set email if not already present
+          if (!existingData.email && email) {
+            updates.email = email;
+          }
+          
+          // Only set name if not already present and we have displayName
+          if (!existingData.name && !existingData.firstName && displayName) {
+            updates.name = displayName;
+          }
+          
+          // Only set balance if not already present
+          if (!("balance" in existingData) && existingData.balance === undefined) {
+            updates.balance = 0;
+          }
+          
+          // Only set country if not already present
+          if (!("country" in existingData) && existingData.country === undefined) {
+            updates.country = null;
+          }
+          
+          // Only set createdAt if not already present
+          if (!existingData.createdAt) {
+            updates.createdAt = admin.firestore.FieldValue.serverTimestamp();
+          }
+          
+          // Always update updatedAt
+          updates.updatedAt = admin.firestore.FieldValue.serverTimestamp();
+          
+          // Only update if there are fields to add
+          if (Object.keys(updates).length > 0) {
+            await userRef.update(updates);
+            console.log(`✅ Merged bootstrap data into existing user document: ${uid}`, {
+              addedFields: Object.keys(updates),
+            });
+          }
+          
+          // Ensure Realtime DB balance exists
+          const existingBalance = Number(existingData.balance || existingData.fiatBalance || 0);
           const currency = existingData.currency || existingData.fiatCurrency || "USD";
           
           try {
@@ -71,11 +111,12 @@ exports.userBootstrap = onCall(
           return {
             success: true,
             userId: uid,
-            message: "User already exists, balance synced",
+            message: "User already exists, data merged and balance synced",
           };
         }
 
-        // Create user document in Firestore
+        // Create user document in Firestore (only if it doesn't exist)
+        // Use merge: true to preserve any data that might have been set concurrently
         const newUserData = {
           name: displayName || null,
           email: email,
@@ -85,7 +126,8 @@ exports.userBootstrap = onCall(
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         };
 
-        await userRef.set(newUserData);
+        // Use set with merge: true to preserve any existing fields
+        await userRef.set(newUserData, { merge: true });
 
         console.log(`✅ Created user document in Firestore: ${uid}`);
 

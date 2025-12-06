@@ -41,8 +41,9 @@ exports.onUserCreated = onDocumentCreated(
           updates.cryptoBalance = 0;
         }
 
-        // Add phoneNumber if it doesn't exist or is null/undefined
-        if (!("phoneNumber" in userData) || userData.phoneNumber === null || userData.phoneNumber === undefined) {
+        // Add phoneNumber only if it doesn't exist (don't overwrite existing values, even if null/undefined)
+        // This preserves phone numbers set by the frontend during registration
+        if (!("phoneNumber" in userData)) {
           updates.phoneNumber = "";
         }
 
