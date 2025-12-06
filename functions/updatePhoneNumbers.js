@@ -11,7 +11,13 @@ const db = admin.firestore();
  * 
  * Usage: Call this function to update phone numbers for all existing users
  */
-exports.updatePhoneNumbers = onCall(async (request) => {
+exports.updatePhoneNumbers = onCall(
+    {
+      region: "us-central1",
+      cpu: 0.25,
+      memory: "256MiB",
+    },
+    async (request) => {
   try {
     console.log("Starting phone number update...");
 
@@ -202,5 +208,12 @@ updatePhoneApp.post("/updatePhoneNumbers", async (req, res) => {
   }
 });
 
-exports.updatePhoneNumbersHttp = onRequest(updatePhoneApp);
+exports.updatePhoneNumbersHttp = onRequest(
+    {
+      region: "us-central1",
+      cpu: 0.25,
+      memory: "256MiB",
+    },
+    updatePhoneApp,
+);
 

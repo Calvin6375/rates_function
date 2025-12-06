@@ -34,7 +34,13 @@ async function verifyAdmin(adminId) {
  * @param {Object} request.data.updates - Fields to update (name, email, country, etc.)
  * @param {string} request.auth.uid - Admin user ID (from auth context)
  */
-exports.updateUserProfile = onCall(async (request) => {
+exports.updateUserProfile = onCall(
+    {
+      region: "us-central1",
+      cpu: 0.25,
+      memory: "256MiB",
+    },
+    async (request) => {
   try {
     const adminId = request.auth?.uid;
     if (!adminId) {
@@ -134,7 +140,13 @@ exports.updateUserProfile = onCall(async (request) => {
  * @param {string} request.data.reason - Reason for balance update (optional)
  * @param {string} request.auth.uid - Admin user ID
  */
-exports.updateUserBalance = onCall(async (request) => {
+exports.updateUserBalance = onCall(
+    {
+      region: "us-central1",
+      cpu: 0.25,
+      memory: "256MiB",
+    },
+    async (request) => {
   try {
     const adminId = request.auth?.uid;
     if (!adminId) {
@@ -240,7 +252,13 @@ exports.updateUserBalance = onCall(async (request) => {
  * @param {string} request.data.userId - Target user ID
  * @param {string} request.auth.uid - Admin user ID
  */
-exports.getUserData = onCall(async (request) => {
+exports.getUserData = onCall(
+    {
+      region: "us-central1",
+      cpu: 0.25,
+      memory: "256MiB",
+    },
+    async (request) => {
   try {
     const adminId = request.auth?.uid;
     if (!adminId) {
@@ -303,7 +321,13 @@ exports.getUserData = onCall(async (request) => {
  * @param {Object} request.data.kycData - Additional KYC data (optional)
  * @param {string} request.auth.uid - Admin user ID
  */
-exports.updateKYCStatus = onCall(async (request) => {
+exports.updateKYCStatus = onCall(
+    {
+      region: "us-central1",
+      cpu: 0.25,
+      memory: "256MiB",
+    },
+    async (request) => {
   try {
     const adminId = request.auth?.uid;
     if (!adminId) {
@@ -400,7 +424,13 @@ exports.updateKYCStatus = onCall(async (request) => {
  * @param {string} request.data.userId - Target user ID
  * @param {string} request.auth.uid - Admin user ID
  */
-exports.syncUserBalanceToRealtime = onCall(async (request) => {
+exports.syncUserBalanceToRealtime = onCall(
+    {
+      region: "us-central1",
+      cpu: 0.25,
+      memory: "256MiB",
+    },
+    async (request) => {
   try {
     const adminId = request.auth?.uid;
     if (!adminId) {
@@ -457,6 +487,183 @@ exports.syncUserBalanceToRealtime = onCall(async (request) => {
     }
 
     throw new HttpsError("internal", `Failed to sync balance: ${error.message}`);
+  }
+});
+
+/**
+ * Callable Function: Get Commission Configuration
+ * Admin-only function to retrieve current commission/fee settings
+ * 
+ * @param {Object} request.data - Request data (empty, no parameters needed)
+ * @param {string} request.auth.uid - Admin user ID
+ */
+exports.getCommissionConfig = onCall(
+    {
+      region: "us-central1",
+      cpu: 0.25,
+      memory: "256MiB",
+    },
+    async (request) => {
+  try {
+    const adminId = request.auth?.uid;
+    if (!adminId) {
+      throw new HttpsError("unauthenticated", "Authentication required");
+    }
+
+    // Verify admin role
+    const isAdminUser = await verifyAdmin(adminId);
+    if (!isAdminUser) {
+      throw new HttpsError("permission-denied", "Admin access required");
+    }
+
+    // Get commission configuration from Firestore
+    const configRef = firestore.collection("config").doc("fees");
+    const configDoc = await configRef.get();
+
+    if (!configDoc.exists) {
+      // Return default values if config doesn't exist
+      return {
+        success: true,
+        config: {
+          arbitrageFee: 1.5, // Default 1.5%
+          serviceFee: 1.5, // Default 1.5%
+        },
+        message: "Using default commission values (config document not found)",
+      };
+    }
+
+    const configData = configDoc.data();
+
+    return {
+      success: true,
+      config: {
+        arbitrageFee: configData.arbitrageFee || 1.5,
+        serviceFee: configData.serviceFee || 1.5,
+        updatedAt: configData.updatedAt?.toMillis?.() || null,
+      },
+    };
+  } catch (error) {
+    console.error("❌ Error getting commission config:", {
+      adminId: request.auth?.uid,
+      error: error.message,
+    });
+
+    if (error instanceof HttpsError) {
+      throw error;
+    }
+
+    throw new HttpsError("internal", `Failed to get commission config: ${error.message}`);
+  }
+});
+
+/**
+ * Callable Function: Update Commission Configuration
+ * Admin-only function to update commission/fee settings
+ * 
+ * @param {Object} request.data - Request data
+ * @param {number} request.data.arbitrageFee - Arbitrage fee percentage (e.g., 1.5 for 1.5%)
+ * @param {number} request.data.serviceFee - Service fee percentage (optional, e.g., 1.5 for 1.5%)
+ * @param {string} request.auth.uid - Admin user ID
+ */
+exports.updateCommissionConfig = onCall(
+    {
+      region: "us-central1",
+      cpu: 0.25,
+      memory: "256MiB",
+    },
+    async (request) => {
+  try {
+    const adminId = request.auth?.uid;
+    if (!adminId) {
+      throw new HttpsError("unauthenticated", "Authentication required");
+    }
+
+    // Verify admin role
+    const isAdminUser = await verifyAdmin(adminId);
+    if (!isAdminUser) {
+      throw new HttpsError("permission-denied", "Admin access required");
+    }
+
+    const {arbitrageFee, serviceFee} = request.data || {};
+
+    // Validate that at least one fee is provided
+    if (arbitrageFee === undefined && serviceFee === undefined) {
+      throw new HttpsError("invalid-argument", "At least one fee (arbitrageFee or serviceFee) must be provided");
+    }
+
+    // Get current config for logging
+    const configRef = firestore.collection("config").doc("fees");
+    const configDoc = await configRef.get();
+    const beforeData = configDoc.exists ? configDoc.data() : {};
+
+    // Prepare update data
+    const updateData = {
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedBy: adminId,
+    };
+
+    // Validate and add arbitrageFee if provided
+    if (arbitrageFee !== undefined) {
+      const feeValue = Number(arbitrageFee);
+      if (isNaN(feeValue) || feeValue < 0 || feeValue > 100) {
+        throw new HttpsError("invalid-argument", "arbitrageFee must be a number between 0 and 100");
+      }
+      updateData.arbitrageFee = feeValue;
+    }
+
+    // Validate and add serviceFee if provided
+    if (serviceFee !== undefined) {
+      const feeValue = Number(serviceFee);
+      if (isNaN(feeValue) || feeValue < 0 || feeValue > 100) {
+        throw new HttpsError("invalid-argument", "serviceFee must be a number between 0 and 100");
+      }
+      updateData.serviceFee = feeValue;
+    }
+
+    // Update or create config document
+    await configRef.set(updateData, {merge: true});
+
+    // Get updated data for logging
+    const afterDoc = await configRef.get();
+    const afterData = afterDoc.data();
+
+    // Log admin action
+    await logAdminAction(
+        adminId,
+        "system",
+        "updateCommission",
+        beforeData,
+        afterData,
+    );
+
+    console.log(`✅ Admin ${adminId} updated commission configuration`, {
+      arbitrageFee: updateData.arbitrageFee,
+      serviceFee: updateData.serviceFee,
+    });
+
+    return {
+      success: true,
+      config: {
+        arbitrageFee: afterData.arbitrageFee || 1.5,
+        serviceFee: afterData.serviceFee || 1.5,
+        updatedAt: afterData.updatedAt?.toMillis?.() || Date.now(),
+        updatedBy: adminId,
+      },
+      message: "Commission configuration updated successfully",
+    };
+  } catch (error) {
+    console.error("❌ Error updating commission config:", {
+      adminId: request.auth?.uid,
+      arbitrageFee: request.data?.arbitrageFee,
+      serviceFee: request.data?.serviceFee,
+      error: error.message,
+    });
+
+    if (error instanceof HttpsError) {
+      throw error;
+    }
+
+    throw new HttpsError("internal", `Failed to update commission config: ${error.message}`);
   }
 });
 

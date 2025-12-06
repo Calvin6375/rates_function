@@ -364,6 +364,96 @@ print('New Balance: ${result.data['newBalance']}');
 
 ---
 
+### 8. Get Commission Configuration (Admin Only)
+
+**Function Name**: `getCommissionConfig`
+
+**Description**: Admin-only function to retrieve current commission/fee settings.
+
+**Authentication**: Required (Admin user only)
+
+**Request Body**: (empty - no parameters needed)
+```typescript
+{}
+```
+
+**Response**:
+```typescript
+{
+  success: boolean;
+  config: {
+    arbitrageFee: number;      // e.g., 1.5 (for 1.5%)
+    serviceFee: number;         // e.g., 1.5 (for 1.5%)
+    updatedAt: number | null;   // Timestamp in milliseconds
+  };
+  message?: string;
+}
+```
+
+**Example - Flutter**:
+```dart
+final getCommissionConfig = functions.httpsCallable('getCommissionConfig');
+
+final result = await getCommissionConfig.call();
+final config = result.data['config'];
+print('Arbitrage Fee: ${config['arbitrageFee']}%');
+print('Service Fee: ${config['serviceFee']}%');
+```
+
+---
+
+### 9. Update Commission Configuration (Admin Only)
+
+**Function Name**: `updateCommissionConfig`
+
+**Description**: Admin-only function to update commission/fee settings for arbitrage and service fees.
+
+**Authentication**: Required (Admin user only)
+
+**Request Body**:
+```typescript
+{
+  arbitrageFee?: number;  // Optional: Arbitrage fee percentage (e.g., 1.5 for 1.5%)
+  serviceFee?: number;    // Optional: Service fee percentage (e.g., 1.5 for 1.5%)
+}
+```
+
+**Note**: At least one fee must be provided. Both are optional but at least one is required.
+
+**Response**:
+```typescript
+{
+  success: boolean;
+  config: {
+    arbitrageFee: number;
+    serviceFee: number;
+    updatedAt: number;
+    updatedBy: string;    // Admin user ID who made the update
+  };
+  message: string;
+}
+```
+
+**Example - Flutter**:
+```dart
+final updateCommissionConfig = functions.httpsCallable('updateCommissionConfig');
+
+final result = await updateCommissionConfig.call({
+  'arbitrageFee': 2.0,  // Set to 2%
+  'serviceFee': 1.5,    // Keep service fee at 1.5%
+});
+
+print('Success: ${result.data['message']}');
+print('New Arbitrage Fee: ${result.data['config']['arbitrageFee']}%');
+```
+
+**Error Codes**:
+- `unauthenticated` - User not logged in
+- `permission-denied` - User is not an admin
+- `invalid-argument` - Invalid fee values (must be 0-100)
+
+---
+
 ## HTTP REST Endpoints
 
 REST endpoints are accessible via HTTP requests. They support CORS and can be called from web applications.
@@ -763,6 +853,108 @@ if (result.success) {
 
 ---
 
+#### 2.7. Get Commission Configuration
+
+**Endpoint**: `GET /api/config/fees`
+
+**Description**: Get current commission/fee settings.
+
+**Authentication**: Required (Admin only - Bearer token)
+
+**Request Headers**:
+```
+Authorization: Bearer {firebase-auth-token}
+```
+
+**Response (200 OK)**:
+```json
+{
+  "success": true,
+  "data": {
+    "arbitrageFee": 1.5,
+    "serviceFee": 1.5,
+    "updatedAt": "2025-01-04T12:00:00.000Z",
+    "updatedBy": "admin-user-id"
+  }
+}
+```
+
+**Example**:
+```javascript
+const response = await fetch(
+  'https://us-central1-truepay-72060.cloudfunctions.net/api/config/fees',
+  {
+    headers: {
+      'Authorization': `Bearer ${firebaseAuthToken}`,
+    },
+  }
+);
+const result = await response.json();
+console.log('Arbitrage Fee:', result.data.arbitrageFee + '%');
+```
+
+---
+
+#### 2.8. Update Commission Configuration
+
+**Endpoint**: `PUT /api/config/fees`
+
+**Description**: Update commission/fee settings for arbitrage and service fees.
+
+**Authentication**: Required (Admin only - Bearer token)
+
+**Request Body**:
+```typescript
+{
+  arbitrageFee?: number;  // Optional: Arbitrage fee percentage (e.g., 1.5 for 1.5%)
+  serviceFee?: number;    // Optional: Service fee percentage (e.g., 1.5 for 1.5%)
+}
+```
+
+**Note**: At least one fee must be provided.
+
+**Response (200 OK)**:
+```json
+{
+  "success": true,
+  "data": {
+    "arbitrageFee": 2.0,
+    "serviceFee": 1.5,
+    "updatedAt": "2025-01-04T12:00:00.000Z",
+    "updatedBy": "admin-user-id"
+  },
+  "message": "Commission configuration updated successfully"
+}
+```
+
+**Error Responses**:
+- `400 Bad Request` - Invalid fee values (must be 0-100) or no fees provided
+- `401 Unauthorized` - Not authenticated
+- `403 Forbidden` - Not an admin user
+- `500 Internal Server Error` - Server error
+
+**Example**:
+```javascript
+const response = await fetch(
+  'https://us-central1-truepay-72060.cloudfunctions.net/api/config/fees',
+  {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${firebaseAuthToken}`,
+    },
+    body: JSON.stringify({
+      arbitrageFee: 2.0,
+      serviceFee: 1.5,
+    }),
+  }
+);
+const result = await response.json();
+console.log('Success:', result.message);
+```
+
+---
+
 ## Real-time Data Listening
 
 ### Wallet Balance (Realtime Database)
@@ -1064,6 +1256,74 @@ For issues or questions:
 - Review Firebase Functions logs in Firebase Console
 - Verify authentication and permissions
 - Check network connectivity and CORS settings
+
+---
+
+## Troubleshooting
+
+### Common Errors
+
+#### 1. "Failed to fetch rates" Error
+
+**Possible Causes**:
+- Network connectivity issues
+- Binance API is down or rate-limited
+- Firestore configuration missing
+- Cloud Function timeout
+
+**Solutions**:
+1. Check Cloud Functions logs: `firebase functions:log --only getBinanceRates`
+2. Verify Firestore `config/fees` document exists
+3. Test Binance API connectivity
+4. Check function timeout settings
+
+See `TROUBLESHOOTING.md` for detailed debugging steps.
+
+#### 2. FCM Service Worker Error
+
+**Error**: `Messaging: We are unable to register the default service worker`
+
+**Solution**:
+1. Create `firebase-messaging-sw.js` in your public directory
+2. Use the template in `firebase-messaging-sw.js.template`
+3. Configure with your Firebase project credentials
+4. Deploy to hosting service
+
+See `TROUBLESHOOTING.md` for complete instructions.
+
+#### 3. "unauthenticated" Error
+
+**Cause**: User not logged in
+
+**Solution**: Ensure user is authenticated before calling functions:
+
+```javascript
+const auth = getAuth();
+const user = auth.currentUser;
+if (!user) {
+  // Redirect to login
+  return;
+}
+```
+
+#### 4. "permission-denied" Error on Admin Functions
+
+**Cause**: User is not an admin
+
+**Solution**: Set `isAdmin: true` in user document:
+- Firestore path: `users/{userId}`
+- Field: `isAdmin: true`
+
+---
+
+## Support
+
+For issues or questions:
+- Check `TROUBLESHOOTING.md` for detailed error resolution
+- Review Firebase Functions logs in Firebase Console
+- Verify authentication and permissions
+- Check network connectivity and CORS settings
+- See main `readme.md` for backend architecture details
 
 ---
 

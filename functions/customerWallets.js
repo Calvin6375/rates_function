@@ -55,6 +55,42 @@ app.use((req, res, next) => {
 });
 
 /**
+ * GET /binance/rates
+ * Get Binance exchange rates for a currency pair
+ * Query params: fiat (optional, default: "KES"), asset (optional, default: "USDT")
+ */
+app.get("/binance/rates", async (req, res) => {
+  try {
+    const {getBinanceRatesLogic} = require("./rates");
+    const fiat = req.query.fiat || "KES";
+    const asset = req.query.asset || "USDT";
+
+    const result = await getBinanceRatesLogic(fiat, asset);
+
+    // Convert Firestore Timestamps to milliseconds for JSON response
+    const response = {
+      marketPrice: result.marketPrice,
+      customerPrice: result.customerPrice,
+      feePercentage: result.feePercentage,
+      currencyPair: result.currencyPair,
+      asset: result.asset,
+      fiat: result.fiat,
+      validUntil: result.validUntil?.toMillis?.() || Date.now() + 300000,
+      updatedAt: result.updatedAt?.toMillis?.() || Date.now(),
+      source: result.source || "fresh",
+    };
+
+    res.status(200).json(response);
+  } catch (err) {
+    console.error("Error in /binance/rates endpoint:", err.message);
+    res.status(500).json({
+      error: "internal",
+      message: `Failed to fetch rates: ${err.message}`,
+    });
+  }
+});
+
+/**
  * GET /customer-wallets
  * List all customer wallets with pagination
  * Reads from /users collection (new architecture) and /customerWallets (legacy)
@@ -852,8 +888,220 @@ app.post("/customer-wallets", async (req, res) => {
   }
 });
 
+/**
+ * Helper: Verify admin from Firebase Auth token (for REST API)
+ * @param {Object} req - Express request object
+ * @returns {Promise<{isAdmin: boolean, adminId: string | null}>}
+ */
+async function verifyAdminFromRequest(req) {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return {isAdmin: false, adminId: null};
+    }
+
+    const token = authHeader.split("Bearer ")[1];
+    const decodedToken = await admin.auth().verifyIdToken(token);
+    const adminId = decodedToken.uid;
+
+    // Check if user is admin using same logic as callable functions
+    const {isAdmin: checkIsAdmin} = require("./utils/validation");
+    const adminDoc = await db.collection("users").doc(adminId).get();
+    if (!adminDoc.exists) {
+      return {isAdmin: false, adminId: null};
+    }
+
+    const userData = adminDoc.data();
+    const isAdminUser = checkIsAdmin(userData);
+
+    return {isAdmin: isAdminUser, adminId: isAdminUser ? adminId : null};
+  } catch (error) {
+    console.error("Error verifying admin from request:", error.message);
+    return {isAdmin: false, adminId: null};
+  }
+}
+
+/**
+ * GET /config/fees
+ * Get current commission/fee configuration
+ * Authentication: Required (Admin only)
+ */
+app.get("/config/fees", async (req, res) => {
+  try {
+    // Verify admin
+    const {isAdmin: isAdminUser, adminId} = await verifyAdminFromRequest(req);
+    if (!isAdminUser) {
+      res.status(403).json({
+        success: false,
+        error: "Forbidden",
+        message: "Admin access required",
+      });
+      return;
+    }
+
+    // Get commission configuration from Firestore
+    const configRef = db.collection("config").doc("fees");
+    const configDoc = await configRef.get();
+
+    if (!configDoc.exists) {
+      // Return default values if config doesn't exist
+      res.status(200).json({
+        success: true,
+        data: {
+          arbitrageFee: 1.5,
+          serviceFee: 1.5,
+        },
+        message: "Using default commission values",
+      });
+      return;
+    }
+
+    const configData = configDoc.data();
+
+    res.status(200).json({
+      success: true,
+      data: {
+        arbitrageFee: configData.arbitrageFee || 1.5,
+        serviceFee: configData.serviceFee || 1.5,
+        updatedAt: configData.updatedAt?.toDate?.()?.toISOString() || null,
+        updatedBy: configData.updatedBy || null,
+      },
+    });
+  } catch (error) {
+    console.error("Error getting commission config:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to get commission configuration",
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * PUT /config/fees
+ * Update commission/fee configuration
+ * Authentication: Required (Admin only)
+ * Body: { arbitrageFee?: number, serviceFee?: number }
+ */
+app.put("/config/fees", async (req, res) => {
+  try {
+    // Verify admin
+    const {isAdmin: isAdminUser, adminId} = await verifyAdminFromRequest(req);
+    if (!isAdminUser || !adminId) {
+      res.status(403).json({
+        success: false,
+        error: "Forbidden",
+        message: "Admin access required",
+      });
+      return;
+    }
+
+    const {arbitrageFee, serviceFee} = req.body || {};
+
+    // Validate that at least one fee is provided
+    if (arbitrageFee === undefined && serviceFee === undefined) {
+      res.status(400).json({
+        success: false,
+        error: "Invalid request",
+        message: "At least one fee (arbitrageFee or serviceFee) must be provided",
+      });
+      return;
+    }
+
+    // Get current config for logging
+    const configRef = db.collection("config").doc("fees");
+    const configDoc = await configRef.get();
+    const beforeData = configDoc.exists ? configDoc.data() : {};
+
+    // Prepare update data
+    const updateData = {
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedBy: adminId,
+    };
+
+    // Validate and add arbitrageFee if provided
+    if (arbitrageFee !== undefined) {
+      const feeValue = Number(arbitrageFee);
+      if (isNaN(feeValue) || feeValue < 0 || feeValue > 100) {
+        res.status(400).json({
+          success: false,
+          error: "Invalid request",
+          message: "arbitrageFee must be a number between 0 and 100",
+        });
+        return;
+      }
+      updateData.arbitrageFee = feeValue;
+    }
+
+    // Validate and add serviceFee if provided
+    if (serviceFee !== undefined) {
+      const feeValue = Number(serviceFee);
+      if (isNaN(feeValue) || feeValue < 0 || feeValue > 100) {
+        res.status(400).json({
+          success: false,
+          error: "Invalid request",
+          message: "serviceFee must be a number between 0 and 100",
+        });
+        return;
+      }
+      updateData.serviceFee = feeValue;
+    }
+
+    // Update or create config document
+    await configRef.set(updateData, {merge: true});
+
+    // Get updated data
+    const afterDoc = await configRef.get();
+    const afterData = afterDoc.data();
+
+    // Log admin action
+    const {logAdminAction} = require("./utils/transactions");
+    try {
+      await logAdminAction(
+          adminId,
+          "system",
+          "updateCommission",
+          beforeData,
+          afterData,
+      );
+    } catch (logError) {
+      console.error("Failed to log admin action:", logError.message);
+    }
+
+    console.log(`✅ Admin ${adminId} updated commission configuration via REST API`, {
+      arbitrageFee: updateData.arbitrageFee,
+      serviceFee: updateData.serviceFee,
+    });
+
+    res.status(200).json({
+      success: true,
+      data: {
+        arbitrageFee: afterData.arbitrageFee || 1.5,
+        serviceFee: afterData.serviceFee || 1.5,
+        updatedAt: afterData.updatedAt?.toDate?.()?.toISOString() || new Date().toISOString(),
+        updatedBy: adminId,
+      },
+      message: "Commission configuration updated successfully",
+    });
+  } catch (error) {
+    console.error("Error updating commission config:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to update commission configuration",
+      message: error.message,
+    });
+  }
+});
+
 // Export as Firebase Function
 // Name it 'api' so the URL becomes /api/customer-wallets
 // CORS is handled by Express middleware above
-exports.api = onRequest(app);
+exports.api = onRequest(
+    {
+      region: "us-central1",
+      cpu: 0.25,
+      memory: "256MiB",
+    },
+    app,
+);
 

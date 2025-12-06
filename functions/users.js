@@ -14,6 +14,8 @@ exports.onUserCreated = onDocumentCreated(
     {
       document: "users/{userId}",
       region: "us-central1", // Explicitly set region
+      cpu: 0.25,
+      memory: "256MiB",
     },
     async (event) => {
       try {

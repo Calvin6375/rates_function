@@ -137,7 +137,14 @@ async function writeRatesAtomically(currencyPair, ratesData) {
  * Scheduled function: Fetch Binance P2P rates
  * Supports multiple currency pairs (KES, NGN, GHS, etc.)
  */
-exports.fetchBinanceRates = onSchedule("0 0 * * *", async () => {
+exports.fetchBinanceRates = onSchedule(
+    {
+      schedule: "0 0 * * *",
+      region: "us-central1",
+      cpu: 0.25,
+      memory: "256MiB",
+    },
+    async () => {
   // Reset fee cache for new execution
   feeCache = null;
 
@@ -224,19 +231,51 @@ async function getBinanceRatesLogic(fiat = "KES", asset = "USDT") {
   };
 }
 
+// Export the logic function for use in other modules
+exports.getBinanceRatesLogic = getBinanceRatesLogic;
+
 /**
  * Callable function: Get Binance rates for a specific currency pair
  * @param {Object} data - Request data with optional fiat and asset
  * @param {Object} context - Call context
  */
-exports.getBinanceRates = onCall(async (request) => {
+exports.getBinanceRates = onCall(
+    {
+      region: "us-central1",
+      cpu: 0.25,
+      memory: "256MiB",
+    },
+    async (request) => {
   try {
     const fiat = request.data?.fiat || "KES";
     const asset = request.data?.asset || "USDT";
     return await getBinanceRatesLogic(fiat, asset);
   } catch (err) {
-    console.error("Error in getBinanceRates:", err.message);
-    throw new HttpsError("internal", `Failed to fetch rates: ${err.message}`);
+    // Enhanced error logging with more context
+    console.error("Error in getBinanceRates:", {
+      error: err.message,
+      stack: err.stack,
+      fiat: request.data?.fiat || "KES",
+      asset: request.data?.asset || "USDT",
+      errorType: err.constructor.name,
+      response: err.response?.data,
+      statusCode: err.response?.status,
+    });
+
+    // Provide more specific error messages
+    let errorMessage = "Failed to fetch rates";
+    
+    if (err.message.includes("No Binance offers found")) {
+      errorMessage = `No exchange rate available for ${asset}/${fiat}. Please try again later.`;
+    } else if (err.response?.status === 429) {
+      errorMessage = "Rate limit exceeded. Please try again in a moment.";
+    } else if (err.code === "ENOTFOUND" || err.code === "ETIMEDOUT") {
+      errorMessage = "Network error. Please check your connection and try again.";
+    } else if (err.message) {
+      errorMessage = `Failed to fetch rates: ${err.message}`;
+    }
+
+    throw new HttpsError("internal", errorMessage);
   }
 });
 
@@ -247,6 +286,9 @@ exports.getBinanceRates = onCall(async (request) => {
 exports.fetchBinanceRatesHttp = onRequest(
     {
       cors: true,
+      region: "us-central1",
+      cpu: 0.25,
+      memory: "256MiB",
     },
     async (req, res) => {
       // Handle CORS preflight

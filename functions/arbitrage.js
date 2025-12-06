@@ -197,7 +197,14 @@ async function writeArbitrageAtomically(currencyPair, arbitrageData) {
 /**
  * Scheduled function: Fetch arbitrage rates for multiple currency pairs
  */
-exports.fetchArbitrageRates = onSchedule("0 0 * * *", async () => {
+exports.fetchArbitrageRates = onSchedule(
+    {
+      schedule: "0 0 * * *",
+      region: "us-central1",
+      cpu: 0.25,
+      memory: "256MiB",
+    },
+    async () => {
   // Reset fee cache for new execution
   feeCache = null;
 
@@ -244,7 +251,13 @@ exports.fetchArbitrageRates = onSchedule("0 0 * * *", async () => {
  * Callable function: Get arbitrage rates for a specific currency pair
  * @param {Object} request - Request data with optional fiat
  */
-exports.getArbitrageRates = onCall(async (request) => {
+exports.getArbitrageRates = onCall(
+    {
+      region: "us-central1",
+      cpu: 0.25,
+      memory: "256MiB",
+    },
+    async (request) => {
   try {
     const fiat = request.data?.fiat || "KES";
     const currencyPair = `USD/${fiat}`;

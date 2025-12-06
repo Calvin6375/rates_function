@@ -1,0 +1,74 @@
+// Firebase Cloud Messaging Service Worker Template
+// 
+// INSTRUCTIONS:
+// 1. Copy this file to your admin dashboard's public directory as "firebase-messaging-sw.js"
+// 2. Replace the placeholder values with your actual Firebase configuration
+// 3. Update the icon path to match your app's icon
+// 4. Deploy the file to your hosting service
+//
+// File Location: public/firebase-messaging-sw.js
+
+// Import and configure the Firebase SDK
+// These scripts are made available when the app is served or deployed on Firebase Hosting
+
+importScripts('https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js');
+importScripts('https://www.gstatic.com/firebasejs/10.7.1/firebase-messaging-compat.js');
+
+// Initialize Firebase in the service worker
+// Replace these values with your Firebase project configuration
+firebase.initializeApp({
+  apiKey: "YOUR_API_KEY",
+  authDomain: "truepay-72060.firebaseapp.com",
+  projectId: "truepay-72060",
+  storageBucket: "truepay-72060.appspot.com",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId: "YOUR_APP_ID"
+});
+
+// Retrieve an instance of Firebase Messaging so that it can handle background messages
+const messaging = firebase.messaging();
+
+// Optional: Handle background messages
+messaging.onBackgroundMessage((payload) => {
+  console.log('[firebase-messaging-sw.js] Received background message ', payload);
+  
+  // Customize notification here
+  const notificationTitle = payload.notification?.title || payload.data?.title || 'New Notification';
+  const notificationOptions = {
+    body: payload.notification?.body || payload.data?.body || 'You have a new message',
+    icon: payload.notification?.icon || payload.data?.icon || '/icon-192x192.png', // Add your app icon
+    badge: '/badge-72x72.png', // Optional badge icon
+    tag: payload.data?.tag || 'default', // Tag to replace notifications
+    requireInteraction: false,
+    silent: false,
+  };
+
+  return self.registration.showNotification(notificationTitle, notificationOptions);
+});
+
+// Optional: Handle notification clicks
+self.addEventListener('notificationclick', (event) => {
+  console.log('[firebase-messaging-sw.js] Notification click received.');
+
+  event.notification.close();
+
+  // This looks to see if the current is already open and focuses if it is
+  event.waitUntil(
+    clients.matchAll({
+      type: 'window'
+    }).then((clientList) => {
+      for (let i = 0; i < clientList.length; i++) {
+        const client = clientList[i];
+        if (client.url === '/' && 'focus' in client) {
+          return client.focus();
+        }
+      }
+      if (clients.openWindow) {
+        // You can customize the URL to open when notification is clicked
+        const urlToOpen = event.notification.data?.url || '/';
+        return clients.openWindow(urlToOpen);
+      }
+    })
+  );
+});
+

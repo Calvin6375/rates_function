@@ -14,6 +14,8 @@ exports.syncBalance = onDocumentUpdated(
     {
       document: "users/{uid}",
       region: "us-central1",
+      cpu: 0.25,
+      memory: "256MiB",
     },
     async (event) => {
       try {

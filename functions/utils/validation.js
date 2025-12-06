@@ -43,7 +43,9 @@ function isValidEmail(email) {
  * @returns {boolean} True if user is admin
  */
 function isAdmin(userData) {
-  return userData && userData.role === "admin";
+  if (!userData) return false;
+  // Check for role field or isAdmin field
+  return userData.role === "admin" || userData.isAdmin === true;
 }
 
 /**

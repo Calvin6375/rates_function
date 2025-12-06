@@ -1,6 +1,6 @@
 /* eslint-disable max-len */
 /* eslint-disable require-jsdoc */
-const {onRequest} = require("firebase-functions/v2/https");
+const {onRequest, onCall, HttpsError} = require("firebase-functions/v2/https");
 const {defineSecret} = require("firebase-functions/params");
 const admin = require("./admin");
 const crypto = require("crypto");
@@ -64,7 +64,12 @@ function verifySignature(sharedSecret, req) {
   return crypto.timingSafeEqual(receivedBuffer, computedBuffer);
 }
 
-exports.handleTopUpWebhook = onRequest({secrets: [intaSendSecret, intaSendChallenge]}, async (req, res) => {
+exports.handleTopUpWebhook = onRequest({
+  secrets: [intaSendSecret, intaSendChallenge],
+  region: "us-central1",
+  cpu: 0.25,
+  memory: "256MiB",
+}, async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).send("Method Not Allowed");
     return;
@@ -459,3 +464,148 @@ exports.handleTopUpWebhook = onRequest({secrets: [intaSendSecret, intaSendChalle
     });
   }
 });
+
+/**
+ * Cloud Function: Create Payment Order
+ * Callable function to create a payment order record after IntaSend checkout creation
+ * Uses v2 callable function (supports Node.js 22)
+ * 
+ * Creates:
+ * 1. Order document in Firestore: /orders/{orderId}
+ * 2. Invoice mapping in Realtime DB: /wallet/pendingTopups/{invoiceId}
+ * 
+ * This order record is used by the webhook handler to credit the correct user's wallet
+ */
+exports.createPayment = onCall(
+    {
+      region: "us-central1",
+      cpu: 0.25,
+      memory: "256MiB",
+    },
+    async (request) => {
+      // Get the authenticated user from the request
+      const auth = request.auth;
+      if (!auth) {
+        throw new HttpsError("unauthenticated", "User must be authenticated to create payment");
+      }
+
+      const userId = auth.uid;
+      const data = request.data || {};
+
+      console.log("📥 Received createPayment request:", {
+        hasAmount: !!data.amount,
+        hasCurrency: !!data.currency,
+        hasInvoiceId: !!data.invoiceId,
+        hasCheckoutUrl: !!data.checkoutUrl,
+        checkoutUrl: data.checkoutUrl,
+      });
+
+      // Extract payment details
+      const amount = Number(data.amount);
+      const currency = data.currency || "KES";
+      const invoiceId = data.invoiceId || null;
+      const checkoutUrl = data.checkoutUrl || null;
+      const metadata = data.metadata || {};
+
+      // Validate required fields
+      if (!amount || amount <= 0) {
+        throw new HttpsError("invalid-argument", "Amount must be a positive number");
+      }
+
+      if (!currency) {
+        throw new HttpsError("invalid-argument", "Currency is required");
+      }
+
+      // Extract invoice ID from checkout URL if not provided directly
+      let extractedInvoiceId = invoiceId;
+      if (!extractedInvoiceId && checkoutUrl) {
+        // Extract invoice ID from IntaSend checkout URL
+        // Format: https://payment.intasend.com/checkout/{invoice-id}/express/
+        const match = checkoutUrl.match(/checkout\/([^\/]+)/);
+        if (match && match[1]) {
+          extractedInvoiceId = match[1];
+        }
+      }
+
+      if (!extractedInvoiceId) {
+        throw new HttpsError(
+            "invalid-argument",
+            "Either invoiceId or checkoutUrl with invoice ID must be provided",
+        );
+      }
+
+      try {
+        console.log(`🔄 Creating payment order for user: ${userId}`, {
+          amount,
+          currency,
+          invoiceId: extractedInvoiceId,
+        });
+
+        // Create order document in Firestore
+        const orderData = {
+          userId: userId,
+          orderType: "topup",
+          status: "pending",
+          amount: amount,
+          currency: currency,
+          invoiceId: extractedInvoiceId,
+          metadata: {
+            ...metadata,
+            invoiceId: extractedInvoiceId,
+            paymentId: extractedInvoiceId, // Also store as paymentId for webhook lookup
+            checkoutUrl: checkoutUrl,
+            createdAt: new Date().toISOString(),
+          },
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
+
+        const orderRef = firestore.collection("orders").doc();
+        await orderRef.set(orderData);
+
+        const orderId = orderRef.id;
+        console.log(`✅ Created order document: ${orderId}`);
+
+        // Create invoice mapping in Realtime Database for webhook lookup
+        const mappingRef = realtimeDb.ref(`wallet/pendingTopups/${extractedInvoiceId}`);
+        await mappingRef.set({
+          userId: userId,
+          orderId: orderId,
+          amount: amount,
+          currency: currency,
+          createdAt: new Date().toISOString(),
+        });
+
+        console.log(`✅ Created invoice mapping in RTDB: ${extractedInvoiceId}`);
+
+        // Return order data - always include all fields for Flutter compatibility
+        const response = {
+          success: true,
+          orderId: orderId,
+          invoiceId: extractedInvoiceId,
+          paymentId: extractedInvoiceId, // Flutter expects paymentId (same as invoiceId for IntaSend)
+          amount: amount,
+          currency: currency,
+          status: "pending",
+          checkoutUrl: checkoutUrl || "", // Always include, use empty string if not provided
+          createdAt: new Date().toISOString(),
+        };
+
+        console.log("✅ Returning payment creation response:", {
+          orderId: response.orderId,
+          invoiceId: response.invoiceId,
+          hasCheckoutUrl: !!response.checkoutUrl,
+        });
+
+        return response;
+      } catch (error) {
+        console.error("❌ Error creating payment order:", {
+          userId: userId,
+          error: error.message,
+          stack: error.stack,
+        });
+
+        throw new HttpsError("internal", `Failed to create payment order: ${error.message}`);
+      }
+    },
+);

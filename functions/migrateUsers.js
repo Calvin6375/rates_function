@@ -10,7 +10,13 @@ const db = admin.firestore();
  * Usage: Call this function once to update all existing users
  * This is a one-time migration function
  */
-exports.migrateExistingUsers = onCall(async (request) => {
+exports.migrateExistingUsers = onCall(
+    {
+      region: "us-central1",
+      cpu: 0.25,
+      memory: "256MiB",
+    },
+    async (request) => {
   try {
     // Optional: Add authentication check here
     // const auth = request.auth;
@@ -226,5 +232,12 @@ migrateApp.post("/migrateUsers", async (req, res) => {
   }
 });
 
-exports.migrateUsersHttp = onRequest(migrateApp);
+exports.migrateUsersHttp = onRequest(
+    {
+      region: "us-central1",
+      cpu: 0.25,
+      memory: "256MiB",
+    },
+    migrateApp,
+);
 
