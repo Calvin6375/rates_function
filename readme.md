@@ -1,35 +1,47 @@
-# Rates Function - Firebase Cloud Functions
+# TruePay Backend - Firebase Cloud Functions
 
-A comprehensive Firebase Cloud Functions application that provides real-time cryptocurrency exchange rate services and payment processing capabilities. The application fetches P2P exchange rates from Binance, calculates arbitrage opportunities, and handles payment webhooks for wallet top-ups.
+A comprehensive Firebase Cloud Functions backend application that provides real-time cryptocurrency exchange rate services, payment processing, user management, and wallet operations for the TruePay platform.
 
 ## Table of Contents
 
 - [Overview](#overview)
 - [System Architecture](#system-architecture)
-- [How It Works](#how-it-works)
-  - [Binance P2P Rate Fetcher](#1-binance-p2p-rate-fetcher)
-  - [Arbitrage Rate Calculator](#2-arbitrage-rate-calculator)
-  - [Payment Webhook Handler](#3-payment-webhook-handler)
-- [Data Flow](#data-flow)
+- [Cloud Functions Reference](#cloud-functions-reference)
+  - [Scheduled Functions](#scheduled-functions)
+  - [Callable Functions](#callable-functions)
+  - [HTTP Endpoints](#http-endpoints)
+  - [Firestore Triggers](#firestore-triggers)
+  - [Auth Triggers](#auth-triggers)
+- [Admin Functions](#admin-functions)
+- [Database Structure](#database-structure)
+- [Payment Processing](#payment-processing)
+- [Balance Management](#balance-management)
 - [API Reference](#api-reference)
 - [Configuration](#configuration)
 - [Security](#security)
-- [Error Handling](#error-handling)
 - [Development](#development)
 - [Deployment](#deployment)
 - [Testing](#testing)
+- [Troubleshooting](#troubleshooting)
 
 ---
 
 ## Overview
 
-This application serves as a backend service for a cryptocurrency exchange platform, providing:
+This backend system powers the TruePay cryptocurrency exchange platform, providing:
 
 1. **Real-time P2P Exchange Rates**: Fetches USDT exchange rates for multiple African currencies (KES, NGN, GHS) from Binance P2P marketplace
 2. **Arbitrage Calculations**: Calculates profitable conversion paths for USD → USDT → Local Fiat currency
 3. **Payment Processing**: Handles webhook callbacks from IntaSend payment gateway to update user wallet balances
+4. **User Management**: Complete user lifecycle management with Firebase Authentication integration
+5. **Wallet Operations**: Secure balance management with transaction logging and real-time sync
+6. **Admin Dashboard**: Admin-only functions for user management, balance adjustments, and KYC verification
 
-The system uses **Firebase Functions v2** with scheduled triggers, callable functions, and HTTP endpoints. Data is stored in both **Firestore** (for persistent storage and analytics) and **Realtime Database** (for real-time updates to client applications).
+**Technology Stack:**
+- **Firebase Functions v2** - Serverless compute platform
+- **Firestore** - Master database for persistent storage and transactions
+- **Realtime Database** - Cached mirror for real-time client updates
+- **Node.js 22** - Runtime environment
 
 ---
 
@@ -37,649 +49,127 @@ The system uses **Firebase Functions v2** with scheduled triggers, callable func
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Firebase Cloud Functions                   │
+│              Firebase Cloud Functions                        │
 ├─────────────────────────────────────────────────────────────┤
-│                                                               │
-│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────┐  │
-│  │  Scheduled Jobs  │  │  Callable Funcs  │  │   HTTP   │  │
-│  │                  │  │                  │  │ Endpoints│  │
-│  │ • fetchBinance   │  │ • getBinance     │  │ • fetch  │  │
-│  │   Rates          │  │   Rates          │  │   Binance│  │
-│  │ • fetchArbitrage │  │ • getArbitrage   │  │   Rates  │  │
-│  │   Rates          │  │   Rates          │  │ • handle │  │
-│  │                  │  │                  │  │   TopUp   │  │
-│  │                  │  │                  │  │   Webhook │  │
-│  └────────┬─────────┘  └────────┬─────────┘  └────┬─────┘  │
-│           │                     │                   │        │
-│           └─────────────────────┴───────────────────┘        │
-│                              │                               │
-│                    ┌─────────▼─────────┐                    │
-│                    │   Business Logic   │                    │
-│                    │                    │                    │
-│                    │  • rates.js        │                    │
-│                    │  • arbitrage.js    │                    │
-│                    │  • payments.js     │                    │
-│                    └─────────┬─────────┘                    │
-│                              │                               │
-└──────────────────────────────┼───────────────────────────────┘
-                               │
-        ┌──────────────────────┼──────────────────────┐
-        │                      │                      │
-        ▼                      ▼                      ▼
-┌───────────────┐    ┌───────────────┐    ┌──────────────┐
-│   Firestore   │    │  Realtime DB  │    │   Binance    │
-│               │    │               │    │   P2P API    │
-│ • p2pRates    │    │ • wallet/rates │    │              │
-│ • config/fees │    │ • wallet/     │    │              │
-│ • users       │    │   balance     │    │              │
-│               │    │ • payments    │    │              │
-└───────────────┘    └───────────────┘    └──────────────┘
+│                                                              │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
+│  │  Scheduled   │  │  Callable    │  │     HTTP     │     │
+│  │   Functions  │  │  Functions   │  │  Endpoints   │     │
+│  │              │  │              │  │              │     │
+│  │ • fetchBin   │  │ • getBinance │  │ • fetchBin   │     │
+│  │   anceRates  │  │   Rates      │  │   anceRates  │     │
+│  │ • fetchArbi  │  │ • getArbitr  │  │   Http       │     │
+│  │   trageRates │  │   ageRates   │  │ • handleTop  │     │
+│  │              │  │ • updateUser │  │   UpWebhook  │     │
+│  │              │  │   Balance    │  │ • api/*      │     │
+│  │              │  │ • getUserData│  │   (REST)     │     │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘     │
+│         │                 │                  │             │
+│  ┌──────┴─────────────────┴──────────────────┴───────┐    │
+│  │           Firestore Triggers                      │    │
+│  │  • syncBalance (onDocumentUpdated: users/{uid})  │    │
+│  │  • onUserCreated (onDocumentCreated: users/{uid})│    │
+│  └──────────────────────┬───────────────────────────┘    │
+│                         │                                 │
+│  ┌──────────────────────┴───────────────────────────┐    │
+│  │              Auth Triggers                       │    │
+│  │  • userBootstrap (auth.user().onCreate)         │    │
+│  └──────────────────────┬───────────────────────────┘    │
+└─────────────────────────┼─────────────────────────────────┘
+                          │
+         ┌────────────────┼────────────────┐
+         │                │                │
+         ▼                ▼                ▼
+┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+│  Firestore   │  │  Realtime DB │  │   Binance    │
+│              │  │              │  │   P2P API    │
+│ • users      │  │ • wallet/    │  │              │
+│ • p2pRates   │  │   {uid}/fiat │  │              │
+│ • config     │  │ • wallet/    │  │              │
+│ • transact   │  │   rates      │  │              │
+│   ions       │  │ • payments   │  │              │
+│ • adminLogs  │  │              │  │              │
+└──────────────┘  └──────────────┘  └──────────────┘
 ```
 
 ### File Structure
 
 ```
 functions/
-├── index.js        # Main entry point - exports all functions
-├── admin.js        # Firebase Admin SDK initialization (singleton pattern)
-├── rates.js        # Binance P2P rate fetching and management
-├── arbitrage.js    # Arbitrage calculation logic
-├── payments.js     # IntaSend webhook handler
-└── package.json    # Dependencies and scripts
+├── index.js              # Main entry point - exports all functions
+├── admin.js              # Firebase Admin SDK initialization
+├── rates.js              # Binance P2P rate fetching
+├── arbitrage.js          # Arbitrage calculation logic
+├── payments.js           # IntaSend webhook handler
+├── adminActions.js       # Admin dashboard functions
+├── customerWallets.js    # Legacy customer wallets REST API
+├── userBootstrap.js      # User creation trigger
+├── balanceSync.js        # Balance sync trigger
+├── users.js              # User Firestore triggers
+├── migrateUsers.js       # User migration utilities
+├── updatePhoneNumbers.js # Phone number update utilities
+└── utils/
+    ├── firestore.js      # Firestore helper functions
+    ├── realtime.js       # Realtime DB helper functions
+    ├── transactions.js   # Transaction logging utilities
+    └── validation.js     # Input validation utilities
 ```
 
 ---
 
-## How It Works
+## Cloud Functions Reference
 
-### 1. Binance P2P Rate Fetcher
+### Scheduled Functions
 
-#### Overview
-Fetches real-time USDT exchange rates from Binance P2P marketplace for multiple currency pairs (USDT/KES, USDT/NGN, USDT/GHS). Applies a configurable service fee to market rates and stores them in both Firestore and Realtime Database.
+#### 1. `fetchBinanceRates`
 
-#### Components
+**Type**: Scheduled Function (Cloud Scheduler)  
+**Schedule**: `0 0 * * *` (Daily at midnight UTC)  
+**Purpose**: Batch updates Binance P2P rates for all supported currency pairs
 
-**1.1. Scheduled Function: `fetchBinanceRates`**
-- **Trigger**: Cloud Scheduler (cron: `0 0 * * *` - runs daily at midnight UTC)
-- **Purpose**: Batch updates rates for all supported currency pairs
-- **Process**:
-  1. Resets fee cache for fresh configuration read
-  2. Iterates through currency pairs: `[{fiat: "KES", asset: "USDT"}, {fiat: "NGN", asset: "USDT"}, {fiat: "GHS", asset: "USDT"}]`
-  3. For each pair:
-     - Calls `fetchBinanceRateData()` to get market rate
-     - Applies service fee to calculate customer price
-     - Writes to both Firestore and RTDB atomically via `writeRatesAtomically()`
-  4. Logs structured results (success/failure per pair)
-  5. Returns `null` to prevent retry loops on errors
+**Process**:
+1. Resets fee cache for fresh configuration read
+2. Iterates through currency pairs: `[{fiat: "KES", asset: "USDT"}, {fiat: "NGN", asset: "USDT"}, {fiat: "GHS", asset: "USDT"}]`
+3. For each pair:
+   - Fetches market rate from Binance P2P API
+   - Applies service fee to calculate customer price
+   - Writes to both Firestore and Realtime Database atomically
+4. Logs structured results with success/failure counts
 
-**1.2. Core Function: `fetchBinanceRateData(fiat, asset)`**
-- **Parameters**:
-  - `fiat`: Fiat currency code (default: "KES")
-  - `asset`: Crypto asset (default: "USDT")
-- **Process**:
-  1. Makes POST request to Binance P2P API:
-     ```javascript
-     POST https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search
-     Body: {
-       asset: "USDT",
-       fiat: "KES",
-       tradeType: "BUY",  // Buying USDT with fiat
-       page: 1,
-       rows: 10
-     }
-     ```
-  2. Extracts market price from first offer: `response.data.data[0].adv.price`
-  3. Fetches service fee from Firestore config (cached per execution)
-  4. Calculates customer price: `marketPrice * (1 + feePercentage)`
-  5. Sets `validUntil` timestamp (5 minutes from now)
-  6. Returns rate data object with:
-     - `marketPrice`: Raw Binance rate
-     - `customerPrice`: Rate with service fee applied
-     - `feePercentage`: Fee as percentage (e.g., 1.5)
-     - `currencyPair`: String identifier (e.g., "USDT/KES")
-     - `validUntil`: Firestore Timestamp (5 minutes validity)
-     - `updatedAt`: Server timestamp
-
-**1.3. Storage Function: `writeRatesAtomically(currencyPair, ratesData)`**
-- **Purpose**: Writes rate data to both Firestore and Realtime Database atomically
-- **Process**:
-  1. **Firestore Write**:
-     - Creates batch write operation
-     - Writes to `p2pRates/binance` document
-     - Uses `merge: true` to preserve other fields
-     - Commits batch
-  2. **Realtime Database Write**:
-     - Converts Firestore Timestamp to milliseconds for `validUntil`
-     - Writes to path: `wallet/rates/binance/{currencyPair}`
-     - Uses `ServerValue.TIMESTAMP` for `updatedAt`
-  3. **Logging**: Emits structured JSON log with update details
-
-**1.4. Callable Function: `getBinanceRates`**
-- **Type**: Firebase Callable Function (HTTPS Callable)
-- **Purpose**: On-demand rate retrieval with caching
-- **Process**:
-  1. Accepts optional parameters: `{fiat: "KES", asset: "USDT"}`
-  2. Checks Firestore cache:
-     - Reads `p2pRates/binance` document
-     - Validates currency pair matches
-     - Checks if `validUntil` timestamp is still valid
-  3. If cache hit and valid: Returns cached data with `source: "firestore"`
-  4. If cache miss or expired: Fetches fresh data, writes to storage, returns with `source: "fresh"`
-
-**1.5. HTTP Endpoint: `fetchBinanceRatesHttp`**
-- **Type**: HTTP Request Function with CORS
-- **Purpose**: Public REST API endpoint for rate retrieval
-- **URL Format**: `https://{region}-{project-id}.cloudfunctions.net/fetchBinanceRatesHttp`
-- **Methods**: GET, POST, OPTIONS (for CORS preflight)
-- **Query Parameters**:
-  - `fiat`: Fiat currency code (default: "KES")
-  - `asset`: Crypto asset (default: "USDT")
-- **CORS**: Enabled with `Access-Control-Allow-Origin: *`
-- **Response**: JSON object with rate data
-
-**1.6. Fee Configuration: `getServiceFee()`**
-- **Purpose**: Retrieves service fee percentage from Firestore
-- **Caching**: Uses module-level `feeCache` variable (per execution)
-- **Process**:
-  1. Checks cache first (returns immediately if cached)
-  2. Reads `config/fees` document from Firestore
-  3. Extracts `serviceFee` field (stored as percentage, e.g., 1.5)
-  4. Converts to decimal (divides by 100): `1.5 → 0.015`
-  5. Falls back to `0.015` (1.5%) if config missing
-  6. Caches result for current execution
-
-#### Data Structures
-
-**Firestore Document: `p2pRates/binance`**
-```json
-{
-  "marketPrice": 129.50,
-  "customerPrice": 131.44,
-  "feePercentage": 1.5,
-  "currencyPair": "USDT/KES",
-  "asset": "USDT",
-  "fiat": "KES",
-  "validUntil": "2024-01-01T00:05:00Z",
-  "updatedAt": "2024-01-01T00:00:00Z"
-}
-```
-
-**Realtime Database: `wallet/rates/binance/{currencyPair}`**
-```json
-{
-  "customerPrice": 131.44,
-  "marketPrice": 129.50,
-  "feePercentage": 1.5,
-  "currencyPair": "USDT/KES",
-  "asset": "USDT",
-  "fiat": "KES",
-  "updatedAt": 1704067200000,
-  "validUntil": 1704067500000
-}
-```
+**Error Handling**: Returns `null` to prevent retry loops
 
 ---
 
-### 2. Arbitrage Rate Calculator
+#### 2. `fetchArbitrageRates`
 
-#### Overview
-Calculates arbitrage opportunities for converting USD → USDT → Local Fiat currency. Fetches rates from both US market (USD/USDT) and local market (USDT/Local Fiat), then calculates the conversion path with fees applied.
+**Type**: Scheduled Function (Cloud Scheduler)  
+**Schedule**: `0 0 * * *` (Daily at midnight UTC)  
+**Purpose**: Calculates arbitrage rates for USD → USDT → Local Fiat conversion paths
 
-#### Components
-
-**2.1. Scheduled Function: `fetchArbitrageRates`**
-- **Trigger**: Cloud Scheduler (cron: `0 0 * * *` - runs daily at midnight UTC)
-- **Purpose**: Batch calculates arbitrage rates for multiple currencies
-- **Process**:
-  1. Resets fee cache
-  2. Iterates through fiat currencies: `["KES", "NGN", "GHS"]`
-  3. For each currency:
-     - Calls `calculateArbitrage(fiat)` to compute rates
-     - Writes to both databases via `writeArbitrageAtomically()`
-  4. Logs structured results and errors
-
-**2.2. Core Calculation: `calculateArbitrage(fiat, usdAmount)`**
-- **Parameters**:
-  - `fiat`: Target fiat currency (default: "KES")
-  - `usdAmount`: Reference USD amount (default: 1000)
-- **Process**:
-  1. **Fetch USD Rate**: Calls `fetchUSDRate()`
-     - Queries Binance P2P for USD/USDT (BUY type)
-     - Returns rate (e.g., 1.000 means 1 USD = 1 USDT)
-  2. **Fetch Local Rate**: Calls `fetchLocalRate(fiat)`
-     - Queries Binance P2P for USDT/{fiat} (SELL type - selling USDT for fiat)
-     - Returns rate (e.g., 129.50 means 1 USDT = 129.50 KES)
-  3. **Calculate Conversion Path**:
-     ```
-     USD Amount: 1000
-     ↓ (divide by USD/USDT rate)
-     USDT Bought: 1000 / 1.000 = 1000 USDT
-     ↓ (multiply by USDT/Local rate)
-     Local Received: 1000 * 129.50 = 129,500 KES
-     ```
-  4. **Apply Fee**: Fetches arbitrage fee from config
-     ```
-     Customer Payout: 129,500 * (1 - 0.015) = 127,557.5 KES
-     Profit: 129,500 - 127,557.5 = 1,942.5 KES
-     ```
-  5. Sets `validUntil` (10 minutes from now, matching schedule)
-  6. Returns arbitrage data object
-
-**2.3. Rate Fetching Functions**
-
-**`fetchUSDRate()`**:
-- Queries Binance P2P API for USD/USDT pair
-- Trade type: `BUY` (buying USDT with USD)
-- Returns first offer price as float
-
-**`fetchLocalRate(fiat)`**:
-- Queries Binance P2P API for USDT/{fiat} pair
-- Trade type: `SELL` (selling USDT for local fiat)
-- Returns first offer price as float
-
-**2.4. Storage Function: `writeArbitrageAtomically(currencyPair, arbitrageData)`**
-- Similar to `writeRatesAtomically()` but for arbitrage data
-- **Firestore**: Writes to `p2pRates/arbitrage`
-- **RTDB**: Writes to `wallet/rates/arbitrage/{currencyPair}`
-- Converts Firestore Timestamp to milliseconds for RTDB
-
-**2.5. Callable Function: `getArbitrageRates`**
-- **Type**: Firebase Callable Function
-- **Purpose**: On-demand arbitrage rate retrieval
-- **Process**: Same caching logic as `getBinanceRates()`
-  - Checks Firestore cache first
-  - Validates currency pair and expiration
-  - Fetches fresh if cache miss/expired
-
-**2.6. Fee Configuration: `getArbitrageFee()`**
-- Similar to `getServiceFee()` but reads `arbitrageFee` from config
-- Default fallback: 1.5% (0.015)
-
-#### Data Structures
-
-**Firestore Document: `p2pRates/arbitrage`**
-```json
-{
-  "usdRate": 1.000,
-  "localRate": 129.50,
-  "usdAmount": 1000,
-  "usdtBought": 1000,
-  "localReceived": 129500,
-  "feePercentage": 1.5,
-  "customerPayout": 127557.5,
-  "profit": 1942.5,
-  "currencyPair": "USD/KES",
-  "fiat": "KES",
-  "validUntil": "2024-01-01T00:10:00Z",
-  "updatedAt": "2024-01-01T00:00:00Z"
-}
-```
-
-**Realtime Database: `wallet/rates/arbitrage/{currencyPair}`**
-```json
-{
-  "usdRate": 1.000,
-  "localRate": 129.50,
-  "usdAmount": 1000,
-  "usdtBought": 1000,
-  "localReceived": 129500,
-  "customerPayout": 127557.5,
-  "profit": 1942.5,
-  "feePercentage": 1.5,
-  "currencyPair": "USD/KES",
-  "fiat": "KES",
-  "updatedAt": 1704067200000,
-  "validUntil": 1704067800000
-}
-```
+**Process**:
+1. Resets fee cache
+2. Iterates through fiat currencies: `["KES", "NGN", "GHS"]`
+3. For each currency:
+   - Fetches USD/USDT rate from Binance (BUY)
+   - Fetches USDT/Local rate from Binance (SELL)
+   - Calculates conversion path with fees
+   - Writes to both databases
 
 ---
 
-### 3. Payment Webhook Handler
+### Callable Functions
 
-#### Overview
-Handles POST webhook callbacks from IntaSend payment gateway when payments are completed. Verifies webhook signatures for security, then updates user wallet balances in both Realtime Database and Firestore.
-
-#### Components
-
-**3.1. HTTP Endpoint: `handleTopUpWebhook`**
-- **Type**: HTTP Request Function
-- **URL**: `https://{region}-{project-id}.cloudfunctions.net/handleTopUpWebhook`
-- **Method**: POST only (returns 405 for other methods)
-- **Security**: HMAC SHA-256 signature verification
-
-**3.2. Request Flow**
-
-1. **Method Validation**:
-   - Checks if `req.method === "POST"`
-   - Returns `405 Method Not Allowed` if not POST
-
-2. **Secret Retrieval**: `getSecret()`
-   - Reads from Firebase Functions config: `functions.config().intasend.secret`
-   - Returns `null` if not configured
-   - Returns `500 Configuration error` if secret missing
-
-3. **Signature Verification**: `verifySignature(sharedSecret, req)`
-   - **Process**:
-     ```
-     1. Extracts signature from header:
-        req.get("x-intasend-signature") or req.get("X-IntaSend-Signature")
-     
-     2. Gets raw request body:
-        req.rawBody || Buffer.from(JSON.stringify(req.body))
-     
-     3. Computes HMAC SHA-256:
-        crypto.createHmac("sha256", sharedSecret)
-              .update(rawBody)
-              .digest("hex")
-     
-     4. Compares signatures using timing-safe comparison:
-        crypto.timingSafeEqual(receivedBuffer, computedBuffer)
-     ```
-   - Returns `403 Forbidden` if signature invalid
-
-4. **Event Filtering**:
-   - Checks if `payload.event === "payment.completed"`
-   - Returns `200 "Ignored"` for other events (prevents processing non-payment events)
-
-5. **Data Extraction**:
-   ```javascript
-   paymentId = payload.data.payment_id
-   amount = Number(payload.data.amount)
-   currency = payload.data.currency || "KES"
-   userId = payload.data.metadata.user_id
-   completedAt = payload.data.completed_at
-   ```
-
-6. **Validation**:
-   - Checks if `paymentId` and `userId` exist
-   - Returns `400 Bad Request` if missing
-
-7. **Payment Record Storage**:
-   - Writes to Realtime Database: `payments/{paymentId}`
-   - Stores full payment data + `user_id` + `processed_at` timestamp
-
-8. **Wallet Balance Update (Realtime Database)**:
-   - Reads current balance: `wallet/balance/{userId}`
-   - Extracts `available` field (defaults to 0 if not exists)
-   - Calculates new balance: `currentBalance + amount`
-   - Updates wallet:
-     ```json
-     {
-       "available": newBalance,
-       "currency": currency,
-       "lastUpdated": ISO timestamp
-     }
-     ```
-
-9. **User Record Update (Firestore)**:
-   - Updates `users/{userId}` document:
-     - Increments `balance` field using `FieldValue.increment(amount)`
-     - Sets `lastTopUp` timestamp from `completedAt`
-   - Uses `merge: true` to preserve other fields
-
-10. **Response**: Returns `200 "OK"` on success
-
-**3.3. Security: Signature Verification**
-
-The webhook uses **HMAC SHA-256** for signature verification:
-
-```javascript
-// IntaSend computes signature:
-signature = HMAC-SHA256(webhook_secret, raw_request_body)
-
-// Function verifies:
-computed = HMAC-SHA256(shared_secret, req.rawBody)
-if (computed === received_signature) {
-  // Valid webhook
-} else {
-  // Reject with 403
-}
-```
-
-**Why `timingSafeEqual()`?**
-- Prevents timing attacks
-- Compares buffers byte-by-byte in constant time
-- Prevents attackers from inferring signature correctness from response time
-
-**3.4. Data Flow**
-
-```
-IntaSend Payment Gateway
-    │
-    │ POST /handleTopUpWebhook
-    │ Headers: x-intasend-signature: <hmac>
-    │ Body: {event: "payment.completed", data: {...}}
-    ▼
-┌─────────────────────────┐
-│ Signature Verification  │
-└───────────┬─────────────┘
-            │ (valid)
-            ▼
-┌─────────────────────────┐
-│ Extract Payment Data    │
-│ • payment_id            │
-│ • amount                │
-│ • user_id               │
-└───────────┬─────────────┘
-            │
-    ┌───────┴───────┐
-    │               │
-    ▼               ▼
-┌─────────┐   ┌──────────────┐
-│ RTDB    │   │  Firestore   │
-│         │   │              │
-│ payments│   │ users/{id}   │
-│ /{id}   │   │ • balance++  │
-│         │   │ • lastTopUp  │
-│ wallet/ │   │              │
-│ balance │   │              │
-│ /{id}   │   │              │
-│ • avail │   │              │
-│   +=amt │   │              │
-└─────────┘   └──────────────┘
-```
-
-#### Data Structures
-
-**Webhook Payload (from IntaSend)**:
-```json
-{
-  "event": "payment.completed",
-  "data": {
-    "payment_id": "pay_abc123",
-    "amount": 1000,
-    "currency": "KES",
-    "completed_at": "2024-01-01T00:00:00Z",
-    "metadata": {
-      "user_id": "user_xyz789"
-    }
-  }
-}
-```
-
-**Realtime Database: `payments/{paymentId}`**
-```json
-{
-  "payment_id": "pay_abc123",
-  "amount": 1000,
-  "currency": "KES",
-  "completed_at": "2024-01-01T00:00:00Z",
-  "user_id": "user_xyz789",
-  "processed_at": "2024-01-01T00:00:01Z",
-  "metadata": {
-    "user_id": "user_xyz789"
-  }
-}
-```
-
-**Realtime Database: `wallet/balance/{userId}`**
-```json
-{
-  "available": 5000,
-  "currency": "KES",
-  "lastUpdated": "2024-01-01T00:00:01Z"
-}
-```
-
-**Firestore: `users/{userId}`**
-```json
-{
-  "balance": 5000,
-  "lastTopUp": "2024-01-01T00:00:00Z"
-}
-```
-
----
-
-## Data Flow
-
-### Rate Fetching Flow
-
-```
-┌─────────────────┐
-│ Cloud Scheduler  │ (cron: 0 0 * * *)
-└────────┬─────────┘
-         │
-         ▼
-┌─────────────────────────┐
-│ fetchBinanceRates()     │
-│ • Reset fee cache       │
-│ • Loop currency pairs   │
-└────────┬────────────────┘
-         │
-         ▼
-┌─────────────────────────┐
-│ fetchBinanceRateData()  │
-│ • Call Binance API      │
-│ • Get market price      │
-│ • Apply service fee     │
-└────────┬────────────────┘
-         │
-         ▼
-┌─────────────────────────┐
-│ writeRatesAtomically()  │
-│ • Write to Firestore    │
-│ • Write to RTDB         │
-└────────┬────────────────┘
-         │
-    ┌────┴────┐
-    ▼         ▼
-┌────────┐ ┌──────────┐
-│Firestore│ │  RTDB    │
-│p2pRates │ │wallet/   │
-│/binance │ │rates/... │
-└────────┘ └──────────┘
-```
-
-### On-Demand Rate Retrieval Flow
-
-```
-┌──────────────┐
-│ Client App   │
-└──────┬───────┘
-       │
-       │ Call getBinanceRates({fiat: "KES"})
-       ▼
-┌─────────────────────────┐
-│ getBinanceRates()       │
-│ • Check Firestore cache │
-└────────┬────────────────┘
-         │
-    ┌────┴────┐
-    │         │
-    ▼         ▼
-┌────────┐ ┌──────────────────┐
-│ Valid? │ │ Expired/Missing?  │
-│ YES    │ │ YES               │
-└───┬────┘ └────────┬───────────┘
-    │               │
-    │               ▼
-    │      ┌────────────────────┐
-    │      │ fetchBinanceRate   │
-    │      │ Data()             │
-    │      │ • Call Binance API │
-    │      └────────┬───────────┘
-    │               │
-    │               ▼
-    │      ┌────────────────────┐
-    │      │ writeRatesAtomically│
-    │      └────────┬───────────┘
-    │               │
-    └───────────────┘
-            │
-            ▼
-    ┌───────────────┐
-    │ Return Data   │
-    │ source: cache │
-    │   or fresh    │
-    └───────────────┘
-```
-
-### Payment Webhook Flow
-
-```
-┌──────────────┐
-│  IntaSend    │
-│  Gateway     │
-└──────┬───────┘
-       │
-       │ POST /handleTopUpWebhook
-       │ x-intasend-signature: <hmac>
-       ▼
-┌─────────────────────────┐
-│ Verify Signature        │
-└────────┬────────────────┘
-         │
-    ┌────┴────┐
-    │         │
-    ▼         ▼
-┌──────┐  ┌──────────┐
-│Valid │  │ Invalid  │
-│      │  │ → 403    │
-└──┬───┘  └──────────┘
-   │
-   ▼
-┌─────────────────────────┐
-│ Extract Payment Data   │
-│ • payment_id           │
-│ • amount               │
-│ • user_id              │
-└────────┬────────────────┘
-         │
-         ▼
-┌─────────────────────────┐
-│ Update Databases        │
-│                         │
-│ 1. RTDB: payments/{id}  │
-│ 2. RTDB: wallet/balance │
-│    /{userId}            │
-│ 3. Firestore: users/    │
-│    {userId}             │
-└────────┬────────────────┘
-         │
-         ▼
-┌─────────────────────────┐
-│ Return 200 OK           │
-└─────────────────────────┘
-```
-
----
-
-## API Reference
-
-### 1. Callable Function: `getBinanceRates`
+#### 3. `getBinanceRates`
 
 **Type**: Firebase Callable Function  
-**Authentication**: Required (Firebase Auth)
+**Authentication**: Required (Firebase Auth)  
+**Purpose**: On-demand rate retrieval with caching
 
 **Request**:
 ```javascript
-const functions = require('firebase-functions');
 const { getFunctions, httpsCallable } = require('firebase/functions');
-
-const functionsRef = getFunctions();
-const getBinanceRates = httpsCallable(functionsRef, 'getBinanceRates');
+const functions = getFunctions();
+const getBinanceRates = httpsCallable(functions, 'getBinanceRates');
 
 const result = await getBinanceRates({
   fiat: 'KES',    // Optional, default: 'KES'
@@ -702,60 +192,23 @@ const result = await getBinanceRates({
 }
 ```
 
-**Error**: Throws `HttpsError` with code `internal` if fetch fails
+**Caching Logic**:
+- Checks Firestore cache first
+- Validates currency pair matches
+- Checks if `validUntil` timestamp is still valid
+- Returns cached data if valid, otherwise fetches fresh data
 
 ---
 
-### 2. HTTP Endpoint: `fetchBinanceRatesHttp`
-
-**Type**: HTTP Request Function  
-**URL**: `https://{region}-{project-id}.cloudfunctions.net/fetchBinanceRatesHttp`  
-**CORS**: Enabled
-
-**Request**:
-```bash
-# GET request
-curl "https://us-central1-truepay-72060.cloudfunctions.net/fetchBinanceRatesHttp?fiat=KES&asset=USDT"
-
-# POST request
-curl -X POST "https://us-central1-truepay-72060.cloudfunctions.net/fetchBinanceRatesHttp" \
-  -H "Content-Type: application/json" \
-  -d '{"fiat": "KES", "asset": "USDT"}'
-```
-
-**Response**:
-```json
-{
-  "marketPrice": 129.50,
-  "customerPrice": 131.44,
-  "feePercentage": 1.5,
-  "currencyPair": "USDT/KES",
-  "asset": "USDT",
-  "fiat": "KES",
-  "validUntil": "2024-01-01T00:05:00Z",
-  "updatedAt": "2024-01-01T00:00:00Z",
-  "source": "firestore"
-}
-```
-
-**Error Response** (500):
-```json
-{
-  "error": "internal",
-  "message": "Failed to fetch rates: <error message>"
-}
-```
-
----
-
-### 3. Callable Function: `getArbitrageRates`
+#### 4. `getArbitrageRates`
 
 **Type**: Firebase Callable Function  
-**Authentication**: Required
+**Authentication**: Required  
+**Purpose**: On-demand arbitrage rate retrieval
 
 **Request**:
 ```javascript
-const getArbitrageRates = httpsCallable(functionsRef, 'getArbitrageRates');
+const getArbitrageRates = httpsCallable(functions, 'getArbitrageRates');
 
 const result = await getArbitrageRates({
   fiat: 'KES'  // Optional, default: 'KES'
@@ -783,70 +236,773 @@ const result = await getArbitrageRates({
 
 ---
 
-### 4. HTTP Endpoint: `handleTopUpWebhook`
+### HTTP Endpoints
+
+#### 5. `fetchBinanceRatesHttp`
 
 **Type**: HTTP Request Function  
-**URL**: `https://{region}-{project-id}.cloudfunctions.net/handleTopUpWebhook`  
-**Method**: POST only
+**URL**: `https://us-central1-truepay-72060.cloudfunctions.net/fetchBinanceRatesHttp`  
+**CORS**: Enabled  
+**Methods**: GET, POST, OPTIONS
 
 **Request**:
 ```bash
-curl -X POST "https://us-central1-truepay-72060.cloudfunctions.net/handleTopUpWebhook" \
+# GET request
+curl "https://us-central1-truepay-72060.cloudfunctions.net/fetchBinanceRatesHttp?fiat=KES&asset=USDT"
+
+# POST request
+curl -X POST "https://us-central1-truepay-72060.cloudfunctions.net/fetchBinanceRatesHttp" \
   -H "Content-Type: application/json" \
-  -H "x-intasend-signature: <hmac_sha256_signature>" \
-  -d '{
-    "event": "payment.completed",
-    "data": {
-      "payment_id": "pay_abc123",
-      "amount": 1000,
-      "currency": "KES",
-      "completed_at": "2024-01-01T00:00:00Z",
-      "metadata": {
-        "user_id": "user_xyz789"
-      }
+  -d '{"fiat": "KES", "asset": "USDT"}'
+```
+
+**Response**: Same format as `getBinanceRates` callable function
+
+---
+
+#### 6. `handleTopUpWebhook`
+
+**Type**: HTTP Request Function  
+**URL**: `https://us-central1-truepay-72060.cloudfunctions.net/handleTopUpWebhook`  
+**Method**: POST only  
+**Security**: HMAC SHA-256 signature verification
+
+**Request Headers**:
+- `x-intasend-signature`: HMAC SHA-256 signature (hex encoded)
+- `Content-Type`: application/json
+
+**Webhook Payload Format** (IntaSend Invoice):
+```json
+{
+  "invoice_id": "Y5JVGZG",
+  "state": "COMPLETE",
+  "net_amount": "10.66",
+  "currency": "KES",
+  "value": "11.00",
+  "account": "254742844875",
+  "metadata": {
+    "user_id": "3mRTw4DvHCXPTVbzAt7OQWOqlNF3"
+  }
+}
+```
+
+**Legacy Format** (also supported):
+```json
+{
+  "event": "payment.completed",
+  "data": {
+    "payment_id": "pay_abc123",
+    "amount": 1000,
+    "currency": "KES",
+    "completed_at": "2024-01-01T00:00:00Z",
+    "metadata": {
+      "user_id": "user_xyz789"
     }
-  }'
+  }
+}
 ```
 
 **Response**:
 - `200 OK`: Payment processed successfully
-- `400 Bad Request`: Missing payment_id or user_id
+- `400 Bad Request`: Missing payment identifier or wallet ID
 - `403 Forbidden`: Invalid signature
 - `405 Method Not Allowed`: Not a POST request
 - `500 Configuration error`: Webhook secret not configured
+
+**Process**:
+1. Verifies HMAC SHA-256 signature
+2. Resolves wallet/user ID using multiple strategies:
+   - Order lookup (preferred): Query Firestore orders by invoice_id
+   - RTDB mapping: Look up `wallet/pendingTopups/{invoice_id}`
+   - Metadata user_id: From IntaSend payload
+   - Phone lookup (fallback): Resolve account (phone) → Firestore user doc
+3. Updates Firestore balance using transaction
+4. Syncs balance to Realtime Database at `wallet/{userId}/fiat/{currency}`
+5. Logs transaction and admin action
+
+---
+
+#### 7. `api` (Customer Wallets REST API)
+
+**Type**: HTTP Request Function (Express Router)  
+**Base URL**: `https://us-central1-truepay-72060.cloudfunctions.net/api`  
+**CORS**: Enabled with credentials support
+
+**Endpoints**:
+- `GET /api/customer-wallets` - List all customer wallets (paginated)
+- `GET /api/customer-wallets/:id` - Get single customer wallet
+- `POST /api/customer-wallets` - Create customer wallet
+- `PUT /api/customer-wallets/:id` - Update customer wallet
+- `POST /api/customer-wallets/:id/credit` - Credit money to wallet
+- `POST /api/customer-wallets/:id/debit` - Debit money from wallet
+
+**Query Parameters** (for GET /customer-wallets):
+- `limit` (optional, default: 100) - Number of records
+- `offset` (optional, default: 0) - Number to skip
+
+**Note**: These endpoints work with the legacy `customerWallets` collection. For new architecture, use admin callable functions.
+
+---
+
+### Firestore Triggers
+
+#### 8. `syncBalance`
+
+**Type**: Firestore Trigger (onDocumentUpdated)  
+**Trigger**: `users/{uid}` document updated  
+**Purpose**: Automatic balance sync from Firestore to Realtime Database
+
+**Process**:
+1. Detects balance field change in Firestore user document
+2. Extracts currency from user data (default: USD)
+3. Syncs to Realtime Database at `wallet/{userId}/fiat/{currency}`
+4. Uses retry logic (3 attempts with exponential backoff)
+5. Cleans up old balance paths automatically
+
+**Path Written**: `wallet/{userId}/fiat/{currency}` (e.g., `wallet/3mRTw4DvHCXPTVbzAt7OQWOqlNF3/fiat/USD`)
+
+---
+
+#### 9. `onUserCreated`
+
+**Type**: Firestore Trigger (onDocumentCreated)  
+**Trigger**: `users/{uid}` document created  
+**Purpose**: Handle new user document creation (legacy system)
+
+---
+
+### Auth Triggers
+
+#### 10. `userBootstrap`
+
+**Type**: Auth Trigger (auth.user().onCreate)  
+**Trigger**: New user created via Firebase Authentication  
+**Purpose**: Initialize user documents and wallets for new users
+
+**Process**:
+1. Creates user document in Firestore: `/users/{uid}`
+2. Initializes balance at `wallet/{uid}/fiat/USD` in Realtime DB
+3. Ensures idempotency by checking if user document exists
+
+**Initial User Document**:
+```json
+{
+  "name": null,
+  "email": "user@example.com",
+  "createdAt": "2024-01-01T00:00:00Z",
+  "balance": 0,
+  "country": null,
+  "updatedAt": "2024-01-01T00:00:00Z"
+}
+```
+
+---
+
+## Admin Functions
+
+All admin functions require Firebase Authentication and admin role verification. Users must have `role: 'admin'` in their Firestore user document.
+
+**Base URL**: `https://us-central1-truepay-72060.cloudfunctions.net`
+
+### 1. `getUserData`
+
+**Type**: Firebase Callable Function  
+**Authentication**: Required (Admin only)
+
+**Request**:
+```javascript
+const getUserData = httpsCallable(functions, 'getUserData');
+
+const result = await getUserData({
+  userId: 'user123'
+});
+```
+
+**Response**:
+```json
+{
+  "success": true,
+  "userId": "user123",
+  "userData": {
+    "name": "John Doe",
+    "email": "john@example.com",
+    "balance": 1000.50,
+    "country": "KE",
+    "phoneNumber": "+254712345678",
+    "kycStatus": "approved",
+    "kycData": {},
+    "createdAt": "2024-01-01T00:00:00Z",
+    "updatedAt": "2024-01-01T00:00:00Z"
+  }
+}
+```
+
+---
+
+### 2. `updateUserProfile`
+
+**Type**: Firebase Callable Function  
+**Authentication**: Required (Admin only)
+
+**Request**:
+```javascript
+const updateUserProfile = httpsCallable(functions, 'updateUserProfile');
+
+const result = await updateUserProfile({
+  userId: 'user123',
+  updates: {
+    name: 'John Updated',
+    email: 'john.updated@example.com',
+    country: 'NG',
+    phoneNumber: '+2341234567890',
+    kycStatus: 'approved',
+    kycData: {
+      documentType: 'passport',
+      documentNumber: 'A123456'
+    }
+  }
+});
+```
+
+**Allowed Fields**:
+- `name` (string)
+- `email` (string)
+- `country` (string)
+- `phoneNumber` (string)
+- `kycStatus` (string: "pending", "approved", "rejected", "under_review")
+- `kycData` (object)
+
+**Note**: Cannot update `balance` through this endpoint. Use `updateUserBalance` instead.
+
+**Response**:
+```json
+{
+  "success": true,
+  "userId": "user123",
+  "updatedFields": ["name", "email", "country"]
+}
+```
+
+---
+
+### 3. `updateUserBalance`
+
+**Type**: Firebase Callable Function  
+**Authentication**: Required (Admin only)  
+**Purpose**: Update user balance with transaction safety and automatic sync
+
+**Request**:
+```javascript
+const updateUserBalance = httpsCallable(functions, 'updateUserBalance');
+
+// Credit (add money)
+const result = await updateUserBalance({
+  userId: 'user123',
+  amount: 100,  // Positive for credit
+  reason: 'Refund for order #456'
+});
+
+// Debit (subtract money)
+const result = await updateUserBalance({
+  userId: 'user123',
+  amount: -50,  // Negative for debit
+  reason: 'Chargeback adjustment'
+});
+```
+
+**Response**:
+```json
+{
+  "success": true,
+  "userId": "user123",
+  "previousBalance": 1000.50,
+  "newBalance": 1100.50,
+  "amountDelta": 100,
+  "transactionId": "tx_1234567890_abc123"
+}
+```
+
+**What it does**:
+- Updates user balance using Firestore transactions (prevents race conditions)
+- Logs transaction to `/transactions/{userId}/transactions/{txId}`
+- Syncs balance to Realtime Database automatically at `wallet/{userId}/fiat/{currency}`
+- Logs admin action to `/adminLogs/{logId}`
+- Admins can set negative balances if needed
+
+---
+
+### 4. `updateKYCStatus`
+
+**Type**: Firebase Callable Function  
+**Authentication**: Required (Admin only)
+
+**Request**:
+```javascript
+const updateKYCStatus = httpsCallable(functions, 'updateKYCStatus');
+
+const result = await updateKYCStatus({
+  userId: 'user123',
+  kycStatus: 'approved',  // "pending", "approved", "rejected", "under_review"
+  kycData: {
+    documentType: 'passport',
+    documentNumber: 'A123456',
+    verifiedAt: '2024-01-01T00:00:00Z',
+    verifiedBy: 'admin_user_id'
+  }
+});
+```
+
+**Valid Statuses**: `pending`, `approved`, `rejected`, `under_review`
+
+**Response**:
+```json
+{
+  "success": true,
+  "userId": "user123",
+  "kycStatus": "approved"
+}
+```
+
+---
+
+### 5. `syncUserBalanceToRealtime`
+
+**Type**: Firebase Callable Function  
+**Authentication**: Required (Admin only)  
+**Purpose**: Manually sync user balance to Realtime Database (for fixing discrepancies)
+
+**Request**:
+```javascript
+const syncUserBalanceToRealtime = httpsCallable(functions, 'syncUserBalanceToRealtime');
+
+const result = await syncUserBalanceToRealtime({
+  userId: 'user123'
+});
+```
+
+**Response**:
+```json
+{
+  "success": true,
+  "userId": "user123",
+  "balance": 1000.50,
+  "currency": "USD",
+  "message": "Balance synced successfully"
+}
+```
+
+**Use Cases**:
+- Fix balance discrepancies between Firestore and Realtime DB
+- Initialize wallet for existing users
+- Manual sync after data migration
+
+---
+
+## Database Structure
+
+### Firestore Collections
+
+#### `/users/{userId}` - User Documents (Master Source)
+
+**Structure**:
+```json
+{
+  "name": "John Doe",
+  "email": "john@example.com",
+  "balance": 1000.50,
+  "currency": "USD",
+  "country": "KE",
+  "phoneNumber": "+254712345678",
+  "kycStatus": "approved",
+  "kycData": {
+    "documentType": "passport",
+    "documentNumber": "A123456"
+  },
+  "role": "user",  // or "admin"
+  "createdAt": "2024-01-01T00:00:00Z",
+  "updatedAt": "2024-01-01T00:00:00Z",
+  "lastTopUp": "2024-01-01T00:00:00Z"
+}
+```
+
+**Key Fields**:
+- `balance` - Master balance (number, always in USD)
+- `currency` - User's preferred currency (default: "USD")
+- `role` - User role ("user" or "admin")
+
+---
+
+#### `/transactions/{userId}/transactions/{txId}` - Transaction History
+
+**Structure**:
+```json
+{
+  "type": "credit",
+  "amount": 100,
+  "status": "completed",
+  "timestamp": "2024-01-01T00:00:00Z",
+  "previousBalance": 1000.50,
+  "newBalance": 1100.50,
+  "metadata": {
+    "paymentId": "pay_abc123",
+    "currency": "KES",
+    "source": "intasend",
+    "adminId": "admin_user_id",
+    "reason": "Refund for order #456"
+  },
+  "userId": "user123"
+}
+```
+
+**Transaction Types**: `credit`, `debit`, `transfer`, `topup`, `withdrawal`, `refund`
+
+---
+
+#### `/adminLogs/{logId}` - Admin Action Audit Logs
+
+**Structure**:
+```json
+{
+  "adminId": "admin_user_id",
+  "userId": "user123",
+  "action": "updateBalance",
+  "before": {
+    "balance": 1000.50
+  },
+  "after": {
+    "balance": 1100.50,
+    "amountDelta": 100
+  },
+  "timestamp": "2024-01-01T00:00:00Z"
+}
+```
+
+**Action Types**: `updateProfile`, `updateBalance`, `updateKYC`
+
+---
+
+#### `/p2pRates/binance` - Binance P2P Rates
+
+**Structure**:
+```json
+{
+  "USDT/KES": {
+    "marketPrice": 129.50,
+    "customerPrice": 131.44,
+    "feePercentage": 1.5,
+    "currencyPair": "USDT/KES",
+    "asset": "USDT",
+    "fiat": "KES",
+    "validUntil": "2024-01-01T00:05:00Z",
+    "updatedAt": "2024-01-01T00:00:00Z"
+  },
+  "USDT/NGN": { ... },
+  "USDT/GHS": { ... }
+}
+```
+
+---
+
+#### `/p2pRates/arbitrage` - Arbitrage Rates
+
+**Structure**:
+```json
+{
+  "USD/KES": {
+    "usdRate": 1.000,
+    "localRate": 129.50,
+    "usdAmount": 1000,
+    "usdtBought": 1000,
+    "localReceived": 129500,
+    "feePercentage": 1.5,
+    "customerPayout": 127557.5,
+    "profit": 1942.5,
+    "currencyPair": "USD/KES",
+    "fiat": "KES",
+    "validUntil": "2024-01-01T00:10:00Z",
+    "updatedAt": "2024-01-01T00:00:00Z"
+  }
+}
+```
+
+---
+
+#### `/config/fees` - Fee Configuration
+
+**Structure**:
+```json
+{
+  "serviceFee": 1.5,      // Service fee percentage (e.g., 1.5 = 1.5%)
+  "arbitrageFee": 1.5     // Arbitrage fee percentage
+}
+```
+
+**Note**: Fees are stored as percentages but converted to decimals (divided by 100) in code.
+
+---
+
+#### `/customerWallets/{walletId}` - Legacy Customer Wallets
+
+**Note**: Legacy system. Consider migrating to `/users/{userId}` architecture.
+
+---
+
+### Realtime Database Paths
+
+#### `/wallet/{userId}/fiat/{currency}` - Fiat Wallet Balance (NEW)
+
+**Path Format**: `wallet/{userId}/fiat/USD` (or other currency)
+
+**Structure**:
+```json
+{
+  "balance": 1000.50,
+  "currency": "USD",
+  "createdAt": 1704067200000,
+  "updatedAt": 1704067500000
+}
+```
+
+**Important**: This is the path your Flutter app should read from for balance queries.
+
+---
+
+#### `/wallet/{userId}/crypto/{currencyCode}` - Crypto Wallet Balance
+
+**Path Format**: `wallet/{userId}/crypto/USDT`
+
+**Structure**:
+```json
+{
+  "balance": 0,
+  "currency": "USDT",
+  "createdAt": "2024-01-01T00:00:00Z",
+  "updatedAt": "2024-01-01T00:00:00Z"
+}
+```
+
+---
+
+#### `/wallet/rates/binance/{currencyPair}` - Cached Rates
+
+**Example**: `wallet/rates/binance/USDT/KES`
+
+**Structure**:
+```json
+{
+  "customerPrice": 131.44,
+  "marketPrice": 129.50,
+  "feePercentage": 1.5,
+  "currencyPair": "USDT/KES",
+  "asset": "USDT",
+  "fiat": "KES",
+  "updatedAt": 1704067200000,
+  "validUntil": 1704067500000
+}
+```
+
+---
+
+#### `/wallet/rates/arbitrage/{currencyPair}` - Cached Arbitrage Rates
+
+**Example**: `wallet/rates/arbitrage/USD/KES`
+
+**Structure**: Same format as Firestore arbitrage rates, but timestamps in milliseconds.
+
+---
+
+#### `/payments/{paymentId}` - Payment Records
+
+**Structure**:
+```json
+{
+  "invoice_id": "Y5JVGZG",
+  "state": "COMPLETE",
+  "net_amount": "10.66",
+  "currency": "KES",
+  "value": "11.00",
+  "account": "254742844875",
+  "user_id": "3mRTw4DvHCXPTVbzAt7OQWOqlNF3",
+  "processed_at": "2024-01-01T00:00:01Z"
+}
+```
+
+---
+
+#### `/users/{userId}/payments/{paymentId}` - User Payment References
+
+**Structure**:
+```json
+{
+  "payment_id": "payment_1764314016476_g24vew2gj",
+  "amount": 50,
+  "currency": "KES",
+  "status": "link_opened",
+  "created_at": "2025-11-28T07:13:36.476Z",
+  "updated_at": "2025-11-28T07:13:38.625Z"
+}
+```
+
+---
+
+## Payment Processing
+
+### Top-Up Flow
+
+1. **User Initiates Top-Up** (Flutter App)
+   - User enters amount and payment details
+   - Creates IntaSend checkout session
+   - Stores payment record in Realtime DB
+
+2. **Payment Completion** (IntaSend)
+   - User completes payment on IntaSend
+   - IntaSend sends webhook to `handleTopUpWebhook`
+
+3. **Webhook Processing** (Cloud Function)
+   - Verifies HMAC SHA-256 signature
+   - Resolves wallet/user ID using multiple strategies
+   - Updates Firestore balance using transaction
+   - Syncs to Realtime DB at `wallet/{userId}/fiat/{currency}`
+
+4. **Automatic Sync** (Firestore Trigger)
+   - `syncBalance` trigger detects Firestore update
+   - Ensures Realtime DB is up-to-date with retry logic
+
+### Wallet ID Resolution Strategies
+
+The webhook handler uses multiple strategies to find the correct user:
+
+1. **Order Lookup** (Preferred): Query Firestore orders by `invoice_id`
+   ```javascript
+   orders.where("metadata.invoiceId", "==", paymentId)
+         .where("orderType", "==", "topup")
+   ```
+
+2. **RTDB Mapping** (Fallback): Look up `wallet/pendingTopups/{invoice_id}`
+
+3. **Metadata user_id**: From IntaSend payload metadata
+
+4. **Phone Lookup** (Last Resort): Resolve account (phone) → Firestore user doc
+
+---
+
+## Balance Management
+
+### Architecture: Firestore = Master, Realtime DB = Cache
+
+**Master Source**: Firestore `/users/{userId}.balance`  
+**Cache Mirror**: Realtime DB `/wallet/{userId}/fiat/{currency}`
+
+### Update Flow
+
+1. **Balance Update** (any source):
+   - Admin dashboard: `updateUserBalance()` callable function
+   - Payment webhook: `handleTopUpWebhook()` HTTP endpoint
+   - Any direct Firestore update
+
+2. **Firestore Transaction**:
+   - Uses `updateBalanceWithTransaction()` utility
+   - Prevents race conditions with Firestore transactions
+   - Logs transaction automatically
+
+3. **Automatic Sync**:
+   - `syncBalance` Firestore trigger fires automatically
+   - Syncs to Realtime DB at `wallet/{userId}/fiat/{currency}`
+   - Includes retry logic (3 attempts)
+
+4. **Direct Sync** (optional):
+   - Functions can call `syncBalanceToRealtime()` directly
+   - Used for immediate sync in admin functions
+
+### Balance Paths
+
+**Client App Should Read From**:
+```
+wallet/{userId}/fiat/USD  ✅ CORRECT PATH
+```
+
+**Old Paths (being cleaned up)**:
+```
+wallet/{userId}/balance   ❌ DEPRECATED
+```
+
+The sync function automatically cleans up old paths when writing to the new path.
+
+---
+
+## API Reference
+
+### Complete Function List
+
+| Function Name | Type | Authentication | Purpose |
+|--------------|------|---------------|---------|
+| `fetchBinanceRates` | Scheduled | None | Daily rate updates |
+| `fetchArbitrageRates` | Scheduled | None | Daily arbitrage calculations |
+| `getBinanceRates` | Callable | Firebase Auth | Get rates on-demand |
+| `getArbitrageRates` | Callable | Firebase Auth | Get arbitrage on-demand |
+| `fetchBinanceRatesHttp` | HTTP | None | Public REST API for rates |
+| `handleTopUpWebhook` | HTTP | Signature | IntaSend payment webhook |
+| `api` | HTTP (REST) | Optional | Customer wallets REST API |
+| `userBootstrap` | Auth Trigger | System | Initialize new users |
+| `syncBalance` | Firestore Trigger | System | Sync balance to RTDB |
+| `onUserCreated` | Firestore Trigger | System | Handle user document creation |
+| `getUserData` | Callable | Admin | Get user data |
+| `updateUserProfile` | Callable | Admin | Update user profile |
+| `updateUserBalance` | Callable | Admin | Update user balance |
+| `updateKYCStatus` | Callable | Admin | Update KYC status |
+| `syncUserBalanceToRealtime` | Callable | Admin | Manual balance sync |
+| `migrateExistingUsers` | Callable | Admin | Migrate users to new architecture |
+| `migrateUsersHttp` | HTTP | Optional | HTTP endpoint for user migration |
+| `updatePhoneNumbers` | Callable | Admin | Update phone number format |
+| `updatePhoneNumbersHttp` | HTTP | Optional | HTTP endpoint for phone updates |
 
 ---
 
 ## Configuration
 
-### Firebase Functions Config
+### Firebase Secrets
 
-Set the IntaSend webhook secret:
+Set using Firebase Functions secrets (v7+):
+
 ```bash
-firebase functions:config:set intasend.secret="your-webhook-secret-here"
+# Set IntaSend webhook secret
+firebase functions:secrets:set INTASEND_SECRET
+
+# Set IntaSend challenge token
+firebase functions:secrets:set INTASEND_CHALLENGE
 ```
 
-View current config:
+**Alternative**: Environment variables (for local development):
 ```bash
-firebase functions:config:get
+export INTASEND_SECRET="your-secret"
+export INTASEND_CHALLENGE="your-challenge"
 ```
 
 ### Firestore Configuration
 
-Create a document at `config/fees`:
+#### Fee Configuration
+
+Create document at `config/fees`:
 
 ```json
 {
-  "serviceFee": 1.5,      // Service fee percentage (default: 1.5%)
-  "arbitrageFee": 1.5     // Arbitrage fee percentage (default: 1.5%)
+  "serviceFee": 1.5,      // Service fee percentage (1.5%)
+  "arbitrageFee": 1.5     // Arbitrage fee percentage (1.5%)
 }
 ```
 
-**Note**: Fees are stored as percentages (e.g., 1.5 for 1.5%), but converted to decimals (0.015) in code.
+**Access**:
+```javascript
+const feesDoc = await firestore.collection('config').doc('fees').get();
+const fees = feesDoc.data();
+```
+
+---
 
 ### Scheduled Functions
 
 Scheduled functions use Cloud Scheduler with cron syntax:
+
 - `fetchBinanceRates`: `0 0 * * *` (daily at midnight UTC)
 - `fetchArbitrageRates`: `0 0 * * *` (daily at midnight UTC)
 
@@ -865,72 +1021,43 @@ exports.fetchBinanceRates = onSchedule("0 */6 * * *", async () => {
 
 - **Algorithm**: HMAC SHA-256
 - **Header**: `x-intasend-signature` or `X-IntaSend-Signature`
-- **Secret Storage**: Firebase Functions config (encrypted at rest)
-- **Comparison**: Timing-safe comparison to prevent timing attacks
+- **Secret Storage**: Firebase Functions secrets (encrypted at rest)
+- **Comparison**: Timing-safe comparison (`crypto.timingSafeEqual`) to prevent timing attacks
 
 ### 2. Firebase Authentication
 
-Callable functions (`getBinanceRates`, `getArbitrageRates`) require Firebase Authentication. Clients must be authenticated to call these functions.
+- Callable functions require Firebase Authentication
+- Admin functions verify `role: 'admin'` in user document
+- All functions validate auth context before processing
 
-### 3. CORS Configuration
+### 3. Admin Role Verification
 
-HTTP endpoints (`fetchBinanceRatesHttp`) have CORS enabled with:
-- `Access-Control-Allow-Origin: *`
-- `Access-Control-Allow-Methods: GET, POST, OPTIONS`
-- `Access-Control-Allow-Headers: Content-Type, Authorization`
+Admin functions check:
+```javascript
+const adminDoc = await firestore.collection("users").doc(adminId).get();
+const isAdmin = adminDoc.data().role === 'admin';
+```
 
 ### 4. Input Validation
 
-- Webhook handler validates required fields (`payment_id`, `user_id`)
-- Rate functions validate currency codes and amounts
+- Webhook handler validates required fields
+- Balance updates validate amounts and user IDs
 - All numeric inputs are parsed and validated
+- Currency codes are validated against allowed list
 
-### 5. Error Handling
+### 5. Transaction Safety
 
-- Functions return appropriate HTTP status codes
-- Sensitive error details are not exposed to clients
-- Errors are logged with structured JSON for monitoring
+- All balance updates use Firestore transactions
+- Prevents race conditions and ensures atomicity
+- Rollback on errors
 
----
+### 6. CORS Configuration
 
-## Error Handling
-
-### Scheduled Functions
-
-- **Error Strategy**: Return `null` to prevent retry loops
-- **Logging**: Structured JSON logs for each currency pair
-- **Batch Processing**: Continues processing other pairs if one fails
-- **Summary Logs**: Emits batch completion summary with success/failure counts
-
-### Callable Functions
-
-- **Error Type**: Throws `HttpsError` with code `internal`
-- **Error Message**: Includes descriptive error message
-- **Client Handling**: Clients receive error with code and message
-
-### HTTP Endpoints
-
-- **Status Codes**:
-  - `200`: Success
-  - `400`: Bad Request (missing required fields)
-  - `403`: Forbidden (invalid signature)
-  - `405`: Method Not Allowed
-  - `500`: Internal Server Error
-- **Error Response Format**:
-  ```json
-  {
-    "error": "internal",
-    "message": "Failed to fetch rates: <details>"
-  }
-  ```
-
-### Webhook Handler
-
-- **Signature Failure**: Returns `403 Forbidden` (does not log signature details)
-- **Missing Config**: Returns `500 Configuration error`
-- **Invalid Event**: Returns `200 "Ignored"` (non-fatal)
-- **Missing Data**: Returns `400 Bad Request`
-- **Database Errors**: Logged but not exposed to client
+HTTP endpoints have CORS enabled with:
+- `Access-Control-Allow-Origin`: Configurable (allows Firebase hosting origins)
+- `Access-Control-Allow-Methods`: GET, POST, PUT, DELETE, OPTIONS
+- `Access-Control-Allow-Headers`: Content-Type, Authorization
+- `Access-Control-Allow-Credentials`: true
 
 ---
 
@@ -958,9 +1085,10 @@ HTTP endpoints (`fetchBinanceRatesHttp`) have CORS enabled with:
    firebase use truepay-72060
    ```
 
-3. **Set Configuration**:
+3. **Set Secrets** (for local development):
    ```bash
-   firebase functions:config:set intasend.secret="your-secret"
+   export INTASEND_SECRET="your-secret"
+   export INTASEND_CHALLENGE="your-challenge"
    ```
 
 4. **Start Emulators**:
@@ -975,11 +1103,9 @@ HTTP endpoints (`fetchBinanceRatesHttp`) have CORS enabled with:
 **Test Callable Functions**:
 ```javascript
 // In Firebase Emulator UI or using Firebase SDK
-const functions = require('firebase-functions');
 const { getFunctions, httpsCallable } = require('firebase/functions');
-
-const functionsRef = getFunctions();
-const getBinanceRates = httpsCallable(functionsRef, 'getBinanceRates');
+const functions = getFunctions('http://localhost:5001');
+const getBinanceRates = httpsCallable(functions, 'getBinanceRates');
 const result = await getBinanceRates({ fiat: 'KES' });
 ```
 
@@ -989,7 +1115,7 @@ const result = await getBinanceRates({ fiat: 'KES' });
 curl "http://localhost:5001/truepay-72060/us-central1/fetchBinanceRatesHttp?fiat=KES"
 ```
 
-**Test Webhook** (requires ngrok for local testing):
+**Test Webhook** (requires ngrok):
 ```bash
 # Start ngrok tunnel
 ngrok http 5001
@@ -1028,26 +1154,28 @@ firebase deploy --only functions
 ```bash
 firebase deploy --only functions:fetchBinanceRates
 firebase deploy --only functions:handleTopUpWebhook
+firebase deploy --only functions:updateUserBalance
 ```
 
-### Environment Variables
+### Set Secrets After Deployment
 
-After deployment, set configuration:
 ```bash
-firebase functions:config:set intasend.secret="production-secret"
+firebase functions:secrets:set INTASEND_SECRET
+firebase functions:secrets:set INTASEND_CHALLENGE
 ```
 
-**Note**: Configuration changes require function redeployment to take effect.
+**Note**: Secrets are set interactively. Enter the secret value when prompted.
 
 ### Function URLs
 
-After deployment, function URLs are available in:
+After deployment, function URLs are available:
 - Firebase Console → Functions
 - Or via CLI: `firebase functions:list`
 
 **Example URLs**:
 - `https://us-central1-truepay-72060.cloudfunctions.net/fetchBinanceRatesHttp`
 - `https://us-central1-truepay-72060.cloudfunctions.net/handleTopUpWebhook`
+- `https://us-central1-truepay-72060.cloudfunctions.net/api/customer-wallets`
 
 ---
 
@@ -1060,20 +1188,6 @@ After deployment, function URLs are available in:
 curl "https://us-central1-truepay-72060.cloudfunctions.net/fetchBinanceRatesHttp?fiat=KES"
 
 # Expected: JSON response with rate data
-```
-
-### Test Webhook (with valid signature)
-
-```bash
-# Generate signature (example - use actual secret)
-SECRET="your-secret"
-BODY='{"event":"payment.completed","data":{"payment_id":"test_123","amount":1000,"currency":"KES","metadata":{"user_id":"test_user"}}}'
-SIGNATURE=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | cut -d' ' -f2)
-
-curl -X POST "https://us-central1-truepay-72060.cloudfunctions.net/handleTopUpWebhook" \
-  -H "Content-Type: application/json" \
-  -H "x-intasend-signature: $SIGNATURE" \
-  -d "$BODY"
 ```
 
 ### Test Callable Functions
@@ -1093,12 +1207,82 @@ try {
 }
 ```
 
+### Test Admin Functions
+
+```javascript
+// Must be authenticated as admin
+const updateUserBalance = httpsCallable(functions, 'updateUserBalance');
+
+const result = await updateUserBalance({
+  userId: 'test_user_id',
+  amount: 10,
+  reason: 'Test credit'
+});
+
+console.log('Balance updated:', result.data);
+```
+
 ### Verify Database Updates
 
-After webhook call, verify:
-1. **Realtime Database**: `payments/{paymentId}` exists
-2. **Realtime Database**: `wallet/balance/{userId}` updated
-3. **Firestore**: `users/{userId}` balance incremented
+After webhook call or balance update, verify:
+1. **Firestore**: `/users/{userId}` balance incremented
+2. **Realtime Database**: `/wallet/{userId}/fiat/USD` balance updated
+3. **Transaction Log**: `/transactions/{userId}/transactions/{txId}` created
+4. **Admin Log**: `/adminLogs/{logId}` created (if admin action)
+
+---
+
+## Troubleshooting
+
+### Balance Not Syncing to Realtime DB
+
+**Symptoms**: Firestore balance updates but Realtime DB shows old value
+
+**Solutions**:
+1. Check `syncBalance` trigger logs in Firebase Console
+2. Manually sync using `syncUserBalanceToRealtime` callable function
+3. Verify currency is correctly set in user document
+4. Check Realtime DB path: Should be `wallet/{userId}/fiat/{currency}`
+
+### Flutter App Shows 0 Balance
+
+**Symptoms**: User has balance in Firestore but Flutter app shows 0
+
+**Possible Causes**:
+1. **Path Mismatch**: Flutter app reading from wrong path
+   - **Fix**: Update Flutter app to read from `wallet/{userId}/fiat/USD`
+
+2. **Wallet Not Initialized**: User created before wallet initialization
+   - **Fix**: Call `syncUserBalanceToRealtime` for existing users
+
+3. **Sync Failed**: Balance sync trigger failed silently
+   - **Fix**: Check trigger logs, manually sync if needed
+
+### Webhook Not Processing Payments
+
+**Symptoms**: Payment completed but wallet not credited
+
+**Possible Causes**:
+1. **Invalid Signature**: Webhook signature verification failed
+   - **Fix**: Verify `INTASEND_SECRET` is correctly set
+
+2. **Wallet ID Not Resolved**: Could not find user from payment data
+   - **Fix**: Ensure order contains `metadata.invoiceId` matching webhook `invoice_id`
+   - Or create mapping at `wallet/pendingTopups/{invoice_id}`
+
+3. **Currency Mismatch**: Payment currency doesn't match user currency
+   - **Fix**: System handles currency conversion automatically, but verify user document has correct currency
+
+### Admin Functions Return Permission Denied
+
+**Symptoms**: Admin function calls return "permission-denied" error
+
+**Possible Causes**:
+1. **User Not Admin**: User document missing `role: 'admin'`
+   - **Fix**: Update user document in Firestore to include `role: 'admin'`
+
+2. **Auth Token Missing**: Function called without authentication
+   - **Fix**: Ensure Firebase Auth token is included in request
 
 ---
 
@@ -1129,9 +1313,9 @@ Functions emit structured JSON logs:
 
 ### Error Monitoring
 
-- Errors are logged with `event: "rates_update_failed"` or `event: "arbitrage_update_failed"`
+- Errors are logged with descriptive messages
 - Batch completion logs include success/failure counts
-- Webhook errors are logged with descriptive messages
+- Webhook errors include payment ID and user ID for tracking
 
 ---
 
@@ -1140,7 +1324,32 @@ Functions emit structured JSON logs:
 - **firebase-admin**: ^13.6.0 - Firebase Admin SDK for server-side operations
 - **firebase-functions**: ^7.0.0 - Firebase Cloud Functions runtime
 - **axios**: ^1.12.2 - HTTP client for Binance API requests
-- **node-cron**: ^4.2.1 - Cron scheduling (used by Firebase Scheduler)
+- **express**: ^5.2.0 - Web framework for REST API endpoints
+
+---
+
+## Best Practices
+
+### Balance Updates
+
+1. **Always use transactions**: Use `updateBalanceWithTransaction()` for all balance changes
+2. **Check Firestore first**: Firestore is the master source of truth
+3. **Let triggers sync**: Don't manually sync unless fixing discrepancies
+4. **Log all changes**: All balance updates are automatically logged
+
+### Client App Integration
+
+1. **Read from Realtime DB**: Use Realtime Database for real-time balance display
+2. **Read from Firestore for validation**: Use Firestore for critical operations
+3. **Handle missing wallets**: Return 0 balance if wallet doesn't exist
+4. **Use correct paths**: Read from `wallet/{userId}/fiat/{currency}` (not `/balance`)
+
+### Webhook Security
+
+1. **Always verify signatures**: Never process webhooks without signature verification
+2. **Use secrets**: Store webhook secrets in Firebase Functions secrets
+3. **Log all webhook attempts**: Monitor for suspicious activity
+4. **Idempotency**: Handle duplicate webhook calls gracefully
 
 ---
 
