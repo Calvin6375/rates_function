@@ -115,6 +115,25 @@ app.get("/customer-wallets", async (req, res) => {
         lastName = nameParts.slice(1).join(" ") || "";
       }
 
+      // Handle balance mapping: prioritize balance field as source of truth.
+      // If fiatBalance/cryptoBalance don't exist, are null/undefined, or are 0, 
+      // fall back to balance field. This ensures synchronization with actual user data.
+      const balance = Number(data.balance || 0);
+      const cryptoBalanceValue = data.cryptoBalance !== undefined && data.cryptoBalance !== null 
+        ? Number(data.cryptoBalance) 
+        : null;
+      const fiatBalanceValue = data.fiatBalance !== undefined && data.fiatBalance !== null 
+        ? Number(data.fiatBalance) 
+        : null;
+      
+      // Use balance as fallback if the specific balance fields are 0 or missing
+      const cryptoBalance = (cryptoBalanceValue !== null && cryptoBalanceValue !== 0) 
+        ? cryptoBalanceValue 
+        : balance;
+      const fiatBalance = (fiatBalanceValue !== null && fiatBalanceValue !== 0) 
+        ? fiatBalanceValue 
+        : balance;
+
       return {
         id: docId,
         customerId: docId,
@@ -122,8 +141,8 @@ app.get("/customer-wallets", async (req, res) => {
         lastName: lastName,
         email: data.email || "",
         phone: data.phoneNumber || data.phone || "",
-        cryptoBalance: Number(data.cryptoBalance || data.balance || 0),
-        fiatBalance: Number(data.fiatBalance || data.balance || 0),
+        cryptoBalance: cryptoBalance,
+        fiatBalance: fiatBalance,
         status: data.status || "Active",
         createdAt: data.createdAt?.toDate?.()?.toISOString() || null,
         updatedAt: data.updatedAt?.toDate?.()?.toISOString() || null,
@@ -174,6 +193,24 @@ app.get("/customer-wallets", async (req, res) => {
       const legacySnapshot = await legacyQuery.get();
       wallets = legacySnapshot.docs.map((doc) => {
         const data = doc.data();
+        
+        // Handle balance mapping: prioritize balance field as source of truth
+        const balance = Number(data.balance || 0);
+        const cryptoBalanceValue = data.cryptoBalance !== undefined && data.cryptoBalance !== null 
+          ? Number(data.cryptoBalance) 
+          : null;
+        const fiatBalanceValue = data.fiatBalance !== undefined && data.fiatBalance !== null 
+          ? Number(data.fiatBalance) 
+          : null;
+        
+        // Use balance as fallback if the specific balance fields are 0 or missing
+        const cryptoBalance = (cryptoBalanceValue !== null && cryptoBalanceValue !== 0) 
+          ? cryptoBalanceValue 
+          : balance;
+        const fiatBalance = (fiatBalanceValue !== null && fiatBalanceValue !== 0) 
+          ? fiatBalanceValue 
+          : balance;
+        
         return {
           id: doc.id,
           customerId: doc.id,
@@ -181,8 +218,8 @@ app.get("/customer-wallets", async (req, res) => {
           lastName: data.lastName || "",
           email: data.email || "",
           phone: data.phone || "",
-          cryptoBalance: Number(data.cryptoBalance || 0),
-          fiatBalance: Number(data.fiatBalance || data.balance || 0),
+          cryptoBalance: cryptoBalance,
+          fiatBalance: fiatBalance,
           status: data.status || "Active",
           createdAt: data.createdAt?.toDate?.()?.toISOString() || null,
           updatedAt: data.updatedAt?.toDate?.()?.toISOString() || null,
@@ -245,6 +282,23 @@ app.get("/customer-wallets/:id", async (req, res) => {
         lastName = nameParts.slice(1).join(" ") || "";
       }
       
+      // Handle balance mapping: prioritize balance field as source of truth
+      const balance = Number(userData.balance || 0);
+      const cryptoBalanceValue = userData.cryptoBalance !== undefined && userData.cryptoBalance !== null 
+        ? Number(userData.cryptoBalance) 
+        : null;
+      const fiatBalanceValue = userData.fiatBalance !== undefined && userData.fiatBalance !== null 
+        ? Number(userData.fiatBalance) 
+        : null;
+      
+      // Use balance as fallback if the specific balance fields are 0 or missing
+      const cryptoBalance = (cryptoBalanceValue !== null && cryptoBalanceValue !== 0) 
+        ? cryptoBalanceValue 
+        : balance;
+      const fiatBalance = (fiatBalanceValue !== null && fiatBalanceValue !== 0) 
+        ? fiatBalanceValue 
+        : balance;
+      
       // Format response to match frontend structure
       const response = {
         id: userDoc.id,
@@ -253,8 +307,8 @@ app.get("/customer-wallets/:id", async (req, res) => {
         lastName: lastName,
         email: userData.email || "",
         phone: userData.phoneNumber || userData.phone || "",
-        cryptoBalance: Number(userData.cryptoBalance || 0),
-        fiatBalance: Number(userData.fiatBalance || userData.balance || 0),
+        cryptoBalance: cryptoBalance,
+        fiatBalance: fiatBalance,
         status: userData.status || "Active",
         country: userData.country || null,
         kycStatus: userData.kycStatus || null,
@@ -369,6 +423,23 @@ app.put("/customer-wallets/:id", async (req, res) => {
         lastName = nameParts.slice(1).join(" ") || "";
       }
 
+      // Handle balance mapping: prioritize balance field as source of truth
+      const balance = Number(updatedData.balance || 0);
+      const cryptoBalanceValue = updatedData.cryptoBalance !== undefined && updatedData.cryptoBalance !== null 
+        ? Number(updatedData.cryptoBalance) 
+        : null;
+      const fiatBalanceValue = updatedData.fiatBalance !== undefined && updatedData.fiatBalance !== null 
+        ? Number(updatedData.fiatBalance) 
+        : null;
+      
+      // Use balance as fallback if the specific balance fields are 0 or missing
+      const cryptoBalance = (cryptoBalanceValue !== null && cryptoBalanceValue !== 0) 
+        ? cryptoBalanceValue 
+        : balance;
+      const fiatBalance = (fiatBalanceValue !== null && fiatBalanceValue !== 0) 
+        ? fiatBalanceValue 
+        : balance;
+
       const response = {
         id: updatedDoc.id,
         customerId: updatedDoc.id,
@@ -376,8 +447,8 @@ app.put("/customer-wallets/:id", async (req, res) => {
         lastName: lastName,
         email: updatedData.email || "",
         phone: updatedData.phoneNumber || updatedData.phone || "",
-        cryptoBalance: Number(updatedData.cryptoBalance || 0),
-        fiatBalance: Number(updatedData.fiatBalance || updatedData.balance || 0),
+        cryptoBalance: cryptoBalance,
+        fiatBalance: fiatBalance,
         status: updatedData.status || "Active",
         country: updatedData.country || null,
         kycStatus: updatedData.kycStatus || null,
@@ -527,6 +598,15 @@ app.post("/customer-wallets/:id/credit", async (req, res) => {
         lastName = nameParts.slice(1).join(" ") || "";
       }
 
+      // Handle balance mapping for cryptoBalance: prioritize balance field as source of truth
+      const balance = Number(updatedData.balance || 0);
+      const cryptoBalanceValue = updatedData.cryptoBalance !== undefined && updatedData.cryptoBalance !== null 
+        ? Number(updatedData.cryptoBalance) 
+        : null;
+      const cryptoBalance = (cryptoBalanceValue !== null && cryptoBalanceValue !== 0) 
+        ? cryptoBalanceValue 
+        : balance;
+
       res.status(200).json({
         success: true,
         data: {
@@ -536,8 +616,8 @@ app.post("/customer-wallets/:id/credit", async (req, res) => {
           lastName: lastName,
           email: updatedData.email || "",
           phone: updatedData.phoneNumber || updatedData.phone || "",
-          cryptoBalance: Number(updatedData.cryptoBalance || 0),
-          fiatBalance: newFiatBalance,
+          cryptoBalance: cryptoBalance,
+          fiatBalance: newFiatBalance, // Use the newly calculated fiatBalance
           status: updatedData.status || "Active",
         },
         transaction: {
@@ -727,6 +807,15 @@ app.post("/customer-wallets/:id/debit", async (req, res) => {
         lastName = nameParts.slice(1).join(" ") || "";
       }
 
+      // Handle balance mapping for cryptoBalance: prioritize balance field as source of truth
+      const balance = Number(updatedData.balance || 0);
+      const cryptoBalanceValue = updatedData.cryptoBalance !== undefined && updatedData.cryptoBalance !== null 
+        ? Number(updatedData.cryptoBalance) 
+        : null;
+      const cryptoBalance = (cryptoBalanceValue !== null && cryptoBalanceValue !== 0) 
+        ? cryptoBalanceValue 
+        : balance;
+
       res.status(200).json({
         success: true,
         data: {
@@ -736,8 +825,8 @@ app.post("/customer-wallets/:id/debit", async (req, res) => {
           lastName: lastName,
           email: updatedData.email || "",
           phone: updatedData.phoneNumber || updatedData.phone || "",
-          cryptoBalance: Number(updatedData.cryptoBalance || 0),
-          fiatBalance: newFiatBalance,
+          cryptoBalance: cryptoBalance,
+          fiatBalance: newFiatBalance, // Use the newly calculated fiatBalance
           status: updatedData.status || "Active",
         },
         transaction: {

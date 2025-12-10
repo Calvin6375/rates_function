@@ -31,6 +31,8 @@ async function updateBalanceWithTransaction(
 
       const userData = userDoc.data();
       const currentBalance = Number(userData.balance || 0);
+      const currentFiatBalance = Number(userData.fiatBalance || 0);
+      const currentCryptoBalance = Number(userData.cryptoBalance || 0);
       const newBalance = currentBalance + amountDelta;
 
       // Prevent negative balance (unless explicitly allowed in metadata)
@@ -38,11 +40,31 @@ async function updateBalanceWithTransaction(
         throw new Error(`Insufficient balance. Current: ${currentBalance}, Attempted: ${amountDelta}`);
       }
 
-      // Update balance
-      transaction.update(userRef, {
+      // Determine which balance field to update based on transaction type and currency
+      // Default: fiat transactions (topup, credit) update fiatBalance, crypto transactions update cryptoBalance
+      const isCryptoTransaction = metadata.currency === "USDT" || 
+                                   metadata.currency === "BTC" || 
+                                   metadata.currency === "ETH" ||
+                                   transactionType === "crypto" ||
+                                   metadata.isCrypto === true;
+      
+      // Update balance fields to keep them synchronized with the master balance field
+      // This ensures admin dashboard reading directly from Firestore sees correct values
+      const updateData = {
         balance: newBalance,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
+      };
+      
+      if (isCryptoTransaction) {
+        // Crypto transaction: update cryptoBalance to match balance
+        updateData.cryptoBalance = currentCryptoBalance + amountDelta;
+      } else {
+        // Fiat transaction (default): update fiatBalance to match balance
+        // This ensures admin dashboard sees correct fiatBalance when reading directly from Firestore
+        updateData.fiatBalance = currentFiatBalance + amountDelta;
+      }
+
+      transaction.update(userRef, updateData);
 
       return {
         previousBalance: currentBalance,

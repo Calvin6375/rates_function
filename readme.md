@@ -598,6 +598,104 @@ const result = await syncUserBalanceToRealtime({
 
 ---
 
+### 6. `getIntaSendPaymentStatus`
+
+**Type**: Firebase Callable Function  
+**Authentication**: Required (Admin only)  
+**Purpose**: Check the status of an IntaSend payment by invoice_id
+
+**Request**:
+```javascript
+const getIntaSendPaymentStatus = httpsCallable(functions, 'getIntaSendPaymentStatus');
+
+const result = await getIntaSendPaymentStatus({
+  invoiceId: 'XMSLWOS'  // IntaSend invoice ID
+});
+```
+
+**Response**:
+```json
+{
+  "success": true,
+  "invoiceId": "XMSLWOS",
+  "status": {
+    "invoice": {
+      "id": "XMSLWOS",
+      "invoice_id": "XMSLWOS",
+      "state": "PENDING",
+      "provider": "M-PESA",
+      "charges": "0.00",
+      "net_amount": 10.36,
+      "currency": "KES",
+      "value": "10.36",
+      "account": "test@example.com",
+      "api_ref": "ISL_faa26ef9-eb08-4353-b125-ec6a8f022815",
+      "host": "https://sandbox.intasend.com",
+      "failed_reason": null,
+      "created_at": "2021-04-11T08:37:15.781977+03:00",
+      "updated_at": "2021-04-11T08:37:15.782011+03:00"
+    },
+    "meta": {
+      "id": "5aec8e0b-8d96-429b-98b7-5361198160bd",
+      "customer": {
+        "id": "ZOEW022",
+        "phone_number": "",
+        "email": "test@example.com",
+        "first_name": "FELIX",
+        "last_name": "CHERUIYOT",
+        "country": "KE",
+        "address": "Westlands",
+        "city": "Nairobi",
+        "state": "Nairobi",
+        "zipcode": "2020",
+        "provider": "M-PESA",
+        "created_at": "2020-08-06T16:24:06.247397+03:00",
+        "updated_at": "2021-04-11T08:37:15.755013+03:00"
+      },
+      "customer_comment": "",
+      "created_at": "2021-04-11T08:37:15.810438+03:00",
+      "updated_at": "2021-04-11T08:37:15.810475+03:00"
+    }
+  },
+  "invoice": {
+    // Same as status.invoice (for convenience)
+  },
+  "meta": {
+    // Same as status.meta (for convenience)
+  }
+}
+```
+
+**Payment States**:
+- `PENDING` - Payment is pending
+- `PROCESSING` - Payment is being processed
+- `COMPLETE` - Payment completed successfully
+- `FAILED` - Payment failed
+
+**Configuration**:
+This function requires IntaSend API credentials to be configured as Firebase secrets:
+```bash
+# Set IntaSend API secret key (required)
+firebase functions:secrets:set INTASEND_SECRET_KEY
+
+# Set IntaSend publishable key (optional, but recommended)
+firebase functions:secrets:set INTASEND_PUBLISHABLE_KEY
+```
+
+**Error Handling**:
+- `not-found` - Invoice ID not found in IntaSend
+- `permission-denied` - Invalid IntaSend API credentials
+- `failed-precondition` - IntaSend API keys not configured
+- `deadline-exceeded` - IntaSend API request timed out
+
+**Use Cases**:
+- Check payment status for reconciliation
+- Verify payment completion before manual balance updates
+- Debug payment issues in admin dashboard
+- Track payment state changes
+
+---
+
 ## Database Structure
 
 ### Firestore Collections

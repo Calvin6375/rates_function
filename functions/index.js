@@ -43,3 +43,4 @@ exports.updateKYCStatus = adminActions.updateKYCStatus; // Admin: Update KYC sta
 exports.syncUserBalanceToRealtime = adminActions.syncUserBalanceToRealtime; // Admin: Manually sync balance to Realtime DB
 exports.getCommissionConfig = adminActions.getCommissionConfig; // Admin: Get commission configuration
 exports.updateCommissionConfig = adminActions.updateCommissionConfig; // Admin: Update commission configuration
+exports.getIntaSendPaymentStatus = adminActions.getIntaSendPaymentStatus; // Admin: Get IntaSend payment status by invoice_id

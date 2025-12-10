@@ -454,6 +454,140 @@ print('New Arbitrage Fee: ${result.data['config']['arbitrageFee']}%');
 
 ---
 
+### 10. Get IntaSend Payment Status (Admin Only)
+
+**Function Name**: `getIntaSendPaymentStatus`
+
+**Description**: Admin-only function to check the status of an IntaSend payment by invoice_id. This allows admins to track payment status directly from the dashboard.
+
+**Authentication**: Required (Admin user only)
+
+**Request Body**:
+```typescript
+{
+  invoiceId: string;  // IntaSend invoice ID (e.g., "XMSLWOS")
+}
+```
+
+**Response**:
+```typescript
+{
+  success: boolean;
+  invoiceId: string;
+  status: {
+    invoice: {
+      id: string;
+      invoice_id: string;
+      state: "PENDING" | "PROCESSING" | "COMPLETE" | "FAILED";
+      provider: string;           // e.g., "M-PESA"
+      charges: string;            // e.g., "0.00"
+      net_amount: number;         // Amount after fees
+      currency: string;            // e.g., "KES"
+      value: string;              // Original amount
+      account: string;             // Phone number or email
+      api_ref: string;
+      host: string;               // IntaSend host URL
+      failed_reason: string | null;
+      created_at: string;         // ISO timestamp
+      updated_at: string;         // ISO timestamp
+    };
+    meta: {
+      id: string;
+      customer: {
+        id: string;
+        phone_number: string;
+        email: string;
+        first_name: string;
+        last_name: string;
+        country: string;
+        address: string;
+        city: string;
+        state: string;
+        zipcode: string;
+        provider: string;
+        created_at: string;
+        updated_at: string;
+      };
+      customer_comment: string;
+      created_at: string;
+      updated_at: string;
+    };
+  };
+  invoice: object;  // Same as status.invoice (for convenience)
+  meta: object;    // Same as status.meta (for convenience)
+}
+```
+
+**Payment States**:
+- `PENDING` - Payment is pending user action
+- `PROCESSING` - Payment is being processed
+- `COMPLETE` - Payment completed successfully
+- `FAILED` - Payment failed
+
+**Error Codes**:
+- `unauthenticated` - User not logged in
+- `permission-denied` - User is not an admin or invalid IntaSend API credentials
+- `invalid-argument` - Missing or invalid invoiceId
+- `not-found` - Invoice ID not found in IntaSend
+- `failed-precondition` - IntaSend API keys not configured
+- `deadline-exceeded` - IntaSend API request timed out
+
+**Example - Web/React**:
+```javascript
+import { getFunctions, httpsCallable } from 'firebase/functions';
+
+const functions = getFunctions();
+const getIntaSendPaymentStatus = httpsCallable(functions, 'getIntaSendPaymentStatus');
+
+try {
+  const result = await getIntaSendPaymentStatus({
+    invoiceId: 'XMSLWOS'
+  });
+  
+  const status = result.data.status;
+  console.log('Payment State:', status.invoice.state);
+  console.log('Amount:', status.invoice.net_amount, status.invoice.currency);
+  console.log('Customer:', status.meta.customer.first_name, status.meta.customer.last_name);
+} catch (error) {
+  if (error.code === 'not-found') {
+    console.error('Invoice not found');
+  } else if (error.code === 'permission-denied') {
+    console.error('Admin access required or invalid API credentials');
+  } else {
+    console.error('Error:', error.message);
+  }
+}
+```
+
+**Example - Flutter**:
+```dart
+final getIntaSendPaymentStatus = functions.httpsCallable('getIntaSendPaymentStatus');
+
+try {
+  final result = await getIntaSendPaymentStatus.call({
+    'invoiceId': 'XMSLWOS',
+  });
+  
+  final status = result.data['status'];
+  print('Payment State: ${status['invoice']['state']}');
+  print('Amount: ${status['invoice']['net_amount']} ${status['invoice']['currency']}');
+} catch (e) {
+  print('Error: $e');
+}
+```
+
+**Configuration Required**:
+Before using this function, you must configure IntaSend API credentials as Firebase secrets:
+```bash
+# Set IntaSend API secret key (required)
+firebase functions:secrets:set INTASEND_SECRET_KEY
+
+# Set IntaSend publishable key (optional, but recommended)
+firebase functions:secrets:set INTASEND_PUBLISHABLE_KEY
+```
+
+---
+
 ## HTTP REST Endpoints
 
 REST endpoints are accessible via HTTP requests. They support CORS and can be called from web applications.

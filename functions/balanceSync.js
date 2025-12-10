@@ -28,9 +28,34 @@ exports.syncBalance = onDocumentUpdated(
         const beforeBalance = Number(beforeData.balance ?? beforeData.fiatBalance ?? 0);
         const afterBalance = Number(afterData.balance ?? afterData.fiatBalance ?? 0);
 
-        // Only sync if balance actually changed
+        // Sync fiatBalance with balance if fiatBalance is 0 or missing
+        // This ensures admin dashboard reading directly from Firestore sees correct values
+        // Only sync if balance exists and fiatBalance is 0 or undefined (not if it has a different non-zero value)
+        if (afterData.balance !== undefined) {
+          const currentFiatBalance = afterData.fiatBalance;
+          const needsFiatSync = currentFiatBalance === undefined || 
+                                 currentFiatBalance === null || 
+                                 (typeof currentFiatBalance === 'number' && currentFiatBalance === 0);
+
+          if (needsFiatSync && afterBalance > 0) {
+            const userRef = event.data.after.ref;
+            try {
+              await userRef.update({
+                fiatBalance: afterBalance,
+              });
+              console.log(`✅ Synced fiatBalance with balance for ${uid}`, {
+                balance: afterBalance,
+                fiatBalance: afterBalance,
+              });
+            } catch (updateError) {
+              console.warn(`⚠️ Failed to sync fiatBalance for ${uid}:`, updateError.message);
+            }
+          }
+        }
+
+        // Only sync to Realtime DB if balance actually changed
         if (beforeBalance === afterBalance) {
-          console.log(`ℹ️ Balance unchanged for ${uid}, skipping sync`);
+          console.log(`ℹ️ Balance unchanged for ${uid}, skipping Realtime DB sync`);
           return null;
         }
 

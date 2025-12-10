@@ -1,11 +1,27 @@
 const {onCall, HttpsError} = require("firebase-functions/v2/https");
+const {defineSecret} = require("firebase-functions/params");
 const admin = require("./admin");
+const axios = require("axios");
 const {updateBalanceWithTransaction, getUserBalance, userExists} = require("./utils/firestore");
 const {syncBalanceToRealtime} = require("./utils/realtime");
 const {logAdminAction} = require("./utils/transactions");
 const {validateBalanceUpdate, isAdmin} = require("./utils/validation");
 
 const firestore = admin.firestore();
+
+// IntaSend API configuration
+const intaSendSecretKey = defineSecret("INTASEND_SECRET_KEY");
+const intaSendPublishableKey = defineSecret("INTASEND_PUBLISHABLE_KEY");
+
+/**
+ * Get IntaSend API keys
+ * @returns {{secretKey: string|null, publishableKey: string|null}}
+ */
+function getIntaSendKeys() {
+  const secretKey = intaSendSecretKey.value() || process.env.INTASEND_SECRET_KEY || null;
+  const publishableKey = intaSendPublishableKey.value() || process.env.INTASEND_PUBLISHABLE_KEY || null;
+  return {secretKey, publishableKey};
+}
 
 /**
  * Helper: Verify admin role
@@ -664,6 +680,152 @@ exports.updateCommissionConfig = onCall(
     }
 
     throw new HttpsError("internal", `Failed to update commission config: ${error.message}`);
+  }
+});
+
+/**
+ * Callable Function: Get IntaSend Payment Status
+ * Admin-only function to check the status of an IntaSend payment by invoice_id
+ * 
+ * @param {Object} request.data - Request data
+ * @param {string} request.data.invoiceId - IntaSend invoice ID
+ * @param {string} request.auth.uid - Admin user ID
+ */
+exports.getIntaSendPaymentStatus = onCall(
+    {
+      secrets: [intaSendSecretKey, intaSendPublishableKey],
+      region: "us-central1",
+      cpu: 0.25,
+      memory: "256MiB",
+    },
+    async (request) => {
+  try {
+    const adminId = request.auth?.uid;
+    if (!adminId) {
+      throw new HttpsError("unauthenticated", "Authentication required");
+    }
+
+    // Verify admin role
+    const isAdminUser = await verifyAdmin(adminId);
+    if (!isAdminUser) {
+      throw new HttpsError("permission-denied", "Admin access required");
+    }
+
+    const {invoiceId} = request.data || {};
+
+    if (!invoiceId || typeof invoiceId !== "string" || invoiceId.trim().length === 0) {
+      throw new HttpsError("invalid-argument", "invoiceId is required and must be a non-empty string");
+    }
+
+    // Get IntaSend API keys
+    const {secretKey, publishableKey} = getIntaSendKeys();
+
+    if (!secretKey) {
+      throw new HttpsError("failed-precondition", "IntaSend API secret key is not configured. Please set INTASEND_SECRET_KEY secret.");
+    }
+
+    // Determine if we're in sandbox or production based on the key or environment
+    // IntaSend sandbox keys typically start with "IS" or contain "sandbox"
+    const isSandbox = secretKey.includes("sandbox") || secretKey.toLowerCase().includes("test") || 
+                      process.env.INTASEND_ENV === "sandbox";
+    
+    const baseUrl = isSandbox 
+      ? "https://sandbox.intasend.com" 
+      : "https://payment.intasend.com";
+
+    // IntaSend API endpoint for checking collection status
+    const statusUrl = `${baseUrl}/api/v1/payment/collections/${invoiceId.trim()}/status/`;
+
+    console.log(`🔍 Checking IntaSend payment status for invoice: ${invoiceId}`, {
+      baseUrl,
+      isSandbox,
+    });
+
+    try {
+      // Make API call to IntaSend
+      // IntaSend API typically uses Bearer token authentication with the secret key
+      // Some endpoints may use Basic Auth, so we'll try Bearer first
+      const headers = {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${secretKey}`,
+      };
+
+      // If publishable key is available, some IntaSend endpoints use it
+      if (publishableKey) {
+        headers["X-Publishable-Key"] = publishableKey;
+      }
+
+      const response = await axios.get(statusUrl, {
+        headers,
+        timeout: 10000, // 10 second timeout
+      });
+
+      const statusData = response.data;
+
+      console.log(`✅ Successfully retrieved payment status for invoice: ${invoiceId}`);
+
+      // Log admin action
+      await logAdminAction(
+          adminId,
+          "system",
+          "checkPaymentStatus",
+          {},
+          {invoiceId, status: statusData.invoice?.state || "unknown"},
+      );
+
+      // Return the status data in a structured format
+      return {
+        success: true,
+        invoiceId,
+        status: statusData,
+        // Extract key fields for easier access
+        invoice: statusData.invoice || null,
+        meta: statusData.meta || null,
+      };
+    } catch (apiError) {
+      // Handle API errors
+      if (apiError.response) {
+        // IntaSend API returned an error response
+        const statusCode = apiError.response.status;
+        const errorData = apiError.response.data;
+
+        console.error(`❌ IntaSend API error for invoice ${invoiceId}:`, {
+          statusCode,
+          error: errorData,
+        });
+
+        if (statusCode === 404) {
+          throw new HttpsError("not-found", `Invoice ${invoiceId} not found in IntaSend`);
+        } else if (statusCode === 401 || statusCode === 403) {
+          throw new HttpsError("permission-denied", "Invalid IntaSend API credentials");
+        } else {
+          throw new HttpsError(
+              "internal",
+              `IntaSend API error: ${errorData?.message || errorData?.error || "Unknown error"}`,
+          );
+        }
+      } else if (apiError.request) {
+        // Request was made but no response received
+        console.error(`❌ No response from IntaSend API for invoice ${invoiceId}:`, apiError.message);
+        throw new HttpsError("deadline-exceeded", "IntaSend API request timed out or failed to connect");
+      } else {
+        // Error setting up the request
+        console.error(`❌ Error setting up IntaSend API request for invoice ${invoiceId}:`, apiError.message);
+        throw new HttpsError("internal", `Failed to check payment status: ${apiError.message}`);
+      }
+    }
+  } catch (error) {
+    console.error("❌ Error checking IntaSend payment status:", {
+      adminId: request.auth?.uid,
+      invoiceId: request.data?.invoiceId,
+      error: error.message,
+    });
+
+    if (error instanceof HttpsError) {
+      throw error;
+    }
+
+    throw new HttpsError("internal", `Failed to check payment status: ${error.message}`);
   }
 });
 
