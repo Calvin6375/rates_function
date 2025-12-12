@@ -236,9 +236,54 @@ const result = await getArbitrageRates({
 
 ---
 
+#### 5. `createPayment`
+
+**Type**: Firebase Callable Function  
+**Authentication**: Required (Firebase Auth)  
+**Purpose**: Create a payment order record after IntaSend checkout creation
+
+**Request**:
+```javascript
+const createPayment = httpsCallable(functions, 'createPayment');
+
+const result = await createPayment({
+  amount: 1000,                    // Required: Payment amount
+  currency: 'KES',                 // Required: Currency code
+  invoiceId: 'XMSLWOS',            // Required: IntaSend invoice ID (or provide checkoutUrl)
+  checkoutUrl: 'https://...',      // Optional: IntaSend checkout URL (invoiceId extracted from URL)
+  phoneNumber: '+254712345678',    // Optional: User's phone number (fetched from user doc if not provided)
+  metadata: {}                     // Optional: Additional metadata
+});
+```
+
+**Response**:
+```json
+{
+  "success": true,
+  "orderId": "order_abc123",
+  "invoiceId": "XMSLWOS",
+  "paymentId": "XMSLWOS",
+  "amount": 1000,
+  "currency": "KES",
+  "status": "pending",
+  "checkoutUrl": "https://payment.intasend.com/checkout/XMSLWOS/express/",
+  "createdAt": "2024-01-01T00:00:00Z"
+}
+```
+
+**What it does**:
+- Creates order document in Firestore: `/orders/{orderId}`
+- Creates invoice mapping in Realtime DB: `/wallet/pendingTopups/{invoiceId}`
+- Creates phone-to-invoice mapping: `/wallet/phoneToInvoice/{phoneNumber}/{invoiceId}`
+- Stores order metadata for webhook handler to credit the correct user's wallet
+
+**Note**: This function should be called after creating an IntaSend checkout session to ensure the webhook can properly credit the user's wallet.
+
+---
+
 ### HTTP Endpoints
 
-#### 5. `fetchBinanceRatesHttp`
+#### 6. `fetchBinanceRatesHttp`
 
 **Type**: HTTP Request Function  
 **URL**: `https://us-central1-truepay-72060.cloudfunctions.net/fetchBinanceRatesHttp`  
@@ -260,7 +305,7 @@ curl -X POST "https://us-central1-truepay-72060.cloudfunctions.net/fetchBinanceR
 
 ---
 
-#### 6. `handleTopUpWebhook`
+#### 7. `handleTopUpWebhook`
 
 **Type**: HTTP Request Function  
 **URL**: `https://us-central1-truepay-72060.cloudfunctions.net/handleTopUpWebhook`  
@@ -305,24 +350,30 @@ curl -X POST "https://us-central1-truepay-72060.cloudfunctions.net/fetchBinanceR
 **Response**:
 - `200 OK`: Payment processed successfully
 - `400 Bad Request`: Missing payment identifier or wallet ID
-- `403 Forbidden`: Invalid signature
+- `403 Forbidden`: Invalid signature or challenge token
 - `405 Method Not Allowed`: Not a POST request
-- `500 Configuration error`: Webhook secret not configured
+- `500 Configuration error`: Neither INTASEND_SECRET nor INTASEND_CHALLENGE configured
+
+**Security Verification**:
+- Verifies HMAC SHA-256 signature (if `INTASEND_SECRET` is configured)
+- OR verifies challenge token (if `INTASEND_CHALLENGE` is configured)
+- At least one verification method must be configured
+- Challenge token can be sent in header `x-intasend-challenge`, query parameter `challenge`, or payload `challenge` field
 
 **Process**:
-1. Verifies HMAC SHA-256 signature
-2. Resolves wallet/user ID using multiple strategies:
-   - Order lookup (preferred): Query Firestore orders by invoice_id
-   - RTDB mapping: Look up `wallet/pendingTopups/{invoice_id}`
-   - Metadata user_id: From IntaSend payload
-   - Phone lookup (fallback): Resolve account (phone) → Firestore user doc
-3. Updates Firestore balance using transaction
-4. Syncs balance to Realtime Database at `wallet/{userId}/fiat/{currency}`
-5. Logs transaction and admin action
+1. Verifies HMAC SHA-256 signature or challenge token
+2. Only processes payments with `state: "COMPLETE"` (skips PENDING, PROCESSING, FAILED)
+3. Checks for duplicate processing (prevents double credits)
+4. Resolves wallet/user ID using multiple strategies (see Wallet ID Resolution Strategies below)
+5. Updates Firestore balance using transaction
+6. Updates order status to "completed" if order exists
+7. Updates `lastTopUp` timestamp in user document
+8. Syncs balance to Realtime Database at `wallet/{userId}/fiat/{currency}`
+9. Logs transaction and admin action
 
 ---
 
-#### 7. `api` (Customer Wallets REST API)
+#### 8. `api` (Customer Wallets REST API)
 
 **Type**: HTTP Request Function (Express Router)  
 **Base URL**: `https://us-central1-truepay-72060.cloudfunctions.net/api`  
@@ -346,7 +397,7 @@ curl -X POST "https://us-central1-truepay-72060.cloudfunctions.net/fetchBinanceR
 
 ### Firestore Triggers
 
-#### 8. `syncBalance`
+#### 9. `syncBalance`
 
 **Type**: Firestore Trigger (onDocumentUpdated)  
 **Trigger**: `users/{uid}` document updated  
@@ -363,7 +414,7 @@ curl -X POST "https://us-central1-truepay-72060.cloudfunctions.net/fetchBinanceR
 
 ---
 
-#### 9. `onUserCreated`
+#### 10. `onUserCreated`
 
 **Type**: Firestore Trigger (onDocumentCreated)  
 **Trigger**: `users/{uid}` document created  
@@ -371,23 +422,44 @@ curl -X POST "https://us-central1-truepay-72060.cloudfunctions.net/fetchBinanceR
 
 ---
 
-### Auth Triggers
+### Callable Functions (User Management)
 
-#### 10. `userBootstrap`
+#### 11. `userBootstrap`
 
-**Type**: Auth Trigger (auth.user().onCreate)  
-**Trigger**: New user created via Firebase Authentication  
-**Purpose**: Initialize user documents and wallets for new users
+**Type**: Firebase Callable Function  
+**Authentication**: Required (Firebase Auth)  
+**Purpose**: Initialize user documents and wallets for new users after Firebase Authentication signup
+
+**Request**:
+```javascript
+const userBootstrap = httpsCallable(functions, 'userBootstrap');
+
+// No parameters needed - uses authenticated user's UID
+const result = await userBootstrap();
+```
+
+**Response**:
+```json
+{
+  "success": true,
+  "userId": "user_abc123",
+  "firestore": "created",
+  "realtimeDb": "created"
+}
+```
 
 **Process**:
-1. Creates user document in Firestore: `/users/{uid}`
-2. Initializes balance at `wallet/{uid}/fiat/USD` in Realtime DB
-3. Ensures idempotency by checking if user document exists
+1. Gets authenticated user's UID from request
+2. Fetches user data from Firebase Auth (email, displayName)
+3. Checks if user document already exists (idempotency)
+4. Creates user document in Firestore: `/users/{uid}` (only if doesn't exist)
+5. Initializes balance at `wallet/{uid}/fiat/USD` in Realtime DB
+6. Merges missing fields if user document already exists
 
 **Initial User Document**:
 ```json
 {
-  "name": null,
+  "name": "John Doe",
   "email": "user@example.com",
   "createdAt": "2024-01-01T00:00:00Z",
   "balance": 0,
@@ -395,6 +467,8 @@ curl -X POST "https://us-central1-truepay-72060.cloudfunctions.net/fetchBinanceR
   "updatedAt": "2024-01-01T00:00:00Z"
 }
 ```
+
+**Note**: This is a callable function that should be called by the client after user signup, not an automatic Auth trigger.
 
 ---
 
@@ -598,7 +672,73 @@ const result = await syncUserBalanceToRealtime({
 
 ---
 
-### 6. `getIntaSendPaymentStatus`
+### 6. `getCommissionConfig`
+
+**Type**: Firebase Callable Function  
+**Authentication**: Required (Admin only)  
+**Purpose**: Retrieve current commission/fee configuration
+
+**Request**:
+```javascript
+const getCommissionConfig = httpsCallable(functions, 'getCommissionConfig');
+
+const result = await getCommissionConfig();
+```
+
+**Response**:
+```json
+{
+  "success": true,
+  "config": {
+    "arbitrageFee": 1.5,
+    "serviceFee": 1.5,
+    "updatedAt": 1704067200000
+  }
+}
+```
+
+**Note**: Returns default values (1.5% for both fees) if config document doesn't exist.
+
+---
+
+### 7. `updateCommissionConfig`
+
+**Type**: Firebase Callable Function  
+**Authentication**: Required (Admin only)  
+**Purpose**: Update commission/fee configuration
+
+**Request**:
+```javascript
+const updateCommissionConfig = httpsCallable(functions, 'updateCommissionConfig');
+
+const result = await updateCommissionConfig({
+  arbitrageFee: 2.0,  // Optional: Arbitrage fee percentage (0-100)
+  serviceFee: 1.5      // Optional: Service fee percentage (0-100)
+});
+```
+
+**Response**:
+```json
+{
+  "success": true,
+  "config": {
+    "arbitrageFee": 2.0,
+    "serviceFee": 1.5,
+    "updatedAt": 1704067200000,
+    "updatedBy": "admin_user_id"
+  },
+  "message": "Commission configuration updated successfully"
+}
+```
+
+**Validation**:
+- Fees must be numbers between 0 and 100
+- At least one fee (arbitrageFee or serviceFee) must be provided
+- Changes are logged to admin logs
+
+---
+
+### 8. `getIntaSendPaymentStatus`
 
 **Type**: Firebase Callable Function  
 **Authentication**: Required (Admin only)  
@@ -681,6 +821,11 @@ firebase functions:secrets:set INTASEND_SECRET_KEY
 # Set IntaSend publishable key (optional, but recommended)
 firebase functions:secrets:set INTASEND_PUBLISHABLE_KEY
 ```
+
+**Environment Detection**:
+- Automatically detects sandbox vs production based on key format or `INTASEND_ENV` environment variable
+- Sandbox keys typically contain "sandbox" or "test"
+- Uses appropriate IntaSend API base URL (`sandbox.intasend.com` or `payment.intasend.com`)
 
 **Error Handling**:
 - `not-found` - Invoice ID not found in IntaSend
@@ -839,6 +984,36 @@ firebase functions:secrets:set INTASEND_PUBLISHABLE_KEY
 
 ---
 
+#### `/orders/{orderId}` - Payment Orders
+
+**Structure**:
+```json
+{
+  "userId": "user_abc123",
+  "orderType": "topup",
+  "status": "pending",
+  "amount": 1000,
+  "currency": "KES",
+  "invoiceId": "XMSLWOS",
+  "phoneNumber": "+254712345678",
+  "metadata": {
+    "invoiceId": "XMSLWOS",
+    "paymentId": "XMSLWOS",
+    "checkoutUrl": "https://payment.intasend.com/checkout/XMSLWOS/express/",
+    "phoneNumber": "+254712345678",
+    "createdAt": "2024-01-01T00:00:00Z"
+  },
+  "createdAt": "2024-01-01T00:00:00Z",
+  "updatedAt": "2024-01-01T00:00:00Z"
+}
+```
+
+**Order Statuses**: `pending`, `completed`, `failed`, `cancelled`
+
+**Note**: Created by `createPayment` callable function. Used by webhook handler to resolve user ID from invoice ID.
+
+---
+
 #### `/customerWallets/{walletId}` - Legacy Customer Wallets
 
 **Note**: Legacy system. Consider migrating to `/users/{userId}` architecture.
@@ -943,6 +1118,26 @@ firebase functions:secrets:set INTASEND_PUBLISHABLE_KEY
 
 ---
 
+#### `/wallet/phoneToInvoice/{phoneNumber}/{invoiceId}` - Phone-to-Invoice Mapping
+
+**Path Format**: `wallet/phoneToInvoice/{phoneNumber}/{invoiceId}`
+
+**Structure**:
+```json
+{
+  "userId": "user_abc123",
+  "orderId": "order_xyz789",
+  "invoiceId": "XMSLWOS",
+  "amount": 1000,
+  "currency": "KES",
+  "createdAt": "2024-01-01T00:00:00Z"
+}
+```
+
+**Note**: Created by `createPayment` function for direct phone number lookup in webhook handler.
+
+---
+
 ## Payment Processing
 
 ### Top-Up Flow
@@ -950,37 +1145,51 @@ firebase functions:secrets:set INTASEND_PUBLISHABLE_KEY
 1. **User Initiates Top-Up** (Flutter App)
    - User enters amount and payment details
    - Creates IntaSend checkout session
-   - Stores payment record in Realtime DB
+   - Calls `createPayment` callable function to create order record
 
-2. **Payment Completion** (IntaSend)
+2. **Order Creation** (Cloud Function: `createPayment`)
+   - Creates order document in Firestore: `/orders/{orderId}`
+   - Creates invoice mapping in Realtime DB: `/wallet/pendingTopups/{invoiceId}`
+   - Creates phone-to-invoice mapping: `/wallet/phoneToInvoice/{phoneNumber}/{invoiceId}`
+   - Returns order data with invoice ID
+
+3. **Payment Completion** (IntaSend)
    - User completes payment on IntaSend
    - IntaSend sends webhook to `handleTopUpWebhook`
 
-3. **Webhook Processing** (Cloud Function)
-   - Verifies HMAC SHA-256 signature
-   - Resolves wallet/user ID using multiple strategies
+4. **Webhook Processing** (Cloud Function: `handleTopUpWebhook`)
+   - Verifies HMAC SHA-256 signature or challenge token
+   - Resolves wallet/user ID using multiple strategies (phone lookup, order lookup, etc.)
    - Updates Firestore balance using transaction
+   - Updates order status to "completed"
+   - Updates `lastTopUp` timestamp in user document
    - Syncs to Realtime DB at `wallet/{userId}/fiat/{currency}`
 
-4. **Automatic Sync** (Firestore Trigger)
+5. **Automatic Sync** (Firestore Trigger: `syncBalance`)
    - `syncBalance` trigger detects Firestore update
    - Ensures Realtime DB is up-to-date with retry logic
 
 ### Wallet ID Resolution Strategies
 
-The webhook handler uses multiple strategies to find the correct user:
+The webhook handler uses multiple strategies to find the correct user (in priority order):
 
-1. **Order Lookup** (Preferred): Query Firestore orders by `invoice_id`
-   ```javascript
-   orders.where("metadata.invoiceId", "==", paymentId)
-         .where("orderType", "==", "topup")
-   ```
+1. **Phone Number Lookup** (PRIMARY - Most Reliable): Query Firestore users by phone number
+   - Normalizes phone number (removes leading +, ensures consistent format)
+   - Tries multiple field variations: `phoneNumber`, `phone`
+   - Tries with and without `+` prefix
+   - IntaSend always provides `account` field (phone number) in webhook payload
 
-2. **RTDB Mapping** (Fallback): Look up `wallet/pendingTopups/{invoice_id}`
+2. **Order Lookup** (Secondary): Query Firestore orders by `invoice_id`
+   - Tries `metadata.invoiceId`, `metadata.paymentId`, or `invoiceId` fields
+   - Verifies phone number matches order's phone number if available
+   - Falls back to amount+currency match for pending topup orders
 
-3. **Metadata user_id**: From IntaSend payload metadata
+3. **RTDB Mapping** (Fallback): Look up `wallet/pendingTopups/{invoice_id}`
+   - Created by `createPayment` function
+   - Automatically cleaned up after use
 
-4. **Phone Lookup** (Last Resort): Resolve account (phone) → Firestore user doc
+4. **Metadata user_id** (Last Resort): From IntaSend payload metadata
+   - If IntaSend invoice was created with `metadata.user_id` field
 
 ---
 
@@ -1041,7 +1250,7 @@ The sync function automatically cleans up old paths when writing to the new path
 | `fetchBinanceRatesHttp` | HTTP | None | Public REST API for rates |
 | `handleTopUpWebhook` | HTTP | Signature | IntaSend payment webhook |
 | `api` | HTTP (REST) | Optional | Customer wallets REST API |
-| `userBootstrap` | Auth Trigger | System | Initialize new users |
+| `userBootstrap` | Callable | Firebase Auth | Initialize new users |
 | `syncBalance` | Firestore Trigger | System | Sync balance to RTDB |
 | `onUserCreated` | Firestore Trigger | System | Handle user document creation |
 | `getUserData` | Callable | Admin | Get user data |
@@ -1049,6 +1258,10 @@ The sync function automatically cleans up old paths when writing to the new path
 | `updateUserBalance` | Callable | Admin | Update user balance |
 | `updateKYCStatus` | Callable | Admin | Update KYC status |
 | `syncUserBalanceToRealtime` | Callable | Admin | Manual balance sync |
+| `getCommissionConfig` | Callable | Admin | Get commission/fee configuration |
+| `updateCommissionConfig` | Callable | Admin | Update commission/fee configuration |
+| `getIntaSendPaymentStatus` | Callable | Admin | Get IntaSend payment status |
+| `createPayment` | Callable | Firebase Auth | Create payment order record |
 | `migrateExistingUsers` | Callable | Admin | Migrate users to new architecture |
 | `migrateUsersHttp` | HTTP | Optional | HTTP endpoint for user migration |
 | `updatePhoneNumbers` | Callable | Admin | Update phone number format |
@@ -1063,17 +1276,25 @@ The sync function automatically cleans up old paths when writing to the new path
 Set using Firebase Functions secrets (v7+):
 
 ```bash
-# Set IntaSend webhook secret
+# Set IntaSend webhook secret (for webhook signature verification)
 firebase functions:secrets:set INTASEND_SECRET
 
-# Set IntaSend challenge token
+# Set IntaSend challenge token (for webhook origin validation)
 firebase functions:secrets:set INTASEND_CHALLENGE
+
+# Set IntaSend API secret key (for getIntaSendPaymentStatus function)
+firebase functions:secrets:set INTASEND_SECRET_KEY
+
+# Set IntaSend publishable key (optional, for getIntaSendPaymentStatus function)
+firebase functions:secrets:set INTASEND_PUBLISHABLE_KEY
 ```
 
 **Alternative**: Environment variables (for local development):
 ```bash
 export INTASEND_SECRET="your-secret"
 export INTASEND_CHALLENGE="your-challenge"
+export INTASEND_SECRET_KEY="your-api-secret-key"
+export INTASEND_PUBLISHABLE_KEY="your-publishable-key"
 ```
 
 ### Firestore Configuration
@@ -1187,6 +1408,8 @@ HTTP endpoints have CORS enabled with:
    ```bash
    export INTASEND_SECRET="your-secret"
    export INTASEND_CHALLENGE="your-challenge"
+   export INTASEND_SECRET_KEY="your-api-secret-key"
+   export INTASEND_PUBLISHABLE_KEY="your-publishable-key"
    ```
 
 4. **Start Emulators**:
@@ -1260,9 +1483,16 @@ firebase deploy --only functions:updateUserBalance
 ```bash
 firebase functions:secrets:set INTASEND_SECRET
 firebase functions:secrets:set INTASEND_CHALLENGE
+firebase functions:secrets:set INTASEND_SECRET_KEY
+firebase functions:secrets:set INTASEND_PUBLISHABLE_KEY
 ```
 
 **Note**: Secrets are set interactively. Enter the secret value when prompted.
+
+**Important**: After setting secrets, you must redeploy functions that use them:
+```bash
+firebase deploy --only functions:handleTopUpWebhook,functions:getIntaSendPaymentStatus
+```
 
 ### Function URLs
 
@@ -1423,6 +1653,7 @@ Functions emit structured JSON logs:
 - **firebase-functions**: ^7.0.0 - Firebase Cloud Functions runtime
 - **axios**: ^1.12.2 - HTTP client for Binance API requests
 - **express**: ^5.2.0 - Web framework for REST API endpoints
+- **node-cron**: ^4.2.1 - Cron expression parser (for scheduled functions)
 
 ---
 
