@@ -1,5 +1,11 @@
+/**
+ * @fileoverview Firestore trigger for balance synchronization
+ * Syncs balance changes from Firestore to Realtime Database
+ */
+
 const {onDocumentUpdated} = require("firebase-functions/v2/firestore");
-const {syncBalanceToRealtime} = require("./utils/realtime");
+const config = require("../config");
+const {syncBalanceToRealtime} = require("../utils/realtime");
 
 /**
  * Cloud Function: Firestore → Realtime Database Balance Sync
@@ -12,10 +18,10 @@ const {syncBalanceToRealtime} = require("./utils/realtime");
  */
 exports.syncBalance = onDocumentUpdated(
     {
-      document: "users/{uid}",
-      region: "us-central1",
-      cpu: 0.25,
-      memory: "256MiB",
+      document: `${config.collections.users}/{uid}`,
+      region: config.region,
+      cpu: config.resources.cpu,
+      memory: config.resources.memory,
     },
     async (event) => {
       try {
@@ -35,11 +41,12 @@ exports.syncBalance = onDocumentUpdated(
           const currentFiatBalance = afterData.fiatBalance;
           const needsFiatSync = currentFiatBalance === undefined || 
                                  currentFiatBalance === null || 
-                                 (typeof currentFiatBalance === 'number' && currentFiatBalance === 0);
+                                 (typeof currentFiatBalance === "number" && currentFiatBalance === 0);
 
           if (needsFiatSync && afterBalance > 0) {
             const userRef = event.data.after.ref;
             try {
+              const admin = require("../admin");
               await userRef.update({
                 fiatBalance: afterBalance,
               });

@@ -1,5 +1,11 @@
+/**
+ * @fileoverview Firestore trigger for user document creation
+ * Automatically initializes default wallet fields for new users
+ */
+
 const {onDocumentCreated} = require("firebase-functions/v2/firestore");
-const admin = require("./admin");
+const admin = require("../admin");
+const config = require("../config");
 
 const db = admin.firestore();
 
@@ -12,10 +18,10 @@ const db = admin.firestore();
  */
 exports.onUserCreated = onDocumentCreated(
     {
-      document: "users/{userId}",
-      region: "us-central1", // Explicitly set region
-      cpu: 0.25,
-      memory: "256MiB",
+      document: `${config.collections.users}/{userId}`,
+      region: config.region,
+      cpu: config.resources.cpu,
+      memory: config.resources.memory,
     },
     async (event) => {
       try {
@@ -53,7 +59,7 @@ exports.onUserCreated = onDocumentCreated(
           updates.updatedAt = admin.firestore.FieldValue.serverTimestamp();
 
           // Update the document with default values
-          await db.collection("users").doc(userId).update(updates);
+          await db.collection(config.collections.users).doc(userId).update(updates);
 
           console.log(`✅ Successfully initialized default fields for user ${userId}`, {
             addedFields: Object.keys(updates),

@@ -1,18 +1,36 @@
-const {onSchedule} = require("firebase-functions/v2/scheduler");
-const {onCall, HttpsError} = require("firebase-functions/v2/https");
-const admin = require("./admin");
+/**
+ * @fileoverview Arbitrage business logic module
+ * Pure business logic for calculating arbitrage rates
+ * @typedef {Object} ArbitrageData
+ * @property {number} usdRate - USD/USDT rate
+ * @property {number} localRate - Local fiat/USDT rate
+ * @property {number} usdAmount - Reference USD amount
+ * @property {number} usdtBought - USDT bought with USD
+ * @property {number} localReceived - Local fiat received
+ * @property {number} feePercentage - Fee percentage
+ * @property {number} customerPayout - Customer payout after fee
+ * @property {number} profit - Profit amount
+ * @property {string} currencyPair - Currency pair identifier
+ * @property {string} fiat - Fiat currency
+ * @property {admin.firestore.Timestamp} validUntil - Expiration timestamp
+ */
+
+const admin = require("../admin");
 const axios = require("axios");
+const config = require("../config");
 
 const db = admin.firestore();
 const rtdb = admin.database();
 
 /**
  * Cache for fee configuration (per execution)
+ * @type {number|null}
  */
 let feeCache = null;
 
 /**
- * Helper: Get arbitrage fee from Firestore config (cached per execution)
+ * Get arbitrage fee from Firestore config (cached per execution)
+ * @returns {Promise<number>} Arbitrage fee as decimal (e.g., 0.015 for 1.5%)
  */
 async function getArbitrageFee() {
   if (feeCache !== null) {
@@ -20,7 +38,7 @@ async function getArbitrageFee() {
   }
 
   try {
-    const configSnap = await db.collection("config").doc("fees").get();
+    const configSnap = await db.collection(config.collections.config).doc("fees").get();
     if (configSnap.exists && configSnap.data().arbitrageFee) {
       feeCache = configSnap.data().arbitrageFee / 100; // convert to decimal
       return feeCache;
@@ -33,13 +51,20 @@ async function getArbitrageFee() {
 }
 
 /**
+ * Reset fee cache (call before new execution)
+ */
+function resetFeeCache() {
+  feeCache = null;
+}
+
+/**
  * Fetch USD to USDT rate from Binance
  * @returns {Promise<number>} USD/USDT rate
  */
 async function fetchUSDRate() {
   try {
     const response = await axios.post(
-        "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search",
+        config.binance.baseUrl,
         {
           asset: "USDT",
           fiat: "USD",
@@ -69,7 +94,7 @@ async function fetchUSDRate() {
 async function fetchLocalRate(fiat) {
   try {
     const response = await axios.post(
-        "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search",
+        config.binance.baseUrl,
         {
           asset: "USDT",
           fiat: fiat,
@@ -95,9 +120,9 @@ async function fetchLocalRate(fiat) {
  * Calculate arbitrage for a specific currency pair
  * @param {string} fiat - Fiat currency code (KES, NGN, GHS, etc.)
  * @param {number} usdAmount - Reference USD amount (default: 1000)
- * @returns {Promise<Object>} Arbitrage calculation results
+ * @returns {Promise<ArbitrageData>} Arbitrage calculation results
  */
-async function calculateArbitrage(fiat = "KES", usdAmount = 1000) {
+async function calculateArbitrage(fiat = config.binance.defaultFiat, usdAmount = 1000) {
   try {
     // Fetch rates
     const usdRate = await fetchUSDRate(); // USD/USDT rate
@@ -114,7 +139,7 @@ async function calculateArbitrage(fiat = "KES", usdAmount = 1000) {
 
     // Calculate validUntil (10 minutes from now, matching schedule)
     const validUntil = new Date();
-    validUntil.setMinutes(validUntil.getMinutes() + 10);
+    validUntil.setMinutes(validUntil.getMinutes() + config.rates.arbitrageCacheValidityMinutes);
 
     return {
       usdRate,
@@ -139,7 +164,8 @@ async function calculateArbitrage(fiat = "KES", usdAmount = 1000) {
 /**
  * Write arbitrage rates to both Firestore and RTDB atomically
  * @param {string} currencyPair - Currency pair identifier (e.g., "USD/KES")
- * @param {Object} arbitrageData - Arbitrage data to write
+ * @param {ArbitrageData} arbitrageData - Arbitrage data to write
+ * @returns {Promise<void>}
  */
 async function writeArbitrageAtomically(currencyPair, arbitrageData) {
   const batch = db.batch();
@@ -151,7 +177,7 @@ async function writeArbitrageAtomically(currencyPair, arbitrageData) {
   };
 
   // Write to Firestore
-  const firestoreRef = db.collection("p2pRates").doc("arbitrage");
+  const firestoreRef = db.collection(config.collections.p2pRates).doc("arbitrage");
   batch.set(firestoreRef, firestoreDoc, {merge: true});
 
   // Prepare RTDB data (using ServerValue.TIMESTAMP)
@@ -175,7 +201,7 @@ async function writeArbitrageAtomically(currencyPair, arbitrageData) {
   await batch.commit();
 
   // Write to RTDB
-  const rtdbRef = rtdb.ref(`wallet/rates/arbitrage/${currencyPair}`);
+  const rtdbRef = rtdb.ref(`${config.rtdbPaths.rates}/arbitrage/${currencyPair}`);
   await rtdbRef.set(rtdbData);
 
   // Structured logging
@@ -195,20 +221,50 @@ async function writeArbitrageAtomically(currencyPair, arbitrageData) {
 }
 
 /**
- * Scheduled function: Fetch arbitrage rates for multiple currency pairs
+ * Get arbitrage rates logic (shared by scheduled and callable functions)
+ * @param {string} fiat - Fiat currency code
+ * @returns {Promise<ArbitrageData & {source: string}>} Arbitrage data with source indicator
  */
-exports.fetchArbitrageRates = onSchedule(
-    {
-      schedule: "0 0 * * *",
-      region: "us-central1",
-      cpu: 0.25,
-      memory: "256MiB",
-    },
-    async () => {
-  // Reset fee cache for new execution
-  feeCache = null;
+async function getArbitrageRatesLogic(fiat = config.binance.defaultFiat) {
+  const currencyPair = `USD/${fiat}`;
 
-  const fiatCurrencies = ["KES", "NGN", "GHS"]; // Add more as needed
+  // Reset fee cache for new execution
+  resetFeeCache();
+
+  // Try to get from Firestore first
+  const doc = await db.collection(config.collections.p2pRates).doc("arbitrage").get();
+  if (doc.exists) {
+    const data = doc.data();
+    // Check if we have data for this currency pair
+    if (data.currencyPair === currencyPair || data.fiat === fiat) {
+      // Check if still valid
+      if (data.validUntil && data.validUntil.toMillis() > Date.now()) {
+        return {
+          ...data,
+          source: "firestore",
+        };
+      }
+    }
+  }
+
+  // If not found or expired, fetch fresh data
+  const arbitrageData = await calculateArbitrage(fiat);
+  await writeArbitrageAtomically(currencyPair, arbitrageData);
+
+  return {
+    ...arbitrageData,
+    source: "fresh",
+  };
+}
+
+/**
+ * Fetch arbitrage rates for multiple currency pairs (for scheduled function)
+ * @param {Array<string>} fiatCurrencies - Array of fiat currency codes
+ * @returns {Promise<{results: Array, errors: Array}>} Results and errors
+ */
+async function fetchMultipleArbitrageRates(fiatCurrencies) {
+  resetFeeCache();
+
   const results = [];
   const errors = [];
 
@@ -244,53 +300,17 @@ exports.fetchArbitrageRates = onSchedule(
     timestamp: new Date().toISOString(),
   }));
 
-  return null;
-});
+  return {results, errors};
+}
 
-/**
- * Callable function: Get arbitrage rates for a specific currency pair
- * @param {Object} request - Request data with optional fiat
- */
-exports.getArbitrageRates = onCall(
-    {
-      region: "us-central1",
-      cpu: 0.25,
-      memory: "256MiB",
-    },
-    async (request) => {
-  try {
-    const fiat = request.data?.fiat || "KES";
-    const currencyPair = `USD/${fiat}`;
+module.exports = {
+  getArbitrageFee,
+  resetFeeCache,
+  fetchUSDRate,
+  fetchLocalRate,
+  calculateArbitrage,
+  writeArbitrageAtomically,
+  getArbitrageRatesLogic,
+  fetchMultipleArbitrageRates,
+};
 
-    // Reset fee cache for new execution
-    feeCache = null;
-
-    // Try to get from Firestore first
-    const doc = await db.collection("p2pRates").doc("arbitrage").get();
-    if (doc.exists) {
-      const data = doc.data();
-      // Check if we have data for this currency pair
-      if (data.currencyPair === currencyPair || data.fiat === fiat) {
-        // Check if still valid
-        if (data.validUntil && data.validUntil.toMillis() > Date.now()) {
-          return {
-            ...data,
-            source: "firestore",
-          };
-        }
-      }
-    }
-
-    // If not found or expired, fetch fresh data
-    const arbitrageData = await calculateArbitrage(fiat);
-    await writeArbitrageAtomically(currencyPair, arbitrageData);
-
-    return {
-      ...arbitrageData,
-      source: "fresh",
-    };
-  } catch (err) {
-    console.error("Error in getArbitrageRates:", err.message);
-    throw new HttpsError("internal", `Failed to fetch arbitrage rates: ${err.message}`);
-  }
-});

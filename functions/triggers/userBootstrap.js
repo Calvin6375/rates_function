@@ -1,15 +1,18 @@
+/**
+ * @fileoverview Auth trigger for user bootstrap
+ * Callable function to bootstrap user data after Firebase Authentication signup
+ */
+
 const {onCall, HttpsError} = require("firebase-functions/v2/https");
-const admin = require("./admin");
-const {initializeBalanceInRealtime} = require("./utils/realtime");
+const admin = require("../admin");
+const config = require("../config");
+const {initializeBalanceInRealtime} = require("../utils/realtime");
 
 const firestore = admin.firestore();
-const realtimeDb = admin.database();
 
 /**
  * Cloud Function: User Creation Bootstrap
  * Callable function to bootstrap user data after Firebase Authentication signup
- * Can be called by the client after user creation, or triggered automatically
- * Uses v2 callable function (supports Node.js 22)
  * 
  * Creates:
  * 1. User document in Firestore: /users/{uid}
@@ -19,9 +22,9 @@ const realtimeDb = admin.database();
  */
 exports.userBootstrap = onCall(
     {
-      region: "us-central1",
-      cpu: 0.25,
-      memory: "256MiB",
+      region: config.region,
+      cpu: config.resources.cpu,
+      memory: config.resources.memory,
     },
     async (request) => {
       // Get the authenticated user from the request
@@ -44,14 +47,13 @@ exports.userBootstrap = onCall(
       }
 
       try {
-
         console.log(`🔄 Processing user creation bootstrap: ${uid}`, {
           email,
           displayName,
         });
 
         // Check if user document already exists (idempotency)
-        const userRef = firestore.collection("users").doc(uid);
+        const userRef = firestore.collection(config.collections.users).doc(uid);
         const userDoc = await userRef.get();
 
         if (userDoc.exists) {
@@ -127,7 +129,7 @@ exports.userBootstrap = onCall(
         };
 
         // Use set with merge: true to preserve any existing fields
-        await userRef.set(newUserData, { merge: true });
+        await userRef.set(newUserData, {merge: true});
 
         console.log(`✅ Created user document in Firestore: ${uid}`);
 
