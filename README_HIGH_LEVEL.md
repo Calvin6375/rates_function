@@ -47,22 +47,22 @@ TruePay is a cryptocurrency exchange platform backend that enables users to exch
 │  (Serverless Backend - Node.js 22)      │
 ├─────────────────────────────────────────┤
 │                                         │
-│  • Scheduled Functions                 │
-│    - Daily rate updates                │
-│    - Arbitrage calculations            │
+│  • Scheduled Functions                  │
+│    - Daily rate updates                 │
+│    - Arbitrage calculations             │
 │                                         │
-│  • Callable Functions                 │
-│    - Get exchange rates                │
-│    - User operations                   │
-│    - Admin functions                   │
+│  • Callable Functions                   │
+│    - Get exchange rates                 │
+│    - User operations                    │
+│    - Admin functions                    │
 │                                         │
-│  • HTTP Endpoints                      │
-│    - REST API                          │
-│    - Payment webhooks                  │
+│  • HTTP Endpoints                       │
+│    - REST API                           │
+│    - Payment webhooks                   │
 │                                         │
-│  • Database Triggers                   │
-│    - Balance synchronization           │
-│    - User lifecycle events             │
+│  • Database Triggers                    │
+│    - Balance synchronization            │
+│    - User lifecycle events              │
 │                                         │
 └──────────────┬──────────────────────────┘
                │
