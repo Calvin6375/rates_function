@@ -604,11 +604,95 @@ Authorization: Bearer {firebase-auth-token}
 
 ---
 
-### 1. Get Binance Rates (HTTP)
+### 1. Get Exchange Rates (With Commission)
+
+**Endpoint**: `GET /api/binance/rates`
+
+**Description**: Returns exchange rates **with commission already applied**. This endpoint retrieves rates that have been fetched from Binance, commission added, and stored in the database. **Flutter apps should use this endpoint** to get the customer-facing rates.
+
+**Important**: The response includes both `marketPrice` (raw Binance rate) and `customerPrice` (rate with commission). **Always use `customerPrice`** for customer transactions, as this is the rate with your commission already included.
+
+**Authentication**: Not required
+
+**Query Parameters**:
+```
+?fiat=KES&asset=USDT
+```
+- `fiat` (optional): Fiat currency code (default: "KES")
+- `asset` (optional): Crypto asset code (default: "USDT")
+
+**Response**:
+```json
+{
+  "marketPrice": 129.50,      // Raw Binance rate (for reference only)
+  "customerPrice": 131.44,    // Rate WITH commission - USE THIS for transactions
+  "feePercentage": 1.5,       // Commission percentage applied
+  "currencyPair": "USDT/KES",
+  "asset": "USDT",
+  "fiat": "KES",
+  "validUntil": 1764807005227,
+  "updatedAt": 1764806405463,
+  "source": "firestore"       // or "fresh" if fetched from Binance
+}
+```
+
+**Flutter Example**:
+```dart
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+
+Future<Map<String, dynamic>> getExchangeRates({
+  String fiat = 'KES',
+  String asset = 'USDT',
+}) async {
+  final url = Uri.parse(
+    'https://us-central1-truepay-72060.cloudfunctions.net/api/binance/rates?fiat=$fiat&asset=$asset'
+  );
+  
+  final response = await http.get(url);
+  
+  if (response.statusCode == 200) {
+    final data = json.decode(response.body) as Map<String, dynamic>;
+    // Use customerPrice - this is the rate with commission already applied
+    return {
+      'rate': data['customerPrice'],  // Rate with commission
+      'rawRate': data['marketPrice'],  // Raw Binance rate (for reference)
+      'feePercentage': data['feePercentage'],
+      'currencyPair': data['currencyPair'],
+    };
+  } else {
+    throw Exception('Failed to fetch rates: ${response.statusCode}');
+  }
+}
+
+// Usage
+final rates = await getExchangeRates(fiat: 'KES', asset: 'USDT');
+print('Customer Rate (with commission): ${rates['rate']}');  // Use this!
+print('Raw Binance Rate: ${rates['rawRate']}');  // For reference only
+```
+
+**JavaScript Example**:
+```javascript
+const response = await fetch(
+  'https://us-central1-truepay-72060.cloudfunctions.net/api/binance/rates?fiat=KES&asset=USDT'
+);
+const data = await response.json();
+
+// Use customerPrice - this is the rate with commission already applied
+const customerRate = data.customerPrice;  // Use this for transactions!
+const rawRate = data.marketPrice;  // For reference only
+console.log('Customer Rate (with commission):', customerRate);
+```
+
+**Note**: Rates are cached and updated periodically. The `source` field indicates whether the rate came from cache (`"firestore"`) or was freshly fetched from Binance (`"fresh"`). The `customerPrice` always includes your commission regardless of the source.
+
+---
+
+### 2. Get Binance Rates (Legacy HTTP)
 
 **Endpoint**: `GET /fetchBinanceRatesHttp`
 
-**Description**: HTTP endpoint to fetch Binance rates (alternative to callable function).
+**Description**: Legacy HTTP endpoint (direct Cloud Function). Prefer using `/api/binance/rates` for new integrations. Returns the same data format with `customerPrice` (rate with commission) and `marketPrice` (raw Binance rate).
 
 **Authentication**: Not required
 
@@ -617,20 +701,7 @@ Authorization: Bearer {firebase-auth-token}
 ?fiat=KES&asset=USDT
 ```
 
-**Response**:
-```json
-{
-  "marketPrice": 129.50,
-  "customerPrice": 131.44,
-  "feePercentage": 1.5,
-  "currencyPair": "USDT/KES",
-  "asset": "USDT",
-  "fiat": "KES",
-  "validUntil": 1764807005227,
-  "updatedAt": 1764806405463,
-  "source": "firestore"
-}
-```
+**Response**: Same format as `/api/binance/rates`
 
 **Example - JavaScript**:
 ```javascript
@@ -638,16 +709,16 @@ const response = await fetch(
   'https://us-central1-truepay-72060.cloudfunctions.net/fetchBinanceRatesHttp?fiat=KES&asset=USDT'
 );
 const data = await response.json();
-console.log('Customer Price:', data.customerPrice);
+console.log('Customer Price (with commission):', data.customerPrice);  // Use this!
 ```
 
 ---
 
-### 2. Customer Wallets API
+### 3. Customer Wallets API
 
 All customer wallet endpoints are under `/api/customer-wallets`.
 
-#### 2.1. List Customer Wallets
+#### 3.1. List Customer Wallets
 
 **Endpoint**: `GET /api/customer-wallets`
 
@@ -696,7 +767,7 @@ console.log('Wallets:', result.data);
 
 ---
 
-#### 2.2. Get Customer Wallet by ID
+#### 3.2. Get Customer Wallet by ID
 
 **Endpoint**: `GET /api/customer-wallets/:id`
 
@@ -739,7 +810,7 @@ console.log('Wallet:', result.data);
 
 ---
 
-#### 2.3. Update Customer Wallet
+#### 3.3. Update Customer Wallet
 
 **Endpoint**: `PUT /api/customer-wallets/:id`
 
@@ -806,7 +877,7 @@ const result = await response.json();
 
 ---
 
-#### 2.4. Credit Wallet
+#### 3.4. Credit Wallet
 
 **Endpoint**: `POST /api/customer-wallets/:id/credit`
 
@@ -869,7 +940,7 @@ console.log('New Balance:', result.data.fiatBalance);
 
 ---
 
-#### 2.5. Debit Wallet
+#### 3.5. Debit Wallet
 
 **Endpoint**: `POST /api/customer-wallets/:id/debit`
 
@@ -944,7 +1015,7 @@ if (result.success) {
 
 ---
 
-#### 2.6. Create Customer Wallet
+#### 3.6. Create Customer Wallet
 
 **Endpoint**: `POST /api/customer-wallets`
 
@@ -987,7 +1058,7 @@ if (result.success) {
 
 ---
 
-#### 2.7. Get Commission Configuration
+#### 3.7. Get Commission Configuration
 
 **Endpoint**: `GET /api/config/fees`
 
@@ -1029,7 +1100,7 @@ console.log('Arbitrage Fee:', result.data.arbitrageFee + '%');
 
 ---
 
-#### 2.8. Update Commission Configuration
+#### 3.8. Update Commission Configuration
 
 **Endpoint**: `PUT /api/config/fees`
 
