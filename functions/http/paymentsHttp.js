@@ -50,6 +50,7 @@ exports.handleTopUpWebhook = onRequest({
   region: config.region,
   cpu: config.resources.cpu,
   memory: config.resources.memory,
+  minInstances: 1, // Keep warm for webhook reliability
 }, async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).send("Method Not Allowed");
@@ -148,13 +149,15 @@ exports.handleTopUpWebhook = onRequest({
 
 /**
  * Callable function: Create Payment Order
- * Creates order document in Firestore and invoice mapping in Realtime DB
+ * Creates order document in Firestore and invoice mapping in Firestore
  */
 exports.createPayment = onCall(
     {
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
+      enforceAppCheck: true,
+      minInstances: 1,
     },
     async (request) => {
       // Get the authenticated user from the request

@@ -41,6 +41,7 @@ exports.updatePhoneNumbers = onCall(
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
+      enforceAppCheck: true,
     },
     async (request) => {
       try {
@@ -74,6 +75,9 @@ updatePhoneApp.post("/updatePhoneNumbers", async (req, res) => {
 });
 
 exports.updatePhoneNumbersHttp = onRequest(
+    {
+      enforceAppCheck: true,
+    },
     {
       region: config.region,
       cpu: config.resources.cpu,

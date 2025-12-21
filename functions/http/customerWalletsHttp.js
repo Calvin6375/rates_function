@@ -318,6 +318,7 @@ app.post("/customer-wallets", async (req, res) => {
 
 /**
  * Helper: Verify admin from Firebase Auth token (for REST API)
+ * Uses Custom Claims for better security and performance
  */
 async function verifyAdminFromRequest(req) {
   try {
@@ -330,15 +331,8 @@ async function verifyAdminFromRequest(req) {
     const decodedToken = await admin.auth().verifyIdToken(token);
     const adminId = decodedToken.uid;
 
-    // Check if user is admin
-    const {isAdmin: checkIsAdmin} = require("../utils/validation");
-    const adminDoc = await db.collection(config.collections.users).doc(adminId).get();
-    if (!adminDoc.exists) {
-      return {isAdmin: false, adminId: null};
-    }
-
-    const userData = adminDoc.data();
-    const isAdminUser = checkIsAdmin(userData);
+    // Check admin claim from token (faster, more secure)
+    const isAdminUser = decodedToken.admin === true;
 
     return {isAdmin: isAdminUser, adminId: isAdminUser ? adminId : null};
   } catch (error) {
@@ -514,6 +508,8 @@ exports.api = onRequest(
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
+      enforceAppCheck: true,
+      minInstances: 1,
     },
     app,
 );

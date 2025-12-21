@@ -15,7 +15,6 @@ const updatePhoneNumbersHttp = require("./http/updatePhoneNumbersHttp");
 // Import triggers
 const usersTrigger = require("./triggers/usersTrigger");
 const userBootstrap = require("./triggers/userBootstrap");
-const balanceSync = require("./triggers/balanceSync");
 
 // Export rates functions
 exports.fetchBinanceRates = ratesHttp.fetchBinanceRates;
@@ -36,7 +35,6 @@ exports.api = customerWalletsHttp.api;
 // Export user triggers
 exports.onUserCreated = usersTrigger.onUserCreated;
 exports.userBootstrap = userBootstrap.userBootstrap;
-exports.syncBalance = balanceSync.syncBalance;
 
 // Export migration functions
 exports.migrateExistingUsers = migrateUsersHttp.migrateExistingUsers;
@@ -44,12 +42,19 @@ exports.migrateUsersHttp = migrateUsersHttp.migrateUsersHttp;
 exports.updatePhoneNumbers = updatePhoneNumbersHttp.updatePhoneNumbers;
 exports.updatePhoneNumbersHttp = updatePhoneNumbersHttp.updatePhoneNumbersHttp;
 
+// Import admin claims handlers
+const adminClaimsHttp = require("./http/adminClaimsHttp");
+
 // Export admin functions
 exports.updateUserProfile = adminHttp.updateUserProfile;
 exports.updateUserBalance = adminHttp.updateUserBalance;
 exports.getUserData = adminHttp.getUserData;
 exports.updateKYCStatus = adminHttp.updateKYCStatus;
-exports.syncUserBalanceToRealtime = adminHttp.syncUserBalanceToRealtime;
+exports.syncUserBalanceToRealtime = adminHttp.syncUserBalanceToRealtime; // Deprecated but kept for compatibility
 exports.getCommissionConfig = adminHttp.getCommissionConfig;
 exports.updateCommissionConfig = adminHttp.updateCommissionConfig;
 exports.getIntaSendPaymentStatus = adminHttp.getIntaSendPaymentStatus;
+
+// Export admin claims management functions
+exports.setAdminClaim = adminClaimsHttp.setAdminClaim;
+exports.removeAdminClaim = adminClaimsHttp.removeAdminClaim;

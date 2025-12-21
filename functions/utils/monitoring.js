@@ -109,15 +109,8 @@ async function checkHealth() {
     health.status = "degraded";
   }
 
-  // Check Realtime Database connectivity
-  try {
-    const rtdb = admin.database();
-    await rtdb.ref("_health").once("value");
-    health.checks.realtimeDb = "ok";
-  } catch (error) {
-    health.checks.realtimeDb = `error: ${error.message}`;
-    health.status = "degraded";
-  }
+  // Realtime Database removed - all data now in Firestore
+  // Clients should use Firestore onSnapshot listeners for real-time updates
 
   return health;
 }

@@ -18,6 +18,7 @@ exports.fetchBinanceRates = onSchedule(
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
+      minInstances: 0, // Scheduled functions don't need min instances
     },
     async () => {
       const currencyPairs = [
@@ -42,6 +43,8 @@ exports.getBinanceRates = onCall(
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
+      enforceAppCheck: true,
+      minInstances: 1, // Keep warm for better performance
     },
     async (request) => {
       try {
@@ -88,6 +91,8 @@ exports.fetchBinanceRatesHttp = onRequest(
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
+      enforceAppCheck: true,
+      minInstances: 1, // Keep warm for better performance
     },
     async (req, res) => {
       // Handle CORS preflight

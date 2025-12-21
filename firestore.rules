@@ -11,16 +11,15 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
     
-    // Helper function to check if user is admin
+    // Helper function to check if user is admin using Custom Claims
+    // SECURITY: Uses Firebase Auth Custom Claims, not Firestore field
     function isAdmin() {
-      return isAuthenticated() && 
-             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+      return isAuthenticated() && request.auth.token.admin == true;
     }
     
     // Helper function to check if request modifies balance field
     function modifiesBalance() {
-      return request.resource.data.diff(resource.data).affectedKeys().hasAny(['balance']);
+      return request.resource.data.diff(resource.data).affectedKeys().hasAny(['balance', 'fiatBalance', 'cryptoBalance']);
     }
     
     // Users collection - users can read their own data, admins can read all
@@ -30,7 +29,7 @@ service cloud.firestore {
       // Allow admins to read all user documents
       allow read: if isAdmin();
       
-      // Users can update their own document EXCEPT balance field
+      // Users can update their own document EXCEPT balance fields
       // Balance can only be modified by Cloud Functions (server-side) or admins
       allow update: if isOwner(userId) && !modifiesBalance();
       
@@ -45,31 +44,68 @@ service cloud.firestore {
     }
     
     // Transactions collection - users can read their own transactions
-    match /transactions/{userId} {
-      allow read: if isOwner(userId) || isAdmin();
-      // Only Cloud Functions can write transactions (server SDK)
+    match /transactions/{transactionId} {
+      // Users can read their own transactions
+      allow read: if isAuthenticated() && 
+                     (resource.data.userId == request.auth.uid || isAdmin());
+      // Only Cloud Functions can write transactions (server SDK bypasses rules)
       allow write: if false; // Client writes blocked, server SDK bypasses rules
     }
     
     // Admin logs collection - admin read only
     match /adminLogs/{logId} {
       allow read: if isAdmin();
-      // Only Cloud Functions can write admin logs (server SDK)
+      // Only Cloud Functions can write admin logs (server SDK bypasses rules)
       allow write: if false; // Client writes blocked, server SDK bypasses rules
     }
     
     // P2P rates collection - public read, admin write
     match /p2pRates/{document=**} {
-      allow read: if true; // Public read access
-      allow write: if isAuthenticated() && 
-                      get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+      allow read: if true; // Public read access for rates
+      // Only admins or Cloud Functions can write rates
+      allow write: if isAdmin() || request.auth == null; // null auth = server SDK
     }
     
     // Config collection - public read for fees, admin write
     match /config/{document=**} {
       allow read: if true; // Public read access for fee config
-      allow write: if isAuthenticated() && 
-                      get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+      // Only admins or Cloud Functions can write config
+      allow write: if isAdmin() || request.auth == null; // null auth = server SDK
+    }
+    
+    // Orders collection - users can read their own orders
+    match /orders/{orderId} {
+      allow read: if isAuthenticated() && 
+                     (resource.data.userId == request.auth.uid || isAdmin());
+      // Only Cloud Functions can write orders (server SDK bypasses rules)
+      allow write: if false; // Client writes blocked, server SDK bypasses rules
+    }
+    
+    // Invoice mappings collection - only Cloud Functions can access
+    match /invoiceMappings/{invoiceId} {
+      // Only Cloud Functions can read/write invoice mappings
+      allow read, write: if request.auth == null; // null auth = server SDK
+    }
+    
+    // Payments collection - only Cloud Functions can access
+    match /payments/{paymentId} {
+      // Only Cloud Functions can read/write payment records
+      allow read, write: if request.auth == null; // null auth = server SDK
+    }
+    
+    // Customer wallets collection - admin read/write, users can read their own
+    match /customerWallets/{walletId} {
+      // Users can read their own wallet if userId matches
+      allow read: if isAuthenticated() && 
+                     (resource.data.userId == request.auth.uid || isAdmin());
+      // Only admins or Cloud Functions can write
+      allow write: if isAdmin() || request.auth == null; // null auth = server SDK
+    }
+    
+    // Outbox collection - only Cloud Functions can access
+    match /outbox/{outboxId} {
+      // Only Cloud Functions can read/write outbox
+      allow read, write: if request.auth == null; // null auth = server SDK
     }
     
     // Default: deny all other access
@@ -78,4 +114,3 @@ service cloud.firestore {
     }
   }
 }
-

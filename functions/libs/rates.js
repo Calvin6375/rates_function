@@ -16,7 +16,6 @@ const axios = require("axios");
 const config = require("../config");
 
 const db = admin.firestore();
-const rtdb = admin.database();
 
 /**
  * Cache for fee configuration (per execution)
@@ -102,44 +101,22 @@ async function fetchBinanceRateData(fiat = config.binance.defaultFiat, asset = c
 }
 
 /**
- * Write rates to both Firestore and RTDB atomically
+ * Write rates to Firestore (singleton document for current rates)
  * @param {string} currencyPair - Currency pair identifier (e.g., "USDT/KES")
  * @param {RateData} ratesData - Rate data to write
  * @returns {Promise<void>}
  */
 async function writeRatesAtomically(currencyPair, ratesData) {
-  const batch = db.batch();
-  const now = Date.now();
-
   // Prepare Firestore document
   const firestoreDoc = {
     ...ratesData,
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   };
 
-  // Write to Firestore
+  // Write to Firestore singleton document
+  // Clients should listen to: /p2pRates/binance
   const firestoreRef = db.collection(config.collections.p2pRates).doc("binance");
-  batch.set(firestoreRef, firestoreDoc, {merge: true});
-
-  // Prepare RTDB data (using ServerValue.TIMESTAMP)
-  const validUntilMs = ratesData.validUntil.toMillis();
-  const rtdbData = {
-    customerPrice: ratesData.customerPrice,
-    marketPrice: ratesData.marketPrice,
-    feePercentage: ratesData.feePercentage,
-    currencyPair: ratesData.currencyPair,
-    asset: ratesData.asset,
-    fiat: ratesData.fiat,
-    updatedAt: admin.database.ServerValue.TIMESTAMP,
-    validUntil: validUntilMs,
-  };
-
-  // Commit Firestore batch
-  await batch.commit();
-
-  // Write to RTDB
-  const rtdbRef = rtdb.ref(`${config.rtdbPaths.rates}/binance/${currencyPair}`);
-  await rtdbRef.set(rtdbData);
+  await firestoreRef.set(firestoreDoc, {merge: true});
 
   // Structured logging
   console.log(JSON.stringify({
@@ -150,7 +127,6 @@ async function writeRatesAtomically(currencyPair, ratesData) {
     marketPrice: ratesData.marketPrice,
     feePercentage: ratesData.feePercentage,
     firestore: "success",
-    rtdb: "success",
     timestamp: new Date().toISOString(),
   }));
 }

@@ -7,6 +7,7 @@ const {onCall, HttpsError} = require("firebase-functions/v2/https");
 const {defineSecret} = require("firebase-functions/params");
 const config = require("../config");
 const adminActionsLib = require("../libs/adminActions");
+const {verifyAdminFromToken} = require("../utils/adminClaims");
 
 // IntaSend API configuration
 const intaSendSecretKey = defineSecret(config.secrets.intaSendSecretKey);
@@ -21,6 +22,7 @@ exports.updateUserProfile = onCall(
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
+      enforceAppCheck: true, // Require App Check token
     },
     async (request) => {
       try {
@@ -29,9 +31,8 @@ exports.updateUserProfile = onCall(
           throw new HttpsError("unauthenticated", "Authentication required");
         }
 
-        // Verify admin role
-        const isAdminUser = await adminActionsLib.verifyAdmin(adminId);
-        if (!isAdminUser) {
+        // Verify admin role using Custom Claims (faster, more secure)
+        if (!verifyAdminFromToken(request.auth)) {
           throw new HttpsError("permission-denied", "Admin access required");
         }
 
@@ -75,6 +76,7 @@ exports.updateUserBalance = onCall(
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
+      enforceAppCheck: true,
     },
     async (request) => {
       try {
@@ -83,9 +85,8 @@ exports.updateUserBalance = onCall(
           throw new HttpsError("unauthenticated", "Authentication required");
         }
 
-        // Verify admin role
-        const isAdminUser = await adminActionsLib.verifyAdmin(adminId);
-        if (!isAdminUser) {
+        // Verify admin role using Custom Claims
+        if (!verifyAdminFromToken(request.auth)) {
           throw new HttpsError("permission-denied", "Admin access required");
         }
 
@@ -125,6 +126,7 @@ exports.getUserData = onCall(
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
+      enforceAppCheck: true,
     },
     async (request) => {
       try {
@@ -133,9 +135,8 @@ exports.getUserData = onCall(
           throw new HttpsError("unauthenticated", "Authentication required");
         }
 
-        // Verify admin role
-        const isAdminUser = await adminActionsLib.verifyAdmin(adminId);
-        if (!isAdminUser) {
+        // Verify admin role using Custom Claims
+        if (!verifyAdminFromToken(request.auth)) {
           throw new HttpsError("permission-denied", "Admin access required");
         }
 
@@ -175,6 +176,7 @@ exports.updateKYCStatus = onCall(
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
+      enforceAppCheck: true,
     },
     async (request) => {
       try {
@@ -183,9 +185,8 @@ exports.updateKYCStatus = onCall(
           throw new HttpsError("unauthenticated", "Authentication required");
         }
 
-        // Verify admin role
-        const isAdminUser = await adminActionsLib.verifyAdmin(adminId);
-        if (!isAdminUser) {
+        // Verify admin role using Custom Claims
+        if (!verifyAdminFromToken(request.auth)) {
           throw new HttpsError("permission-denied", "Admin access required");
         }
 
@@ -233,6 +234,7 @@ exports.syncUserBalanceToRealtime = onCall(
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
+      enforceAppCheck: true,
     },
     async (request) => {
       try {
@@ -241,9 +243,8 @@ exports.syncUserBalanceToRealtime = onCall(
           throw new HttpsError("unauthenticated", "Authentication required");
         }
 
-        // Verify admin role
-        const isAdminUser = await adminActionsLib.verifyAdmin(adminId);
-        if (!isAdminUser) {
+        // Verify admin role using Custom Claims
+        if (!verifyAdminFromToken(request.auth)) {
           throw new HttpsError("permission-denied", "Admin access required");
         }
 
@@ -283,6 +284,7 @@ exports.getCommissionConfig = onCall(
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
+      enforceAppCheck: true,
     },
     async (request) => {
       try {
@@ -291,9 +293,8 @@ exports.getCommissionConfig = onCall(
           throw new HttpsError("unauthenticated", "Authentication required");
         }
 
-        // Verify admin role
-        const isAdminUser = await adminActionsLib.verifyAdmin(adminId);
-        if (!isAdminUser) {
+        // Verify admin role using Custom Claims
+        if (!verifyAdminFromToken(request.auth)) {
           throw new HttpsError("permission-denied", "Admin access required");
         }
 
@@ -322,6 +323,7 @@ exports.updateCommissionConfig = onCall(
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
+      enforceAppCheck: true,
     },
     async (request) => {
       try {
@@ -330,9 +332,8 @@ exports.updateCommissionConfig = onCall(
           throw new HttpsError("unauthenticated", "Authentication required");
         }
 
-        // Verify admin role
-        const isAdminUser = await adminActionsLib.verifyAdmin(adminId);
-        if (!isAdminUser) {
+        // Verify admin role using Custom Claims
+        if (!verifyAdminFromToken(request.auth)) {
           throw new HttpsError("permission-denied", "Admin access required");
         }
 
@@ -370,6 +371,7 @@ exports.getIntaSendPaymentStatus = onCall(
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
+      enforceAppCheck: true,
     },
     async (request) => {
       try {
@@ -378,9 +380,8 @@ exports.getIntaSendPaymentStatus = onCall(
           throw new HttpsError("unauthenticated", "Authentication required");
         }
 
-        // Verify admin role
-        const isAdminUser = await adminActionsLib.verifyAdmin(adminId);
-        if (!isAdminUser) {
+        // Verify admin role using Custom Claims
+        if (!verifyAdminFromToken(request.auth)) {
           throw new HttpsError("permission-denied", "Admin access required");
         }
 

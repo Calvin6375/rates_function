@@ -6,7 +6,6 @@
 const {onCall, HttpsError} = require("firebase-functions/v2/https");
 const admin = require("../admin");
 const config = require("../config");
-const {initializeBalanceInRealtime} = require("../utils/realtime");
 
 const firestore = admin.firestore();
 
@@ -16,15 +15,16 @@ const firestore = admin.firestore();
  * 
  * Creates:
  * 1. User document in Firestore: /users/{uid}
- * 2. Balance mirror in Realtime DB: /balances/{uid}/balance
  * 
  * Ensures idempotency by checking if user document already exists
+ * Clients should listen to Firestore document changes for real-time balance updates
  */
 exports.userBootstrap = onCall(
     {
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
+      enforceAppCheck: true,
     },
     async (request) => {
       // Get the authenticated user from the request
@@ -100,15 +100,8 @@ exports.userBootstrap = onCall(
             });
           }
           
-          // Ensure Realtime DB balance exists
-          const existingBalance = Number(existingData.balance || existingData.fiatBalance || 0);
-          const currency = existingData.currency || existingData.fiatCurrency || "USD";
-          
-          try {
-            await initializeBalanceInRealtime(uid, existingBalance, currency);
-          } catch (rtdbError) {
-            console.error("⚠️ Failed to sync existing balance to Realtime DB:", rtdbError.message);
-          }
+          // Balance is now stored only in Firestore (no RTDB initialization needed)
+          // Clients should listen to Firestore document changes for real-time updates
           
           return {
             success: true,
@@ -133,19 +126,17 @@ exports.userBootstrap = onCall(
 
         console.log(`✅ Created user document in Firestore: ${uid}`);
 
-        // Create balance mirror in Realtime Database
-        await initializeBalanceInRealtime(uid, 0);
+        // Balance is stored in Firestore only (no RTDB initialization needed)
+        // Clients should listen to Firestore document changes for real-time updates
 
         console.log(`✅ User bootstrap completed: ${uid}`, {
           firestore: "created",
-          realtimeDb: "created",
         });
 
         return {
           success: true,
           userId: uid,
           firestore: "created",
-          realtimeDb: "created",
         };
       } catch (error) {
         console.error("❌ Error in user bootstrap:", {

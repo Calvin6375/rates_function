@@ -6,9 +6,9 @@
 const admin = require("../admin");
 const config = require("../config");
 const {updateBalanceWithTransaction, getUserBalance, userExists} = require("../utils/firestore");
-const {syncBalanceToRealtime} = require("../utils/realtime");
 const {logAdminAction} = require("../utils/transactions");
-const {validateBalanceUpdate, isAdmin} = require("../utils/validation");
+const {validateBalanceUpdate} = require("../utils/validation");
+const {verifyAdminFromToken} = require("../utils/adminClaims");
 const axios = require("axios");
 const {defineSecret} = require("firebase-functions/params");
 
@@ -29,17 +29,15 @@ function getIntaSendKeys() {
 }
 
 /**
- * Verify admin role
+ * Verify admin role using Custom Claims
  * @param {string} adminId - Admin user ID
  * @returns {Promise<boolean>} True if user is admin
+ * @deprecated Use verifyAdminFromToken(auth) instead for better performance
  */
 async function verifyAdmin(adminId) {
   try {
-    const adminDoc = await firestore.collection(config.collections.users).doc(adminId).get();
-    if (!adminDoc.exists) {
-      return false;
-    }
-    return isAdmin(adminDoc.data());
+    const userRecord = await admin.auth().getUser(adminId);
+    return userRecord.customClaims?.admin === true;
   } catch (error) {
     console.error("Error verifying admin:", error.message);
     return false;
@@ -140,24 +138,8 @@ async function updateUserBalance(adminId, userId, amount, reason = "Admin balanc
       },
   );
 
-  // Get user document AFTER update to ensure we have latest currency
-  const userDoc = await firestore.collection(config.collections.users).doc(userId).get();
-  if (!userDoc.exists) {
-    throw new Error(`User ${userId} not found`);
-  }
-  const userData = userDoc.data();
-  const currency = userData.currency || userData.fiatCurrency || "USD";
-
-  // Sync to Realtime DB with currency (with retry on failure)
-  try {
-    await syncBalanceToRealtime(userId, result.newBalance, currency);
-    console.log(`✅ Successfully synced balance to Realtime DB: ${userId}`);
-  } catch (syncError) {
-    console.error(`⚠️ Failed to sync balance to Realtime DB (will retry via trigger):`, {
-      userId,
-      error: syncError.message,
-    });
-  }
+  // Balance is now stored only in Firestore (no RTDB sync needed)
+  // Clients should listen to Firestore document changes for real-time updates
 
   // Log admin action
   await logAdminAction(
@@ -275,9 +257,11 @@ async function updateKYCStatus(adminId, userId, kycStatus, kycData = null) {
 
 /**
  * Sync user balance to Realtime DB (Manual)
+ * @deprecated Realtime Database has been removed. This function is kept for backward compatibility
+ * but now only returns the current balance from Firestore.
  * @param {string} adminId - Admin user ID
  * @param {string} userId - Target user ID
- * @returns {Promise<Object>} Sync result
+ * @returns {Promise<Object>} Current balance info
  */
 async function syncUserBalanceToRealtime(adminId, userId) {
   // Get user document from Firestore (source of truth)
@@ -291,10 +275,7 @@ async function syncUserBalanceToRealtime(adminId, userId) {
   const balance = Number(userData.balance || 0);
   const currency = userData.currency || userData.fiatCurrency || "USD";
 
-  // Sync to Realtime DB
-  await syncBalanceToRealtime(userId, balance, currency);
-
-  console.log(`✅ Admin ${adminId} manually synced balance for user ${userId}`, {
+  console.log(`ℹ️ Realtime DB sync deprecated. Returning current Firestore balance for ${userId}`, {
     balance,
     currency,
   });
@@ -304,7 +285,7 @@ async function syncUserBalanceToRealtime(adminId, userId) {
     userId,
     balance,
     currency,
-    message: "Balance synced successfully",
+    message: "Balance retrieved from Firestore (Realtime DB removed)",
   };
 }
 
@@ -522,7 +503,7 @@ module.exports = {
   updateUserBalance,
   getUserData,
   updateKYCStatus,
-  syncUserBalanceToRealtime,
+  syncUserBalanceToRealtime, // Deprecated but kept for backward compatibility
   getCommissionConfig,
   updateCommissionConfig,
   getIntaSendPaymentStatus,

@@ -6,7 +6,6 @@
 const admin = require("../admin");
 const config = require("../config");
 const {updateBalanceWithTransaction, getUserBalance, userExists} = require("../utils/firestore");
-const {syncBalanceToRealtime} = require("../utils/realtime");
 const {logTransaction} = require("../utils/transactions");
 
 const db = admin.firestore();
@@ -310,13 +309,8 @@ async function creditCustomerWallet(id, amount, description = "Wallet credit") {
       console.error("Failed to log transaction:", logError.message);
     }
 
-    // Sync to Realtime DB
-    try {
-      const currency = userData.currency || userData.fiatCurrency || "USD";
-      await syncBalanceToRealtime(id, newFiatBalance, currency);
-    } catch (syncError) {
-      console.error("Failed to sync to Realtime DB:", syncError.message);
-    }
+    // Balance is stored in Firestore only (no RTDB sync needed)
+    // Clients should listen to Firestore document changes for real-time updates
 
     // Fetch updated user
     const updatedDoc = await db.collection(config.collections.users).doc(id).get();
@@ -460,13 +454,8 @@ async function debitCustomerWallet(id, amount, description = "Wallet debit") {
       console.error("Failed to log transaction:", logError.message);
     }
 
-    // Sync to Realtime DB
-    try {
-      const currency = userData.currency || userData.fiatCurrency || "USD";
-      await syncBalanceToRealtime(id, newFiatBalance, currency);
-    } catch (syncError) {
-      console.error("Failed to sync to Realtime DB:", syncError.message);
-    }
+    // Balance is stored in Firestore only (no RTDB sync needed)
+    // Clients should listen to Firestore document changes for real-time updates
 
     // Fetch updated user
     const updatedDoc = await db.collection(config.collections.users).doc(id).get();

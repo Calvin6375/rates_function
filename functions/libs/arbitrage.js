@@ -20,7 +20,6 @@ const axios = require("axios");
 const config = require("../config");
 
 const db = admin.firestore();
-const rtdb = admin.database();
 
 /**
  * Cache for fee configuration (per execution)
@@ -162,47 +161,22 @@ async function calculateArbitrage(fiat = config.binance.defaultFiat, usdAmount =
 }
 
 /**
- * Write arbitrage rates to both Firestore and RTDB atomically
+ * Write arbitrage rates to Firestore (singleton document)
  * @param {string} currencyPair - Currency pair identifier (e.g., "USD/KES")
  * @param {ArbitrageData} arbitrageData - Arbitrage data to write
  * @returns {Promise<void>}
  */
 async function writeArbitrageAtomically(currencyPair, arbitrageData) {
-  const batch = db.batch();
-
   // Prepare Firestore document
   const firestoreDoc = {
     ...arbitrageData,
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   };
 
-  // Write to Firestore
+  // Write to Firestore singleton document
+  // Clients should listen to: /p2pRates/arbitrage
   const firestoreRef = db.collection(config.collections.p2pRates).doc("arbitrage");
-  batch.set(firestoreRef, firestoreDoc, {merge: true});
-
-  // Prepare RTDB data (using ServerValue.TIMESTAMP)
-  const validUntilMs = arbitrageData.validUntil.toMillis();
-  const rtdbData = {
-    usdRate: arbitrageData.usdRate,
-    localRate: arbitrageData.localRate,
-    usdAmount: arbitrageData.usdAmount,
-    usdtBought: arbitrageData.usdtBought,
-    localReceived: arbitrageData.localReceived,
-    customerPayout: arbitrageData.customerPayout,
-    profit: arbitrageData.profit,
-    feePercentage: arbitrageData.feePercentage,
-    currencyPair: arbitrageData.currencyPair,
-    fiat: arbitrageData.fiat,
-    updatedAt: admin.database.ServerValue.TIMESTAMP,
-    validUntil: validUntilMs,
-  };
-
-  // Commit Firestore batch
-  await batch.commit();
-
-  // Write to RTDB
-  const rtdbRef = rtdb.ref(`${config.rtdbPaths.rates}/arbitrage/${currencyPair}`);
-  await rtdbRef.set(rtdbData);
+  await firestoreRef.set(firestoreDoc, {merge: true});
 
   // Structured logging
   console.log(JSON.stringify({
@@ -215,7 +189,6 @@ async function writeArbitrageAtomically(currencyPair, arbitrageData) {
     profit: arbitrageData.profit,
     feePercentage: arbitrageData.feePercentage,
     firestore: "success",
-    rtdb: "success",
     timestamp: new Date().toISOString(),
   }));
 }

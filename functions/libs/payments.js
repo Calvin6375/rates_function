@@ -7,11 +7,9 @@ const admin = require("../admin");
 const crypto = require("crypto");
 const config = require("../config");
 const {updateBalanceWithTransaction} = require("../utils/firestore");
-const {syncBalanceToRealtime} = require("../utils/realtime");
 const {executeWithIdempotency} = require("./idempotency");
 
 const firestore = admin.firestore();
-const realtimeDb = admin.database();
 
 /**
  * Verify IntaSend webhook signature
@@ -214,26 +212,26 @@ async function resolveWalletId(paymentData) {
     }
   }
 
-  // Strategy 3: Look up invoice_id → userId mapping in RTDB
+  // Strategy 3: Look up invoice_id → userId mapping in Firestore
   if (paymentId && !walletId) {
     try {
-      const mappingRef = realtimeDb.ref(`${config.rtdbPaths.pendingTopups}/${paymentId}`);
-      const mappingSnap = await mappingRef.get();
+      const mappingRef = firestore.collection(config.collections.invoiceMappings).doc(paymentId);
+      const mappingDoc = await mappingRef.get();
 
-      if (mappingSnap.exists()) {
-        const mapping = mappingSnap.val();
+      if (mappingDoc.exists) {
+        const mapping = mappingDoc.data();
         walletId = mapping.userId || null;
 
-        console.log("✅ Found wallet ID from RTDB invoice mapping", {
+        console.log("✅ Found wallet ID from Firestore invoice mapping", {
           invoiceId: paymentId,
           walletId,
         });
 
-        // Clean up the mapping after use
-        await mappingRef.remove();
+        // Clean up the mapping after use (optional - can keep for audit)
+        // await mappingRef.delete();
       }
     } catch (err) {
-      console.error("❌ Failed to lookup RTDB invoice mapping", {
+      console.error("❌ Failed to lookup Firestore invoice mapping", {
         invoiceId: paymentId,
         error: err.message,
       });
@@ -263,10 +261,11 @@ async function processPaymentWebhook(paymentData, payload) {
   const walletId = await resolveWalletId(paymentData);
 
   if (!walletId) {
-    // Record payment for reconciliation but don't update wallet
-    await realtimeDb.ref(`${config.rtdbPaths.payments}/${paymentId}`).set({
+    // Record payment for reconciliation in Firestore
+    await firestore.collection("payments").doc(paymentId).set({
       ...payload,
-      processed_at: new Date().toISOString(),
+      processed_at: admin.firestore.FieldValue.serverTimestamp(),
+      status: "unresolved",
     });
 
     return {
@@ -276,11 +275,11 @@ async function processPaymentWebhook(paymentData, payload) {
   }
 
   // Check if payment was already processed (prevent duplicate credits)
-  const paymentRecordRef = realtimeDb.ref(`${config.rtdbPaths.payments}/${paymentId}`);
+  const paymentRecordRef = firestore.collection("payments").doc(paymentId);
   const existingPayment = await paymentRecordRef.get();
 
-  if (existingPayment.exists()) {
-    const existingData = existingPayment.val();
+  if (existingPayment.exists) {
+    const existingData = existingPayment.data();
     if (existingData.user_id === walletId && existingData.processed_at) {
       console.log("ℹ️ Payment already processed, skipping duplicate", {
         paymentId,
@@ -299,8 +298,9 @@ async function processPaymentWebhook(paymentData, payload) {
   await paymentRecordRef.set({
     ...payload,
     user_id: walletId,
-    processed_at: new Date().toISOString(),
-  });
+    processed_at: admin.firestore.FieldValue.serverTimestamp(),
+    status: "processing",
+  }, {merge: true});
 
   // Process payment with idempotency
   try {
@@ -321,8 +321,12 @@ async function processPaymentWebhook(paymentData, payload) {
               },
           );
 
-          // Step 2: Sync to Realtime Database (cached mirror)
-          await syncBalanceToRealtime(walletId, balanceResult.newBalance, currency);
+          // Step 2: Update payment record status
+          await paymentRecordRef.update({
+            status: "completed",
+            balance_updated: true,
+            new_balance: balanceResult.newBalance,
+          });
 
           // Step 3: Update order status to "completed" in Firestore
           if (paymentId) {
@@ -450,31 +454,19 @@ async function createPaymentOrder(userId, paymentData) {
   const orderId = orderRef.id;
   console.log(`✅ Created order document: ${orderId}`);
 
-  // Create invoice mapping in Realtime Database for webhook lookup
-  const mappingRef = realtimeDb.ref(`${config.rtdbPaths.pendingTopups}/${invoiceId}`);
+  // Create invoice mapping in Firestore for webhook lookup
+  const mappingRef = firestore.collection(config.collections.invoiceMappings).doc(invoiceId);
   await mappingRef.set({
     userId: userId,
     orderId: orderId,
     amount: amount,
     currency: currency,
     phoneNumber: userPhoneNumber,
-    createdAt: new Date().toISOString(),
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    status: "pending",
   });
 
-  // Also create phone number to invoice mapping for direct lookup
-  if (userPhoneNumber) {
-    const phoneMappingRef = realtimeDb.ref(`wallet/phoneToInvoice/${userPhoneNumber}/${invoiceId}`);
-    await phoneMappingRef.set({
-      userId: userId,
-      orderId: orderId,
-      invoiceId: invoiceId,
-      amount: amount,
-      currency: currency,
-      createdAt: new Date().toISOString(),
-    });
-  }
-
-  console.log(`✅ Created invoice mapping in RTDB: ${invoiceId}`);
+  console.log(`✅ Created invoice mapping in Firestore: ${invoiceId}`);
 
   return {
     success: true,

@@ -41,6 +41,7 @@ exports.migrateExistingUsers = onCall(
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
+      enforceAppCheck: true,
     },
     async (request) => {
       try {
@@ -78,6 +79,7 @@ exports.migrateUsersHttp = onRequest(
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
+      enforceAppCheck: true,
     },
     migrateApp,
 );

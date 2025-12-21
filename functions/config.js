@@ -69,14 +69,8 @@ const config = {
     adminLogs: "adminLogs",
     customerWallets: "customerWallets",
     outbox: "outbox",
-  },
-
-  // Realtime Database paths
-  rtdbPaths: {
-    wallet: "wallet",
-    rates: "wallet/rates",
-    payments: "payments",
-    pendingTopups: "wallet/pendingTopups",
+    // Firestore paths for migrated data (previously in RTDB)
+    invoiceMappings: "invoiceMappings", // For payment webhook lookups
   },
 };
 

@@ -17,6 +17,7 @@ exports.fetchArbitrageRates = onSchedule(
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
+      minInstances: 0,
     },
     async () => {
       const fiatCurrencies = config.binance.supportedFiats; // ["KES", "NGN", "GHS"]
@@ -35,6 +36,8 @@ exports.getArbitrageRates = onCall(
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
+      enforceAppCheck: true,
+      minInstances: 1,
     },
     async (request) => {
       try {
