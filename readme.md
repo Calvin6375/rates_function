@@ -43,6 +43,11 @@ This backend system powers the TruePay cryptocurrency exchange platform, providi
 - **Realtime Database** - Cached mirror for real-time client updates
 - **Node.js 22** - Runtime environment
 
+**Architecture:**
+- **Refactored (December 2025)**: Codebase restructured for improved maintainability, testability, and scalability
+- **Patterns**: Idempotency, Outbox pattern, structured logging, and monitoring
+- **Backward Compatible**: All public APIs remain unchanged - no breaking changes
+
 ---
 
 ## System Architecture
@@ -94,26 +99,151 @@ This backend system powers the TruePay cryptocurrency exchange platform, providi
 
 ### File Structure
 
+The codebase has been refactored into a clean, scalable architecture with clear separation of concerns:
+
 ```
 functions/
-├── index.js              # Main entry point - exports all functions
-├── admin.js              # Firebase Admin SDK initialization
-├── rates.js              # Binance P2P rate fetching
-├── arbitrage.js          # Arbitrage calculation logic
-├── payments.js           # IntaSend webhook handler
-├── adminActions.js       # Admin dashboard functions
-├── customerWallets.js    # Legacy customer wallets REST API
-├── userBootstrap.js      # User creation trigger
-├── balanceSync.js        # Balance sync trigger
-├── users.js              # User Firestore triggers
-├── migrateUsers.js       # User migration utilities
-├── updatePhoneNumbers.js # Phone number update utilities
-└── utils/
-    ├── firestore.js      # Firestore helper functions
-    ├── realtime.js       # Realtime DB helper functions
-    ├── transactions.js   # Transaction logging utilities
-    └── validation.js     # Input validation utilities
+├── index.js                   # Main entry point - exports only, no logic
+├── admin.js                   # Firebase Admin SDK initialization
+├── config.js                  # NEW: Centralized configuration & feature flags
+│
+├── http/                      # NEW: HTTP handlers (thin controllers)
+│   ├── ratesHttp.js           # Rates HTTP endpoints
+│   ├── arbitrageHttp.js       # Arbitrage HTTP endpoints
+│   ├── paymentsHttp.js       # Payment webhook & callable handlers
+│   ├── customerWalletsHttp.js # Customer wallets REST API
+│   ├── adminHttp.js           # Admin callable functions
+│   ├── migrateUsersHttp.js   # User migration HTTP handlers
+│   └── updatePhoneNumbersHttp.js # Phone update HTTP handlers
+│
+├── triggers/                  # NEW: Background triggers
+│   ├── usersTrigger.js        # Firestore user creation trigger
+│   ├── userBootstrap.js       # Auth user creation bootstrap
+│   └── balanceSync.js         # Balance sync trigger
+│
+├── workers/                   # NEW: Ready for async/long-running tasks
+│   # (Future: P2P execution, arbitrage, reconciliation workers)
+│
+├── libs/                      # NEW: Pure business logic (testable, reusable)
+│   ├── rates.js               # Rates business logic
+│   ├── arbitrage.js           # Arbitrage calculation logic
+│   ├── payments.js            # Payment processing logic
+│   ├── adminActions.js        # Admin operations logic
+│   ├── userWallets.js         # User wallet operations logic
+│   ├── migrateUsers.js        # User migration logic
+│   ├── updatePhoneNumbers.js  # Phone update logic
+│   ├── idempotency.js         # NEW: Idempotency pattern implementation
+│   └── outbox.js              # NEW: Outbox pattern for reliable async processing
+│
+└── utils/                     # Utility modules
+    ├── firestore.js           # Firestore helper functions
+    ├── realtime.js            # Realtime DB helper functions
+    ├── transactions.js        # Transaction logging utilities
+    ├── validation.js          # Input validation utilities
+    ├── logging.js             # NEW: Structured logging utilities
+    └── monitoring.js          # NEW: Performance monitoring utilities
 ```
+
+### Architecture Improvements
+
+**✅ Separation of Concerns:**
+- **Business Logic** (`libs/`): Pure, testable functions with no direct Firebase dependencies
+- **HTTP Handlers** (`http/`): Thin controllers that delegate to business logic
+- **Triggers** (`triggers/`): Background functions separated from business logic
+- **Utilities** (`utils/`): Reusable helper functions
+
+**✅ New Patterns:**
+- **Idempotency** (`libs/idempotency.js`): Prevents duplicate operations using Firestore-based keys
+- **Outbox Pattern** (`libs/outbox.js`): Reliable async processing with retry mechanism
+- **Structured Logging** (`utils/logging.js`): Consistent JSON-formatted logs
+- **Monitoring** (`utils/monitoring.js`): Performance metrics and health checks
+
+**✅ Benefits:**
+- **Testability**: Business logic can be unit tested without Firebase
+- **Maintainability**: Clear folder structure and single responsibility
+- **Scalability**: Ready for async workers and Pub/Sub integration
+- **Backward Compatible**: All APIs remain unchanged
+
+### Architecture Patterns
+
+#### Idempotency Pattern (`libs/idempotency.js`)
+
+Prevents duplicate operations by generating deterministic keys from request data:
+
+```javascript
+const {executeWithIdempotency} = require('./libs/idempotency');
+
+// Automatically handles duplicate detection
+const result = await executeWithIdempotency(
+  'processPayment',
+  async () => {
+    // Your operation here
+    return await processPayment(data);
+  },
+  {paymentId, walletId, amount},
+  walletId
+);
+```
+
+**Features:**
+- Automatic duplicate detection using Firestore
+- 24-hour TTL for idempotency keys
+- Integrated into payment processing
+
+#### Outbox Pattern (`libs/outbox.js`)
+
+Reliable async processing with retry mechanism:
+
+```javascript
+const {createOutboxMessage} = require('./libs/outbox');
+
+// Create outbox message for async processing
+const messageId = await createOutboxMessage(
+  'payment.completed',
+  {paymentId, userId, amount},
+  {priority: 'high', delaySeconds: 0}
+);
+```
+
+**Features:**
+- Retry with exponential backoff (2, 4, 8 minutes)
+- Status tracking (pending, processing, completed, failed)
+- Ready for Pub/Sub integration
+
+#### Structured Logging (`utils/logging.js`)
+
+Consistent JSON-formatted logs:
+
+```javascript
+const {info, error, warn} = require('./utils/logging');
+
+info('Payment processed', {paymentId, amount, userId});
+error('Payment failed', error, {paymentId, userId});
+```
+
+**Features:**
+- JSON-structured output for easy parsing
+- Log levels (DEBUG, INFO, WARN, ERROR)
+- Function execution tracking
+
+#### Monitoring (`utils/monitoring.js`)
+
+Performance metrics and health checks:
+
+```javascript
+const {monitorFunction, checkHealth} = require('./utils/monitoring');
+
+// Wrap function with automatic monitoring
+const monitoredFn = monitorFunction('processPayment', processPayment);
+
+// Check system health
+const health = await checkHealth();
+```
+
+**Features:**
+- Automatic performance tracking
+- Health checks for Firestore and Realtime DB
+- Ready for metrics storage
 
 ---
 
@@ -1271,6 +1401,31 @@ The sync function automatically cleans up old paths when writing to the new path
 
 ## Configuration
 
+### Centralized Configuration (`config.js`)
+
+The refactored codebase uses a centralized configuration module (`functions/config.js`) for:
+
+- **Environment Variables**: Region, resource limits, feature flags
+- **Collection Names**: All Firestore collection paths
+- **Realtime DB Paths**: All Realtime Database paths
+- **Feature Flags**: Enable/disable features (idempotency, outbox, detailed logging)
+- **API Configuration**: Binance API settings, supported currencies
+
+**Usage:**
+```javascript
+const config = require('./config');
+
+// Access configuration
+const region = config.region; // "us-central1"
+const usersCollection = config.collections.users; // "users"
+const enableIdempotency = config.features.enableIdempotency; // true
+```
+
+**Feature Flags:**
+- `ENABLE_IDEMPOTENCY`: Enable idempotency pattern (default: true)
+- `ENABLE_OUTBOX`: Enable outbox pattern (default: true)
+- `ENABLE_DETAILED_LOGGING`: Enable detailed logging (default: true)
+
 ### Firebase Secrets
 
 Set using Firebase Functions secrets (v7+):
@@ -1387,6 +1542,18 @@ HTTP endpoints have CORS enabled with:
 - **Node.js**: 22.x
 - **Firebase CLI**: Latest version
 - **Firebase Project**: With Firestore, Realtime Database, and Cloud Functions enabled
+
+### Codebase Structure
+
+The codebase follows a clean architecture pattern:
+
+- **`libs/`**: Pure business logic - easily testable, no Firebase dependencies
+- **`http/`**: HTTP handlers - thin controllers that delegate to business logic
+- **`triggers/`**: Background triggers - Firestore and Auth event handlers
+- **`utils/`**: Utility functions - reusable helpers
+- **`config.js`**: Centralized configuration
+
+**See `functions/REFACTORING_SUMMARY.md` for detailed migration information.**
 
 ### Local Setup
 
@@ -1622,9 +1789,27 @@ After webhook call or balance update, verify:
 - **Functions → Usage**: Monitor function invocations and errors
 - **Cloud Logging**: Advanced log filtering and analysis
 
-### Structured Logging
+### Monitoring Utilities (`utils/monitoring.js`)
 
-Functions emit structured JSON logs:
+The refactored codebase includes built-in monitoring:
+
+```javascript
+const {monitorFunction, checkHealth, recordMetrics} = require('./utils/monitoring');
+
+// Automatic function monitoring
+const monitoredFn = monitorFunction('processPayment', processPayment);
+
+// Health checks
+const health = await checkHealth();
+// Returns: {status: "healthy", checks: {firestore: "ok", realtimeDb: "ok"}}
+
+// Manual metrics recording
+await recordMetrics('myFunction', 150, true, {userId: 'abc123'});
+```
+
+### Structured Logging (`utils/logging.js`)
+
+Functions emit structured JSON logs using the logging utility:
 ```json
 {
   "event": "rates_updated",
