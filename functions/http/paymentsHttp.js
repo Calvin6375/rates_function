@@ -156,7 +156,6 @@ exports.createPayment = onCall(
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
-      enforceAppCheck: true,
       minInstances: 1,
     },
     async (request) => {
@@ -170,6 +169,7 @@ exports.createPayment = onCall(
       const data = request.data || {};
 
       console.log("📥 Received createPayment request:", {
+        userId,
         hasAmount: !!data.amount,
         hasCurrency: !!data.currency,
         hasInvoiceId: !!data.invoiceId,
