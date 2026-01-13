@@ -315,8 +315,15 @@ exports.getCommissionConfig = onCall(
 );
 
 /**
- * Callable Function: Update Commission Configuration
- * Admin-only function to update commission/fee settings
+ * Callable Function: Update Customer Rates Configuration
+ * Admin-only function to update customer rates (buyRate and sellRate)
+ * 
+ * Request format:
+ * {
+ *   buyRate: number,        // Required: Customer rate for buying
+ *   sellRate: number,        // Required: Customer rate for selling
+ *   currencyPair?: string    // Optional: e.g., "USDT/KES", defaults to "USDT/KES"
+ * }
  */
 exports.updateCommissionConfig = onCall(
     {
@@ -337,14 +344,15 @@ exports.updateCommissionConfig = onCall(
           throw new HttpsError("permission-denied", "Admin access required");
         }
 
-        const {arbitrageFee, serviceFee} = request.data || {};
+        const {buyRate, sellRate, currencyPair} = request.data || {};
 
-        return await adminActionsLib.updateCommissionConfig(adminId, arbitrageFee, serviceFee);
+        return await adminActionsLib.updateCommissionConfig(adminId, buyRate, sellRate, currencyPair);
       } catch (error) {
-        console.error("❌ Error updating commission config:", {
+        console.error("❌ Error updating customer rates config:", {
           adminId: request.auth?.uid,
-          arbitrageFee: request.data?.arbitrageFee,
-          serviceFee: request.data?.serviceFee,
+          buyRate: request.data?.buyRate,
+          sellRate: request.data?.sellRate,
+          currencyPair: request.data?.currencyPair,
           error: error.message,
         });
 
@@ -352,11 +360,11 @@ exports.updateCommissionConfig = onCall(
           throw error;
         }
 
-        if (error.message.includes("must be") || error.message.includes("At least")) {
+        if (error.message.includes("must be") || error.message.includes("required")) {
           throw new HttpsError("invalid-argument", error.message);
         }
 
-        throw new HttpsError("internal", `Failed to update commission config: ${error.message}`);
+        throw new HttpsError("internal", `Failed to update customer rates: ${error.message}`);
       }
     },
 );

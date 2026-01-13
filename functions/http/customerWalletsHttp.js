@@ -57,6 +57,66 @@ app.use((req, res, next) => {
 });
 
 /**
+ * GET /customer-rates
+ * Get customer rates (buyRate and sellRate) for Flutter app
+ * Public endpoint - no authentication required
+ * 
+ * Query parameters:
+ * - currencyPair (optional): e.g., "USDT/KES", defaults to "USDT/KES"
+ * 
+ * Returns the customer rates (rate + commission combined) for buying and selling
+ */
+app.get("/customer-rates", async (req, res) => {
+  try {
+    const currencyPair = req.query.currencyPair || `${config.binance.defaultAsset}/${config.binance.defaultFiat}`;
+
+    // Get customer rates configuration from Firestore
+    const configRef = db.collection(config.collections.config).doc("customerRates");
+    const configDoc = await configRef.get();
+
+    if (!configDoc.exists) {
+      res.status(404).json({
+        success: false,
+        error: "Customer rates not configured",
+        message: `No rates found for ${currencyPair}. Please configure rates in admin dashboard.`,
+      });
+      return;
+    }
+
+    const configData = configDoc.data();
+    const rates = configData.rates || {};
+
+    if (!rates[currencyPair]) {
+      res.status(404).json({
+        success: false,
+        error: "Currency pair not found",
+        message: `No rates configured for ${currencyPair}. Available pairs: ${Object.keys(rates).join(", ") || "none"}`,
+      });
+      return;
+    }
+
+    const pairRates = rates[currencyPair];
+
+    res.status(200).json({
+      success: true,
+      data: {
+        currencyPair,
+        buyRate: pairRates.buyRate,
+        sellRate: pairRates.sellRate,
+        updatedAt: configData.updatedAt?.toDate?.()?.toISOString() || null,
+      },
+    });
+  } catch (error) {
+    console.error("Error getting customer rates:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to get customer rates",
+      message: error.message,
+    });
+  }
+});
+
+/**
  * GET /binance/rates
  * Get Binance exchange rates for a currency pair
  */
@@ -94,6 +154,12 @@ app.get("/binance/rates", async (req, res) => {
  * POST /p2p/listings
  * Get P2P listings from Binance
  * This endpoint proxies requests to Binance P2P API
+ * 
+ * CRITICAL: The tradeType parameter MUST be forwarded exactly as received.
+ * The frontend makes two parallel calls:
+ * - USA: tradeType: "SELL" (people selling USDT for USD) - to find where to BUY USDT
+ * - Kenya: tradeType: "BUY" (people buying USDT with KES) - to find where to SELL USDT
+ * Do NOT swap or modify the tradeType parameter - forward it directly to Binance.
  */
 app.post("/p2p/listings", async (req, res) => {
   try {
@@ -109,7 +175,17 @@ app.post("/p2p/listings", async (req, res) => {
       return;
     }
 
+    // Log the incoming request for debugging
+    console.log("Received P2P listings request:", {
+      asset: requestBody.asset,
+      fiat: requestBody.fiat,
+      tradeType: requestBody.tradeType, // Log to verify it's received correctly
+      page: requestBody.page,
+      rows: requestBody.rows,
+    });
+
     // Fetch P2P listings from Binance
+    // The tradeType will be forwarded exactly as received (no modification)
     const binanceResponse = await p2pListingsLib.fetchP2PListings(requestBody);
 
     // Return Binance response directly (as per requirements)
@@ -404,33 +480,50 @@ async function verifyAdminFromRequest(req) {
 
 /**
  * GET /config/fees
- * Get current commission/fee configuration
- * Authentication: Required (Admin only)
+ * Get current customer rates configuration (buyRate and sellRate)
+ * Authentication: Required (any authenticated user can read)
+ * 
+ * Returns customer rates (rate + commission combined) in Buy and Sell format
+ * for use by the Flutter app. Rates are stored per currency pair.
  */
 app.get("/config/fees", async (req, res) => {
   try {
-    const {isAdmin: isAdminUser} = await verifyAdminFromRequest(req);
-    if (!isAdminUser) {
-      res.status(403).json({
+    // Verify user is authenticated (but don't require admin for reading)
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      res.status(401).json({
         success: false,
-        error: "Forbidden",
-        message: "Admin access required",
+        error: "Unauthorized",
+        message: "Authentication required. Please provide a valid Firebase Auth token.",
       });
       return;
     }
 
-    // Get commission configuration from Firestore
-    const configRef = db.collection(config.collections.config).doc("fees");
+    try {
+      const token = authHeader.split("Bearer ")[1];
+      await admin.auth().verifyIdToken(token);
+      // Token is valid, proceed
+    } catch (authError) {
+      res.status(401).json({
+        success: false,
+        error: "Unauthorized",
+        message: "Invalid or expired authentication token.",
+      });
+      return;
+    }
+
+    // Get customer rates configuration from Firestore
+    const configRef = db.collection(config.collections.config).doc("customerRates");
     const configDoc = await configRef.get();
 
     if (!configDoc.exists) {
+      // Return default structure if config doesn't exist
       res.status(200).json({
         success: true,
         data: {
-          arbitrageFee: 1.5,
-          serviceFee: 1.5,
+          rates: {}, // Empty rates object - admin needs to set rates
         },
-        message: "Using default commission values",
+        message: "No customer rates configured. Please set buyRate and sellRate.",
       });
       return;
     }
@@ -440,17 +533,16 @@ app.get("/config/fees", async (req, res) => {
     res.status(200).json({
       success: true,
       data: {
-        arbitrageFee: configData.arbitrageFee || 1.5,
-        serviceFee: configData.serviceFee || 1.5,
+        rates: configData.rates || {}, // Object with currency pairs as keys
         updatedAt: configData.updatedAt?.toDate?.()?.toISOString() || null,
         updatedBy: configData.updatedBy || null,
       },
     });
   } catch (error) {
-    console.error("Error getting commission config:", error);
+    console.error("Error getting customer rates config:", error);
     res.status(500).json({
       success: false,
-      error: "Failed to get commission configuration",
+      error: "Failed to get customer rates configuration",
       message: error.message,
     });
   }
@@ -458,106 +550,190 @@ app.get("/config/fees", async (req, res) => {
 
 /**
  * PUT /config/fees
- * Update commission/fee configuration
- * Authentication: Required (Admin only)
+ * Update customer rates configuration (buyRate and sellRate)
+ * Authentication: Required (any authenticated user can update)
+ * 
+ * Accepts customer rates (rate + commission combined) in Buy and Sell format.
+ * Rates are stored per currency pair (e.g., "USDT/KES").
+ * 
+ * Request body format:
+ * {
+ *   "currencyPair": "USDT/KES",  // Optional: defaults to "USDT/KES"
+ *   "buyRate": 129.50,            // Required: Customer rate for buying
+ *   "sellRate": 128.00            // Required: Customer rate for selling
+ * }
+ * 
+ * Or update multiple pairs:
+ * {
+ *   "rates": {
+ *     "USDT/KES": { "buyRate": 129.50, "sellRate": 128.00 },
+ *     "USDT/NGN": { "buyRate": 1500.00, "sellRate": 1480.00 }
+ *   }
+ * }
  */
 app.put("/config/fees", async (req, res) => {
   try {
-    const {isAdmin: isAdminUser, adminId} = await verifyAdminFromRequest(req);
-    if (!isAdminUser || !adminId) {
-      res.status(403).json({
+    // Verify user is authenticated (but don't require admin for updating rates)
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      res.status(401).json({
         success: false,
-        error: "Forbidden",
-        message: "Admin access required",
+        error: "Unauthorized",
+        message: "Authentication required. Please provide a valid Firebase Auth token.",
       });
       return;
     }
 
-    const {arbitrageFee, serviceFee} = req.body || {};
-
-    if (arbitrageFee === undefined && serviceFee === undefined) {
-      res.status(400).json({
+    let userId = null;
+    try {
+      const token = authHeader.split("Bearer ")[1];
+      const decodedToken = await admin.auth().verifyIdToken(token);
+      userId = decodedToken.uid;
+      // Token is valid, proceed
+    } catch (authError) {
+      res.status(401).json({
         success: false,
-        error: "Invalid request",
-        message: "At least one fee (arbitrageFee or serviceFee) must be provided",
+        error: "Unauthorized",
+        message: "Invalid or expired authentication token.",
       });
       return;
     }
 
-    const configRef = db.collection(config.collections.config).doc("fees");
+    const {currencyPair, buyRate, sellRate, rates} = req.body || {};
+
+    // Get current config for logging
+    const configRef = db.collection(config.collections.config).doc("customerRates");
     const configDoc = await configRef.get();
-    const beforeData = configDoc.exists ? configDoc.data() : {};
+    const beforeData = configDoc.exists ? configDoc.data() : {rates: {}};
 
     const updateData = {
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      updatedBy: adminId,
+      updatedBy: userId,
     };
 
-    if (arbitrageFee !== undefined) {
-      const feeValue = Number(arbitrageFee);
-      if (isNaN(feeValue) || feeValue < 0 || feeValue > 100) {
+    // Initialize rates object if it doesn't exist
+    if (!updateData.rates) {
+      updateData.rates = beforeData.rates || {};
+    } else {
+      updateData.rates = {...beforeData.rates};
+    }
+
+    // Handle bulk update (rates object)
+    if (rates && typeof rates === "object") {
+      for (const [pair, rateData] of Object.entries(rates)) {
+        if (rateData && typeof rateData === "object") {
+          const buy = Number(rateData.buyRate);
+          const sell = Number(rateData.sellRate);
+
+          if (isNaN(buy) || buy <= 0) {
+            res.status(400).json({
+              success: false,
+              error: "Invalid request",
+              message: `buyRate for ${pair} must be a positive number`,
+            });
+            return;
+          }
+
+          if (isNaN(sell) || sell <= 0) {
+            res.status(400).json({
+              success: false,
+              error: "Invalid request",
+              message: `sellRate for ${pair} must be a positive number`,
+            });
+            return;
+          }
+
+          updateData.rates[pair] = {
+            buyRate: buy,
+            sellRate: sell,
+          };
+        }
+      }
+    } else if (buyRate !== undefined || sellRate !== undefined) {
+      // Handle single currency pair update
+      const pair = currencyPair || `${config.binance.defaultAsset}/${config.binance.defaultFiat}`;
+
+      if (buyRate === undefined || sellRate === undefined) {
         res.status(400).json({
           success: false,
           error: "Invalid request",
-          message: "arbitrageFee must be a number between 0 and 100",
+          message: "Both buyRate and sellRate are required when updating a single pair",
         });
         return;
       }
-      updateData.arbitrageFee = feeValue;
-    }
 
-    if (serviceFee !== undefined) {
-      const feeValue = Number(serviceFee);
-      if (isNaN(feeValue) || feeValue < 0 || feeValue > 100) {
+      const buy = Number(buyRate);
+      const sell = Number(sellRate);
+
+      if (isNaN(buy) || buy <= 0) {
         res.status(400).json({
           success: false,
           error: "Invalid request",
-          message: "serviceFee must be a number between 0 and 100",
+          message: "buyRate must be a positive number",
         });
         return;
       }
-      updateData.serviceFee = feeValue;
+
+      if (isNaN(sell) || sell <= 0) {
+        res.status(400).json({
+          success: false,
+          error: "Invalid request",
+          message: "sellRate must be a positive number",
+        });
+        return;
+      }
+
+      updateData.rates[pair] = {
+        buyRate: buy,
+        sellRate: sell,
+      };
+    } else {
+      res.status(400).json({
+        success: false,
+        error: "Invalid request",
+        message: "Either provide 'rates' object or 'buyRate' and 'sellRate' with optional 'currencyPair'",
+      });
+      return;
     }
 
+    // Update the document
     await configRef.set(updateData, {merge: true});
 
     const afterDoc = await configRef.get();
     const afterData = afterDoc.data();
 
-    // Log admin action
+    // Log action (using logAdminAction for consistency, but any authenticated user can update)
     const {logAdminAction} = require("../utils/transactions");
     try {
       await logAdminAction(
-          adminId,
+          userId,
           "system",
-          "updateCommission",
+          "updateCustomerRates",
           beforeData,
           afterData,
       );
     } catch (logError) {
-      console.error("Failed to log admin action:", logError.message);
+      console.error("Failed to log action:", logError.message);
     }
 
-    console.log(`✅ Admin ${adminId} updated commission configuration via REST API`, {
-      arbitrageFee: updateData.arbitrageFee,
-      serviceFee: updateData.serviceFee,
+    console.log(`✅ User ${userId} updated customer rates via REST API`, {
+      rates: updateData.rates,
     });
 
     res.status(200).json({
       success: true,
       data: {
-        arbitrageFee: afterData.arbitrageFee || 1.5,
-        serviceFee: afterData.serviceFee || 1.5,
+        rates: afterData.rates || {},
         updatedAt: afterData.updatedAt?.toDate?.()?.toISOString() || new Date().toISOString(),
-        updatedBy: adminId,
+        updatedBy: userId,
       },
-      message: "Commission configuration updated successfully",
+      message: "Customer rates updated successfully",
     });
   } catch (error) {
-    console.error("Error updating commission config:", error);
+    console.error("Error updating customer rates config:", error);
     res.status(500).json({
       success: false,
-      error: "Failed to update commission configuration",
+      error: "Failed to update customer rates configuration",
       message: error.message,
     });
   }

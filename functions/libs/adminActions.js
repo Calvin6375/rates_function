@@ -290,24 +290,23 @@ async function syncUserBalanceToRealtime(adminId, userId) {
 }
 
 /**
- * Get commission configuration
+ * Get customer rates configuration (buyRate and sellRate)
  * @param {string} adminId - Admin user ID
- * @returns {Promise<Object>} Commission configuration
+ * @returns {Promise<Object>} Customer rates configuration
  */
 async function getCommissionConfig(adminId) {
-  // Get commission configuration from Firestore
-  const configRef = firestore.collection(config.collections.config).doc("fees");
+  // Get customer rates configuration from Firestore
+  const configRef = firestore.collection(config.collections.config).doc("customerRates");
   const configDoc = await configRef.get();
 
   if (!configDoc.exists) {
-    // Return default values if config doesn't exist
+    // Return empty structure if config doesn't exist
     return {
       success: true,
       config: {
-        arbitrageFee: 1.5, // Default 1.5%
-        serviceFee: 1.5, // Default 1.5%
+        rates: {}, // Empty rates object
       },
-      message: "Using default commission values (config document not found)",
+      message: "No customer rates configured. Please set buyRate and sellRate.",
     };
   }
 
@@ -316,54 +315,57 @@ async function getCommissionConfig(adminId) {
   return {
     success: true,
     config: {
-      arbitrageFee: configData.arbitrageFee || 1.5,
-      serviceFee: configData.serviceFee || 1.5,
+      rates: configData.rates || {},
       updatedAt: configData.updatedAt?.toMillis?.() || null,
     },
   };
 }
 
 /**
- * Update commission configuration
+ * Update customer rates configuration (buyRate and sellRate)
  * @param {string} adminId - Admin user ID
- * @param {number} arbitrageFee - Arbitrage fee percentage
- * @param {number} serviceFee - Service fee percentage
+ * @param {number} buyRate - Customer rate for buying (rate + commission)
+ * @param {number} sellRate - Customer rate for selling (rate + commission)
+ * @param {string} currencyPair - Currency pair (e.g., "USDT/KES"), optional
  * @returns {Promise<Object>} Update result
  */
-async function updateCommissionConfig(adminId, arbitrageFee, serviceFee) {
-  // Validate that at least one fee is provided
-  if (arbitrageFee === undefined && serviceFee === undefined) {
-    throw new Error("At least one fee (arbitrageFee or serviceFee) must be provided");
+async function updateCommissionConfig(adminId, buyRate, sellRate, currencyPair = null) {
+  // Validate that both rates are provided
+  if (buyRate === undefined || sellRate === undefined) {
+    throw new Error("Both buyRate and sellRate are required");
+  }
+
+  const buy = Number(buyRate);
+  const sell = Number(sellRate);
+
+  if (isNaN(buy) || buy <= 0) {
+    throw new Error("buyRate must be a positive number");
+  }
+
+  if (isNaN(sell) || sell <= 0) {
+    throw new Error("sellRate must be a positive number");
   }
 
   // Get current config for logging
-  const configRef = firestore.collection(config.collections.config).doc("fees");
+  const configRef = firestore.collection(config.collections.config).doc("customerRates");
   const configDoc = await configRef.get();
-  const beforeData = configDoc.exists ? configDoc.data() : {};
+  const beforeData = configDoc.exists ? configDoc.data() : {rates: {}};
+
+  // Determine currency pair
+  const pair = currencyPair || `${config.binance.defaultAsset}/${config.binance.defaultFiat}`;
 
   // Prepare update data
   const updateData = {
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     updatedBy: adminId,
+    rates: {
+      ...(beforeData.rates || {}),
+      [pair]: {
+        buyRate: buy,
+        sellRate: sell,
+      },
+    },
   };
-
-  // Validate and add arbitrageFee if provided
-  if (arbitrageFee !== undefined) {
-    const feeValue = Number(arbitrageFee);
-    if (isNaN(feeValue) || feeValue < 0 || feeValue > 100) {
-      throw new Error("arbitrageFee must be a number between 0 and 100");
-    }
-    updateData.arbitrageFee = feeValue;
-  }
-
-  // Validate and add serviceFee if provided
-  if (serviceFee !== undefined) {
-    const feeValue = Number(serviceFee);
-    if (isNaN(feeValue) || feeValue < 0 || feeValue > 100) {
-      throw new Error("serviceFee must be a number between 0 and 100");
-    }
-    updateData.serviceFee = feeValue;
-  }
 
   // Update or create config document
   await configRef.set(updateData, {merge: true});
@@ -376,25 +378,25 @@ async function updateCommissionConfig(adminId, arbitrageFee, serviceFee) {
   await logAdminAction(
       adminId,
       "system",
-      "updateCommission",
+      "updateCustomerRates",
       beforeData,
       afterData,
   );
 
-  console.log(`✅ Admin ${adminId} updated commission configuration`, {
-    arbitrageFee: updateData.arbitrageFee,
-    serviceFee: updateData.serviceFee,
+  console.log(`✅ Admin ${adminId} updated customer rates`, {
+    currencyPair: pair,
+    buyRate: buy,
+    sellRate: sell,
   });
 
   return {
     success: true,
     config: {
-      arbitrageFee: afterData.arbitrageFee || 1.5,
-      serviceFee: afterData.serviceFee || 1.5,
+      rates: afterData.rates || {},
       updatedAt: afterData.updatedAt?.toMillis?.() || Date.now(),
       updatedBy: adminId,
     },
-    message: "Commission configuration updated successfully",
+    message: "Customer rates updated successfully",
   };
 }
 
