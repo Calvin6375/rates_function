@@ -9,6 +9,7 @@ const express = require("express");
 const config = require("../config");
 const userWalletsLib = require("../libs/userWallets");
 const ratesLib = require("../libs/rates");
+const p2pListingsLib = require("../libs/p2pListings");
 
 const db = admin.firestore();
 const app = express();
@@ -85,6 +86,66 @@ app.get("/binance/rates", async (req, res) => {
     res.status(500).json({
       error: "internal",
       message: `Failed to fetch rates: ${err.message}`,
+    });
+  }
+});
+
+/**
+ * POST /p2p/listings
+ * Get P2P listings from Binance
+ * This endpoint proxies requests to Binance P2P API
+ */
+app.post("/p2p/listings", async (req, res) => {
+  try {
+    const requestBody = req.body || {};
+
+    // Validate required parameters
+    if (!requestBody.asset || !requestBody.fiat || !requestBody.tradeType) {
+      res.status(400).json({
+        success: false,
+        error: "Missing required parameters: asset, fiat, and tradeType are required",
+        data: null,
+      });
+      return;
+    }
+
+    // Fetch P2P listings from Binance
+    const binanceResponse = await p2pListingsLib.fetchP2PListings(requestBody);
+
+    // Return Binance response directly (as per requirements)
+    // The frontend expects the Binance response format
+    res.status(200).json(binanceResponse);
+  } catch (err) {
+    console.error("Error in /p2p/listings endpoint:", {
+      error: err.message,
+      stack: err.stack,
+      requestBody: req.body,
+    });
+
+    // Determine appropriate status code based on error
+    let statusCode = 500;
+    let errorMessage = "Internal server error. Please try again later.";
+
+    if (err.message.includes("Missing required parameters")) {
+      statusCode = 400;
+      errorMessage = err.message;
+    } else if (err.message.includes("403") || err.message.includes("blocked")) {
+      statusCode = 503; // Service Unavailable
+      errorMessage = "Binance API is currently unavailable. Please try again later.";
+    } else if (err.message.includes("429") || err.message.includes("Rate limit")) {
+      statusCode = 429; // Too Many Requests
+      errorMessage = err.message;
+    } else if (err.message.includes("timeout") || err.message.includes("Network error")) {
+      statusCode = 504; // Gateway Timeout
+      errorMessage = err.message;
+    } else if (err.message) {
+      errorMessage = err.message;
+    }
+
+    res.status(statusCode).json({
+      success: false,
+      error: errorMessage,
+      data: null,
     });
   }
 });
