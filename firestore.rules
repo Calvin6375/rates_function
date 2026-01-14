@@ -22,12 +22,10 @@ service cloud.firestore {
       return request.resource.data.diff(resource.data).affectedKeys().hasAny(['balance', 'fiatBalance', 'cryptoBalance']);
     }
     
-    // Users collection - users can read their own data, admins can read all
+    // Users collection - authenticated users can read all (for dashboard functionality)
     match /users/{userId} {
-      // Allow users to read their own document
-      allow read: if isOwner(userId);
-      // Allow admins to read all user documents
-      allow read: if isAdmin();
+      // Allow authenticated users to read all user documents (for dashboard)
+      allow read: if isAuthenticated();
       
       // Users can update their own document EXCEPT balance fields
       // Balance can only be modified by Cloud Functions (server-side) or admins
@@ -93,11 +91,10 @@ service cloud.firestore {
       allow read, write: if request.auth == null; // null auth = server SDK
     }
     
-    // Customer wallets collection - admin read/write, users can read their own
+    // Customer wallets collection - authenticated users can read all (for dashboard)
     match /customerWallets/{walletId} {
-      // Users can read their own wallet if userId matches
-      allow read: if isAuthenticated() && 
-                     (resource.data.userId == request.auth.uid || isAdmin());
+      // Allow authenticated users to read all wallets (for dashboard functionality)
+      allow read: if isAuthenticated();
       // Only admins or Cloud Functions can write
       allow write: if isAdmin() || request.auth == null; // null auth = server SDK
     }

@@ -2,6 +2,7 @@ const admin = require("../admin");
 const {logTransaction} = require("./transactions");
 
 const firestore = admin.firestore();
+const rtdb = admin.database();
 
 /**
  * Update user balance using Firestore transaction
@@ -41,10 +42,10 @@ async function updateBalanceWithTransaction(
       }
 
       // Determine which balance field to update based on transaction type and currency
-      // Default: fiat transactions (topup, credit) update fiatBalance, crypto transactions update cryptoBalance
-      const isCryptoTransaction = metadata.currency === "USDT" || 
-                                   metadata.currency === "BTC" || 
-                                   metadata.currency === "ETH" ||
+      const currency = metadata.currency || "USD";
+      const isCryptoTransaction = currency === "USDT" || 
+                                   currency === "BTC" || 
+                                   currency === "ETH" ||
                                    transactionType === "crypto" ||
                                    metadata.isCrypto === true;
       
@@ -55,14 +56,47 @@ async function updateBalanceWithTransaction(
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       };
       
+      // Get current currency-specific balances
+      const currentUsdBalance = Number(userData.usdBalance || userData.USD || currentFiatBalance || 0);
+      const currentKesBalance = Number(userData.kesBalance || userData.KES || 0);
+      const currentUsdtBalance = Number(userData.usdtBalance || userData.USDT || 0);
+
+      // Calculate new balances for all currencies
+      let newUsdBalance = currentUsdBalance;
+      let newKesBalance = currentKesBalance;
+      let newUsdtBalance = currentUsdtBalance;
+
       if (isCryptoTransaction) {
-        // Crypto transaction: update cryptoBalance to match balance
+        // Crypto transaction: update cryptoBalance and currency-specific balance
         updateData.cryptoBalance = currentCryptoBalance + amountDelta;
+        if (currency === "USDT") {
+          newUsdtBalance = currentUsdtBalance + amountDelta;
+          updateData.usdtBalance = newUsdtBalance;
+          updateData.USDT = newUsdtBalance;
+        }
       } else {
-        // Fiat transaction (default): update fiatBalance to match balance
-        // This ensures admin dashboard sees correct fiatBalance when reading directly from Firestore
+        // Fiat transaction: update fiatBalance and currency-specific balance
         updateData.fiatBalance = currentFiatBalance + amountDelta;
+        
+        // Update currency-specific balance fields
+        if (currency === "USD") {
+          newUsdBalance = currentUsdBalance + amountDelta;
+          updateData.usdBalance = newUsdBalance;
+          updateData.USD = newUsdBalance;
+        } else if (currency === "KES") {
+          newKesBalance = currentKesBalance + amountDelta;
+          updateData.kesBalance = newKesBalance;
+          updateData.KES = newKesBalance;
+        }
       }
+
+      // Update wallets object for dashboard compatibility (stored in Firestore)
+      // This ensures the dashboard can read wallets.USD, wallets.KES, wallets.USDT directly
+      updateData.wallets = {
+        USD: newUsdBalance,
+        KES: newKesBalance,
+        USDT: newUsdtBalance,
+      };
 
       transaction.update(userRef, updateData);
 
@@ -71,6 +105,14 @@ async function updateBalanceWithTransaction(
         newBalance: newBalance,
       };
     });
+
+    // Sync balance to Realtime Database for Flutter app
+    try {
+      await syncBalanceToRealtimeDatabase(userId, metadata.currency || "USD");
+    } catch (syncError) {
+      // Log error but don't fail the balance update
+      console.error("⚠️ Failed to sync balance to Realtime DB (balance updated successfully):", syncError.message);
+    }
 
     // Log transaction after successful update
     let transactionId;
@@ -150,9 +192,55 @@ async function userExists(userId) {
   }
 }
 
+/**
+ * Sync user balances to Realtime Database for Flutter app
+ * Flutter app reads from: wallet/{userId}/fiat/{currency} and wallet/{userId}/crypto/{currency}
+ * @param {string} userId - User ID
+ * @param {string} currency - Currency code (USD, KES, USDT)
+ * @returns {Promise<void>}
+ */
+async function syncBalanceToRealtimeDatabase(userId, currency = "USD") {
+  try {
+    const userDoc = await firestore.collection("users").doc(userId).get();
+    
+    if (!userDoc.exists) {
+      console.warn(`⚠️ User ${userId} not found, skipping RTDB sync`);
+      return;
+    }
+
+    const userData = userDoc.data();
+    const walletRef = rtdb.ref(`wallet/${userId}`);
+
+    // Sync fiat balances
+    const usdBalance = Number(userData.usdBalance || userData.USD || userData.fiatBalance || 0);
+    const kesBalance = Number(userData.kesBalance || userData.KES || 0);
+    
+    await walletRef.child("fiat/USD").set(usdBalance);
+    await walletRef.child("fiat/KES").set(kesBalance);
+
+    // Sync crypto balances
+    const usdtBalance = Number(userData.usdtBalance || userData.USDT || userData.cryptoBalance || 0);
+    await walletRef.child("crypto/USDT").set(usdtBalance);
+
+    console.log(`✅ Synced balances to Realtime DB for user ${userId}`, {
+      USD: usdBalance,
+      KES: kesBalance,
+      USDT: usdtBalance,
+    });
+  } catch (error) {
+    console.error("❌ Error syncing balance to Realtime DB:", {
+      userId,
+      currency,
+      error: error.message,
+    });
+    throw error;
+  }
+}
+
 module.exports = {
   updateBalanceWithTransaction,
   getUserBalance,
   userExists,
+  syncBalanceToRealtimeDatabase,
 };
 

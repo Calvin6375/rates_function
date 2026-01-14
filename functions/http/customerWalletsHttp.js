@@ -57,6 +57,51 @@ app.use((req, res, next) => {
 });
 
 /**
+ * GET /rates
+ * Get all customer rates (view-only, public endpoint)
+ * No authentication required - public access for displaying rates
+ * 
+ * Returns all configured customer rates (rate + commission combined) in Buy and Sell format
+ */
+app.get("/rates", async (req, res) => {
+  try {
+    // Get customer rates configuration from Firestore
+    const configRef = db.collection(config.collections.config).doc("customerRates");
+    const configDoc = await configRef.get();
+
+    if (!configDoc.exists) {
+      res.status(200).json({
+        success: true,
+        data: {
+          rates: {},
+        },
+        message: "No rates configured yet",
+      });
+      return;
+    }
+
+    const configData = configDoc.data();
+    const rates = configData.rates || {};
+
+    // Return all rates (public access)
+    res.status(200).json({
+      success: true,
+      data: {
+        rates: rates,
+        updatedAt: configData.updatedAt?.toDate?.()?.toISOString() || null,
+      },
+    });
+  } catch (error) {
+    console.error("Error getting rates:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to get rates",
+      message: error.message,
+    });
+  }
+});
+
+/**
  * GET /customer-rates
  * Get customer rates (buyRate and sellRate) for Flutter app
  * Public endpoint - no authentication required
@@ -317,11 +362,18 @@ app.put("/customer-wallets/:id", async (req, res) => {
 /**
  * POST /customer-wallets/:id/credit
  * Credit money to a customer wallet
+ * 
+ * Request body:
+ * {
+ *   "amount": 1000,
+ *   "currency": "KES",  // Optional: "USD", "KES", "USDT" - defaults to "USD"
+ *   "description": "Deposit"
+ * }
  */
 app.post("/customer-wallets/:id/credit", async (req, res) => {
   try {
     const {id} = req.params;
-    const {amount, description} = req.body;
+    const {amount, currency = "USD", description} = req.body;
 
     if (!amount || typeof amount !== "number" || amount <= 0) {
       res.status(400).json({
@@ -331,7 +383,17 @@ app.post("/customer-wallets/:id/credit", async (req, res) => {
       return;
     }
 
-    const result = await userWalletsLib.creditCustomerWallet(id, amount, description);
+    // Validate currency
+    const validCurrencies = ["USD", "KES", "USDT"];
+    if (!validCurrencies.includes(currency.toUpperCase())) {
+      res.status(400).json({
+        success: false,
+        error: `Invalid currency. Must be one of: ${validCurrencies.join(", ")}`,
+      });
+      return;
+    }
+
+    const result = await userWalletsLib.creditCustomerWallet(id, amount, description, currency.toUpperCase());
 
     res.status(200).json({
       success: true,
@@ -351,11 +413,18 @@ app.post("/customer-wallets/:id/credit", async (req, res) => {
 /**
  * POST /customer-wallets/:id/debit
  * Debit money from a customer wallet
+ * 
+ * Request body:
+ * {
+ *   "amount": 1000,
+ *   "currency": "KES",  // Optional: "USD", "KES", "USDT" - defaults to "USD"
+ *   "description": "Withdrawal"
+ * }
  */
 app.post("/customer-wallets/:id/debit", async (req, res) => {
   try {
     const {id} = req.params;
-    const {amount, description} = req.body;
+    const {amount, currency = "USD", description} = req.body;
 
     if (!amount || typeof amount !== "number" || amount <= 0) {
       res.status(400).json({
@@ -365,7 +434,17 @@ app.post("/customer-wallets/:id/debit", async (req, res) => {
       return;
     }
 
-    const result = await userWalletsLib.debitCustomerWallet(id, amount, description);
+    // Validate currency
+    const validCurrencies = ["USD", "KES", "USDT"];
+    if (!validCurrencies.includes(currency.toUpperCase())) {
+      res.status(400).json({
+        success: false,
+        error: `Invalid currency. Must be one of: ${validCurrencies.join(", ")}`,
+      });
+      return;
+    }
+
+    const result = await userWalletsLib.debitCustomerWallet(id, amount, description, currency.toUpperCase());
 
     res.status(200).json({
       success: true,

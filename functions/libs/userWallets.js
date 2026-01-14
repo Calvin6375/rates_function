@@ -5,7 +5,7 @@
 
 const admin = require("../admin");
 const config = require("../config");
-const {updateBalanceWithTransaction, getUserBalance, userExists} = require("../utils/firestore");
+const {updateBalanceWithTransaction, getUserBalance, userExists, syncBalanceToRealtimeDatabase} = require("../utils/firestore");
 const {logTransaction} = require("../utils/transactions");
 
 const db = admin.firestore();
@@ -28,22 +28,25 @@ function formatUserData(doc) {
     lastName = nameParts.slice(1).join(" ") || "";
   }
 
-  // Handle balance mapping: prioritize balance field as source of truth
-  const balance = Number(data.balance || 0);
-  const cryptoBalanceValue = data.cryptoBalance !== undefined && data.cryptoBalance !== null 
-    ? Number(data.cryptoBalance) 
-    : null;
-  const fiatBalanceValue = data.fiatBalance !== undefined && data.fiatBalance !== null 
-    ? Number(data.fiatBalance) 
-    : null;
+  // Handle balance mapping: use actual balance fields, with balance as master source of truth
+  // Priority: fiatBalance/cryptoBalance if they exist, otherwise use balance field
+  const masterBalance = Number(data.balance || 0);
   
-  // Use balance as fallback if the specific balance fields are 0 or missing
-  const cryptoBalance = (cryptoBalanceValue !== null && cryptoBalanceValue !== 0) 
-    ? cryptoBalanceValue 
-    : balance;
-  const fiatBalance = (fiatBalanceValue !== null && fiatBalanceValue !== 0) 
-    ? fiatBalanceValue 
-    : balance;
+  // Get fiatBalance - use actual value if exists, otherwise use master balance
+  const fiatBalance = data.fiatBalance !== undefined && data.fiatBalance !== null
+    ? Number(data.fiatBalance)
+    : masterBalance;
+  
+  // Get cryptoBalance - use actual value if exists, otherwise use master balance  
+  const cryptoBalance = data.cryptoBalance !== undefined && data.cryptoBalance !== null
+    ? Number(data.cryptoBalance)
+    : masterBalance;
+
+  // Extract currency-specific balances - DO NOT fall back to fiatBalance/cryptoBalance
+  // Each currency should be independent to prevent cross-contamination
+  const usdBalance = Number(data.usdBalance || data.USD || 0);
+  const kesBalance = Number(data.kesBalance || data.KES || 0);
+  const usdtBalance = Number(data.usdtBalance || data.USDT || 0);
 
   return {
     id: docId,
@@ -52,8 +55,20 @@ function formatUserData(doc) {
     lastName: lastName,
     email: data.email || "",
     phone: data.phoneNumber || data.phone || "",
+    // Legacy fields for compatibility
     cryptoBalance: cryptoBalance,
     fiatBalance: fiatBalance,
+    balance: masterBalance, // Include master balance field
+    // Currency-specific balances for dashboard
+    usdBalance: usdBalance,
+    kesBalance: kesBalance,
+    usdtBalance: usdtBalance,
+    // Also include as wallets object for compatibility
+    wallets: {
+      USD: usdBalance,
+      KES: kesBalance,
+      USDT: usdtBalance,
+    },
     status: data.status || "Active",
     createdAt: data.createdAt?.toDate?.()?.toISOString() || null,
     updatedAt: data.updatedAt?.toDate?.()?.toISOString() || null,
@@ -147,19 +162,17 @@ async function listCustomerWallets(limit = 100, offset = 0) {
     const legacySnapshot = await legacyQuery.get();
     wallets = legacySnapshot.docs.map((doc) => {
       const data = doc.data();
-      const balance = Number(data.balance || 0);
-      const cryptoBalanceValue = data.cryptoBalance !== undefined && data.cryptoBalance !== null 
-        ? Number(data.cryptoBalance) 
-        : null;
-      const fiatBalanceValue = data.fiatBalance !== undefined && data.fiatBalance !== null 
-        ? Number(data.fiatBalance) 
-        : null;
-      const cryptoBalance = (cryptoBalanceValue !== null && cryptoBalanceValue !== 0) 
-        ? cryptoBalanceValue 
-        : balance;
-      const fiatBalance = (fiatBalanceValue !== null && fiatBalanceValue !== 0) 
-        ? fiatBalanceValue 
-        : balance;
+      const masterBalance = Number(data.balance || 0);
+      const fiatBalance = data.fiatBalance !== undefined && data.fiatBalance !== null
+        ? Number(data.fiatBalance)
+        : masterBalance;
+      const cryptoBalance = data.cryptoBalance !== undefined && data.cryptoBalance !== null
+        ? Number(data.cryptoBalance)
+        : masterBalance;
+      
+      const usdBalance = Number(data.usdBalance || data.USD || fiatBalance || 0);
+      const kesBalance = Number(data.kesBalance || data.KES || 0);
+      const usdtBalance = Number(data.usdtBalance || data.USDT || cryptoBalance || 0);
       
       return {
         id: doc.id,
@@ -168,8 +181,17 @@ async function listCustomerWallets(limit = 100, offset = 0) {
         lastName: data.lastName || "",
         email: data.email || "",
         phone: data.phone || "",
+        balance: masterBalance,
         cryptoBalance: cryptoBalance,
         fiatBalance: fiatBalance,
+        usdBalance: usdBalance,
+        kesBalance: kesBalance,
+        usdtBalance: usdtBalance,
+        wallets: {
+          USD: usdBalance,
+          KES: kesBalance,
+          USDT: usdtBalance,
+        },
         status: data.status || "Active",
         createdAt: data.createdAt?.toDate?.()?.toISOString() || null,
         updatedAt: data.updatedAt?.toDate?.()?.toISOString() || null,
@@ -256,21 +278,18 @@ async function updateCustomerWallet(id, updateData) {
  * @param {string} id - Wallet/user ID
  * @param {number} amount - Amount to credit
  * @param {string} description - Transaction description
+ * @param {string} currency - Currency code (USD, KES, USDT) - defaults to "USD"
  * @returns {Promise<Object>} Updated wallet data and transaction info
  */
-async function creditCustomerWallet(id, amount, description = "Wallet credit") {
+async function creditCustomerWallet(id, amount, description = "Wallet credit", currency = "USD") {
   // Try new architecture first: /users/{uid}
   const userDoc = await db.collection(config.collections.users).doc(id).get();
 
   if (userDoc.exists) {
     const userRef = db.collection(config.collections.users).doc(id);
     const userData = userDoc.data();
-    const currentFiatBalance = Number(userData.fiatBalance || 0);
-    const currentBalance = Number(userData.balance || currentFiatBalance);
-    const newFiatBalance = currentFiatBalance + amount;
-    const newBalance = currentBalance + amount;
 
-    // Update both fiatBalance and balance using Firestore transaction
+    // Update currency-specific balance using Firestore transaction
     await db.runTransaction(async (transaction) => {
       const doc = await transaction.get(userRef);
       if (!doc.exists) {
@@ -278,17 +297,68 @@ async function creditCustomerWallet(id, amount, description = "Wallet credit") {
       }
       
       const currentData = doc.data();
-      const currentFiatBalance = Number(currentData.fiatBalance || 0);
-      const currentBalance = Number(currentData.balance || currentFiatBalance);
-      const newFiatBalance = currentFiatBalance + amount;
-      const newBalance = currentBalance + amount;
-      
-      transaction.update(userRef, {
-        fiatBalance: newFiatBalance,
-        balance: newBalance,
+      const updateFields = {
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
+      };
+
+      // Get current balances for all currencies
+      const currentUsdBalance = Number(currentData.usdBalance || currentData.USD || 0);
+      const currentKesBalance = Number(currentData.kesBalance || currentData.KES || 0);
+      const currentUsdtBalance = Number(currentData.usdtBalance || currentData.USDT || 0);
+      const currentBalance = Number(currentData.balance || 0);
+      const currentFiatBalance = Number(currentData.fiatBalance || currentUsdBalance || 0);
+      const currentCryptoBalance = Number(currentData.cryptoBalance || currentUsdtBalance || 0);
+
+      // Update currency-specific balance based on currency parameter
+      if (currency === "USD") {
+        const newUsdBalance = currentUsdBalance + amount;
+        const newBalance = currentBalance + amount;
+        const newFiatBalance = currentFiatBalance + amount;
+        
+        updateFields.balance = newBalance;
+        updateFields.fiatBalance = newFiatBalance;
+        updateFields.usdBalance = newUsdBalance;
+        updateFields.USD = newUsdBalance;
+      } else if (currency === "KES") {
+        const newKesBalance = currentKesBalance + amount;
+        const newFiatBalance = currentFiatBalance + amount; // KES is also fiat, so update fiatBalance
+        const newBalance = currentBalance + amount;
+        
+        updateFields.kesBalance = newKesBalance;
+        updateFields.KES = newKesBalance;
+        updateFields.fiatBalance = newFiatBalance; // Update fiatBalance for KES credits
+        updateFields.balance = newBalance;
+      } else if (currency === "USDT") {
+        const newUsdtBalance = currentUsdtBalance + amount;
+        const newCryptoBalance = currentCryptoBalance + amount;
+        const newBalance = currentBalance + amount;
+        
+        updateFields.usdtBalance = newUsdtBalance;
+        updateFields.USDT = newUsdtBalance;
+        updateFields.cryptoBalance = newCryptoBalance;
+        updateFields.balance = newBalance;
+      }
+
+      // Always update wallets object for dashboard compatibility (stored in Firestore)
+      const finalUsdBalance = currency === "USD" ? currentUsdBalance + amount : currentUsdBalance;
+      const finalKesBalance = currency === "KES" ? currentKesBalance + amount : currentKesBalance;
+      const finalUsdtBalance = currency === "USDT" ? currentUsdtBalance + amount : currentUsdtBalance;
+      
+      updateFields.wallets = {
+        USD: finalUsdBalance,
+        KES: finalKesBalance,
+        USDT: finalUsdtBalance,
+      };
+      
+      transaction.update(userRef, updateFields);
     });
+
+    // Get previous balance for logging (before transaction)
+    const previousBalance = currency === "USD" 
+      ? Number(userData.usdBalance || userData.USD || 0)
+      : currency === "KES"
+        ? Number(userData.kesBalance || userData.KES || 0)
+        : Number(userData.usdtBalance || userData.USDT || 0);
 
     // Log transaction
     try {
@@ -297,40 +367,37 @@ async function creditCustomerWallet(id, amount, description = "Wallet credit") {
           "credit",
           amount,
           "completed",
-          currentFiatBalance,
-          newFiatBalance,
+          previousBalance,
+          previousBalance + amount,
           {
             source: "admin_api",
             description: description,
-            currency: "fiat",
+            currency: currency,
           },
       );
     } catch (logError) {
       console.error("Failed to log transaction:", logError.message);
     }
 
-    // Balance is stored in Firestore only (no RTDB sync needed)
-    // Clients should listen to Firestore document changes for real-time updates
+    // Sync balance to Realtime Database for Flutter app
+    try {
+      await syncBalanceToRealtimeDatabase(id, currency);
+    } catch (syncError) {
+      console.error("Failed to sync balance to Realtime DB:", syncError.message);
+      // Don't fail the operation if sync fails
+    }
 
     // Fetch updated user
     const updatedDoc = await db.collection(config.collections.users).doc(id).get();
-    const updatedData = updatedDoc.data();
-
-    const balance = Number(updatedData.balance || 0);
-    const cryptoBalanceValue = updatedData.cryptoBalance !== undefined && updatedData.cryptoBalance !== null 
-      ? Number(updatedData.cryptoBalance) 
-      : null;
-    const cryptoBalance = (cryptoBalanceValue !== null && cryptoBalanceValue !== 0) 
-      ? cryptoBalanceValue 
-      : balance;
 
     return {
       wallet: formatUserData(updatedDoc),
       transaction: {
         type: "credit",
         amount,
-        previousBalance: currentFiatBalance,
-        newBalance: newFiatBalance,
+        currency: currency,
+        previousBalance: previousBalance,
+        newBalance: previousBalance + amount,
       },
     };
   }
@@ -391,26 +458,29 @@ async function creditCustomerWallet(id, amount, description = "Wallet credit") {
  * @param {string} id - Wallet/user ID
  * @param {number} amount - Amount to debit
  * @param {string} description - Transaction description
+ * @param {string} currency - Currency code (USD, KES, USDT) - defaults to "USD"
  * @returns {Promise<Object>} Updated wallet data and transaction info
  */
-async function debitCustomerWallet(id, amount, description = "Wallet debit") {
+async function debitCustomerWallet(id, amount, description = "Wallet debit", currency = "USD") {
   // Try new architecture first: /users/{uid}
   const userDoc = await db.collection(config.collections.users).doc(id).get();
 
   if (userDoc.exists) {
     const userRef = db.collection(config.collections.users).doc(id);
     const userData = userDoc.data();
-    const currentFiatBalance = Number(userData.fiatBalance || 0);
-    const currentBalance = Number(userData.balance || currentFiatBalance);
 
-    if (currentFiatBalance < amount) {
-      throw new Error("Insufficient balance");
+    // Get current balance for the specific currency
+    const currentBalance = currency === "USD"
+      ? Number(userData.usdBalance || userData.USD || 0)
+      : currency === "KES"
+        ? Number(userData.kesBalance || userData.KES || 0)
+        : Number(userData.usdtBalance || userData.USDT || 0);
+
+    if (currentBalance < amount) {
+      throw new Error(`Insufficient ${currency} balance. Current: ${currentBalance}, Required: ${amount}`);
     }
 
-    const newFiatBalance = currentFiatBalance - amount;
-    const newBalance = currentBalance - amount;
-
-    // Update both fiatBalance and balance using Firestore transaction
+    // Update currency-specific balance using Firestore transaction
     await db.runTransaction(async (transaction) => {
       const doc = await transaction.get(userRef);
       if (!doc.exists) {
@@ -418,21 +488,72 @@ async function debitCustomerWallet(id, amount, description = "Wallet debit") {
       }
       
       const currentData = doc.data();
-      const currentFiatBalance = Number(currentData.fiatBalance || 0);
-      const currentBalance = Number(currentData.balance || currentFiatBalance);
-      
-      if (currentFiatBalance < amount) {
-        throw new Error("Insufficient balance");
-      }
-      
-      const newFiatBalance = currentFiatBalance - amount;
-      const newBalance = currentBalance - amount;
-      
-      transaction.update(userRef, {
-        fiatBalance: newFiatBalance,
-        balance: newBalance,
+      const updateFields = {
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
+      };
+
+      // Get current balances for all currencies
+      const currentUsdBalance = Number(currentData.usdBalance || currentData.USD || 0);
+      const currentKesBalance = Number(currentData.kesBalance || currentData.KES || 0);
+      const currentUsdtBalance = Number(currentData.usdtBalance || currentData.USDT || 0);
+      const currentBalance = Number(currentData.balance || 0);
+      const currentFiatBalance = Number(currentData.fiatBalance || currentUsdBalance || 0);
+      const currentCryptoBalance = Number(currentData.cryptoBalance || currentUsdtBalance || 0);
+
+      // Update currency-specific balance based on currency parameter
+      if (currency === "USD") {
+        if (currentUsdBalance < amount) {
+          throw new Error("Insufficient USD balance");
+        }
+        
+        const newUsdBalance = currentUsdBalance - amount;
+        const newBalance = currentBalance - amount;
+        const newFiatBalance = currentFiatBalance - amount;
+        
+        updateFields.balance = newBalance;
+        updateFields.fiatBalance = newFiatBalance;
+        updateFields.usdBalance = newUsdBalance;
+        updateFields.USD = newUsdBalance;
+      } else if (currency === "KES") {
+        if (currentKesBalance < amount) {
+          throw new Error("Insufficient KES balance");
+        }
+        
+        const newKesBalance = currentKesBalance - amount;
+        const newFiatBalance = currentFiatBalance - amount; // KES is also fiat, so update fiatBalance
+        const newBalance = Math.max(0, currentBalance - amount);
+        
+        updateFields.kesBalance = newKesBalance;
+        updateFields.KES = newKesBalance;
+        updateFields.fiatBalance = newFiatBalance; // Update fiatBalance for KES debits
+        updateFields.balance = newBalance;
+      } else if (currency === "USDT") {
+        if (currentUsdtBalance < amount) {
+          throw new Error("Insufficient USDT balance");
+        }
+        
+        const newUsdtBalance = currentUsdtBalance - amount;
+        const newCryptoBalance = currentCryptoBalance - amount;
+        const newBalance = Math.max(0, currentBalance - amount);
+        
+        updateFields.usdtBalance = newUsdtBalance;
+        updateFields.USDT = newUsdtBalance;
+        updateFields.cryptoBalance = newCryptoBalance;
+        updateFields.balance = newBalance;
+      }
+
+      // Always update wallets object for dashboard compatibility (stored in Firestore)
+      const finalUsdBalance = currency === "USD" ? currentUsdBalance - amount : currentUsdBalance;
+      const finalKesBalance = currency === "KES" ? currentKesBalance - amount : currentKesBalance;
+      const finalUsdtBalance = currency === "USDT" ? currentUsdtBalance - amount : currentUsdtBalance;
+      
+      updateFields.wallets = {
+        USD: Math.max(0, finalUsdBalance),
+        KES: Math.max(0, finalKesBalance),
+        USDT: Math.max(0, finalUsdtBalance),
+      };
+      
+      transaction.update(userRef, updateFields);
     });
 
     // Log transaction
@@ -442,40 +563,37 @@ async function debitCustomerWallet(id, amount, description = "Wallet debit") {
           "debit",
           amount,
           "completed",
-          currentFiatBalance,
-          newFiatBalance,
+          currentBalance,
+          currentBalance - amount,
           {
             source: "admin_api",
             description: description,
-            currency: "fiat",
+            currency: currency,
           },
       );
     } catch (logError) {
       console.error("Failed to log transaction:", logError.message);
     }
 
-    // Balance is stored in Firestore only (no RTDB sync needed)
-    // Clients should listen to Firestore document changes for real-time updates
+    // Sync balance to Realtime Database for Flutter app
+    try {
+      await syncBalanceToRealtimeDatabase(id, currency);
+    } catch (syncError) {
+      console.error("Failed to sync balance to Realtime DB:", syncError.message);
+      // Don't fail the operation if sync fails
+    }
 
     // Fetch updated user
     const updatedDoc = await db.collection(config.collections.users).doc(id).get();
-    const updatedData = updatedDoc.data();
-
-    const balance = Number(updatedData.balance || 0);
-    const cryptoBalanceValue = updatedData.cryptoBalance !== undefined && updatedData.cryptoBalance !== null 
-      ? Number(updatedData.cryptoBalance) 
-      : null;
-    const cryptoBalance = (cryptoBalanceValue !== null && cryptoBalanceValue !== 0) 
-      ? cryptoBalanceValue 
-      : balance;
 
     return {
       wallet: formatUserData(updatedDoc),
       transaction: {
         type: "debit",
         amount,
-        previousBalance: currentFiatBalance,
-        newBalance: newFiatBalance,
+        currency: currency,
+        previousBalance: currentBalance,
+        newBalance: currentBalance - amount,
       },
     };
   }

@@ -15,9 +15,29 @@
       }
     },
     "wallet": {
+      "$uid": {
+        // Users can read their own wallet data (fiat and crypto balances)
+        ".read": "$uid === auth.uid",
+        // No client writes - only Cloud Functions can write balances
+        ".write": "false",
+        "fiat": {
+          "$currency": {
+            // Users can read their own fiat balances (USD, KES, etc.)
+            ".read": "$uid === auth.uid",
+            ".write": "false"
+          }
+        },
+        "crypto": {
+          "$currency": {
+            // Users can read their own crypto balances (USDT, BTC, etc.)
+            ".read": "$uid === auth.uid",
+            ".write": "false"
+          }
+        }
+      },
       "balance": {
         "$uid": {
-          // Users can read their own wallet balance
+          // Legacy path - users can read their own wallet balance
           ".read": "$uid === auth.uid",
           // No client writes - only Cloud Functions can write balances
           ".write": "false"
