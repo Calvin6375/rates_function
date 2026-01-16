@@ -170,9 +170,11 @@ async function listCustomerWallets(limit = 100, offset = 0) {
         ? Number(data.cryptoBalance)
         : masterBalance;
       
-      const usdBalance = Number(data.usdBalance || data.USD || fiatBalance || 0);
+      // Extract currency-specific balances - DO NOT fall back to fiatBalance/cryptoBalance
+      // Each currency should be independent to prevent cross-contamination
+      const usdBalance = Number(data.usdBalance || data.USD || 0);
       const kesBalance = Number(data.kesBalance || data.KES || 0);
-      const usdtBalance = Number(data.usdtBalance || data.USDT || cryptoBalance || 0);
+      const usdtBalance = Number(data.usdtBalance || data.USDT || 0);
       
       return {
         id: doc.id,
