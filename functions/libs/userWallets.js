@@ -424,11 +424,13 @@ async function creditCustomerWallet(id, amount, description = "Wallet credit", c
   // Create transaction record
   const transactionData = {
     walletId: id,
+    userId: id,
     type: "credit",
     amount,
     previousBalance: currentBalance,
     newBalance,
     description: description,
+    currency: currency, // Store currency at top level
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
   };
 
@@ -625,11 +627,13 @@ async function debitCustomerWallet(id, amount, description = "Wallet debit", cur
   // Create transaction record
   const transactionData = {
     walletId: id,
+    userId: id,
     type: "debit",
     amount,
     previousBalance: currentBalance,
     newBalance,
     description: description,
+    currency: currency, // Store currency at top level
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
   };
 

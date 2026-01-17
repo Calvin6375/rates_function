@@ -57,7 +57,7 @@ app.use((req, res, next) => {
 /**
  * Helper: Verify Firebase Auth token and get user ID
  * @param {Object} req - Express request object
- * @returns {Promise<{success: boolean, userId: string|null, error: string|null}>}
+ * @returns {Promise<{success: boolean, userId: string|null, error: string|null, decodedToken?: Object}>}
  */
 async function verifyAuthToken(req) {
   try {
@@ -69,7 +69,7 @@ async function verifyAuthToken(req) {
     const token = authHeader.split("Bearer ")[1];
     const decodedToken = await admin.auth().verifyIdToken(token);
 
-    return {success: true, userId: decodedToken.uid, error: null};
+    return {success: true, userId: decodedToken.uid, decodedToken, error: null};
   } catch (error) {
     console.error("Error verifying auth token:", error.message);
     return {success: false, userId: null, error: "Invalid or expired token"};
@@ -472,6 +472,294 @@ app.get("/transactions/:transactionId", async (req, res) => {
     });
   } catch (error) {
     console.error("Error in /transactions/:transactionId endpoint:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * GET /admin/transactions
+ * Get all transaction histories for dashboard
+ * Supports filtering, pagination, and includes client information
+ * 
+ * Query parameters:
+ * - limit: number (default: 50, max: 200)
+ * - startAfter: transaction ID for pagination
+ * - userId: filter by specific user ID
+ * - type: filter by transaction type (credit, debit, topup, etc.)
+ * - status: filter by status (completed, pending, failed)
+ * - currency: filter by currency (USD, KES, USDT, etc.)
+ * - startDate: filter from date (ISO format)
+ * - endDate: filter to date (ISO format)
+ * 
+ * Headers:
+ * - Authorization: Bearer <Firebase Auth token> (Authentication required)
+ */
+app.get("/admin/transactions", async (req, res) => {
+  try {
+    // Verify user is authenticated (but don't require admin for reading)
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      res.status(401).json({
+        success: false,
+        error: "Unauthorized",
+        message: "Authentication required. Please provide a valid Firebase Auth token.",
+      });
+      return;
+    }
+
+    try {
+      const token = authHeader.split("Bearer ")[1];
+      await admin.auth().verifyIdToken(token);
+      // Token is valid, proceed
+    } catch (authError) {
+      res.status(401).json({
+        success: false,
+        error: "Unauthorized",
+        message: "Invalid or expired authentication token.",
+      });
+      return;
+    }
+
+    const {
+      limit: limitParam = 50,
+      startAfter = null,
+      userId = null,
+      type = null,
+      status = null,
+      currency = null,
+      startDate = null,
+      endDate = null,
+    } = req.query;
+
+    const limit = Math.min(parseInt(limitParam) || 50, 200);
+
+    try {
+      // Collect all transactions from all users
+      const allTransactions = [];
+
+      // Strategy 1: Query transactions subcollection for all users
+      // Get all user documents first
+      const usersSnapshot = await firestore.collection(config.collections.users).limit(500).get();
+      const userIds = usersSnapshot.docs.map((doc) => doc.id);
+
+      // Query transactions for each user
+      const transactionPromises = userIds.map(async (uid) => {
+        try {
+          let query = firestore
+              .collection(config.collections.transactions)
+              .doc(uid)
+              .collection("transactions")
+              .orderBy("timestamp", "desc")
+              .limit(limit * 2); // Get more to account for filtering
+
+          // Apply filters
+          if (type) {
+            query = query.where("type", "==", type);
+          }
+          if (status) {
+            query = query.where("status", "==", status);
+          }
+          if (currency) {
+            query = query.where("currency", "==", currency);
+          }
+          if (userId && uid !== userId) {
+            return []; // Skip if filtering by specific user
+          }
+
+          const snapshot = await query.get();
+          const transactions = snapshot.docs.map((doc) => ({
+            id: doc.id,
+            userId: uid,
+            ...doc.data(),
+            timestamp: doc.data().timestamp?.toDate?.()?.toISOString() || null,
+          }));
+
+          return transactions;
+        } catch (error) {
+          console.error(`Error fetching transactions for user ${uid}:`, error.message);
+          return [];
+        }
+      });
+
+      const transactionArrays = await Promise.all(transactionPromises);
+      allTransactions.push(...transactionArrays.flat());
+
+      // Strategy 2: Also query walletTransactions collection
+      try {
+        let walletTxQuery = firestore
+            .collection("walletTransactions")
+            .orderBy("createdAt", "desc")
+            .limit(limit * 2);
+
+        if (userId) {
+          walletTxQuery = walletTxQuery.where("userId", "==", userId);
+        }
+        if (type) {
+          walletTxQuery = walletTxQuery.where("type", "==", type);
+        }
+        if (currency) {
+          walletTxQuery = walletTxQuery.where("currency", "==", currency);
+        }
+
+        const walletTxSnapshot = await walletTxQuery.get();
+        walletTxSnapshot.forEach((doc) => {
+          const data = doc.data();
+          // Avoid duplicates
+          const exists = allTransactions.some((tx) => tx.id === doc.id);
+          if (!exists) {
+            allTransactions.push({
+              id: doc.id,
+              ...data,
+              timestamp: data.createdAt?.toDate?.()?.toISOString() || null,
+              createdAt: data.createdAt?.toDate?.()?.toISOString() || null,
+            });
+          }
+        });
+      } catch (walletTxError) {
+        console.error("Error querying walletTransactions:", walletTxError.message);
+      }
+
+      // Apply date filters if provided
+      let filteredTransactions = allTransactions;
+      if (startDate) {
+        const start = new Date(startDate);
+        filteredTransactions = filteredTransactions.filter((tx) => {
+          const txDate = new Date(tx.timestamp || tx.createdAt || 0);
+          return txDate >= start;
+        });
+      }
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999); // End of day
+        filteredTransactions = filteredTransactions.filter((tx) => {
+          const txDate = new Date(tx.timestamp || tx.createdAt || 0);
+          return txDate <= end;
+        });
+      }
+
+      // Sort by timestamp descending
+      filteredTransactions.sort((a, b) => {
+        const timeA = new Date(a.timestamp || a.createdAt || 0).getTime();
+        const timeB = new Date(b.timestamp || b.createdAt || 0).getTime();
+        return timeB - timeA;
+      });
+
+      // Apply limit after filtering
+      let limitedTransactions = filteredTransactions.slice(0, limit);
+
+      // Fetch user/client information for each transaction
+      const enrichedTransactions = await Promise.all(
+          limitedTransactions.map(async (tx) => {
+            try {
+              let userData = null;
+              if (tx.userId) {
+                const userDoc = await firestore
+                    .collection(config.collections.users)
+                    .doc(tx.userId)
+                    .get();
+
+                if (userDoc.exists) {
+                  const user = userDoc.data();
+                  userData = {
+                    id: userDoc.id,
+                    name: user.name || user.displayName || "Unknown User",
+                    email: user.email || null,
+                    phoneNumber: user.phoneNumber || user.phone || null,
+                  };
+                } else {
+                  // Try customerWallets collection
+                  const customerDoc = await firestore
+                      .collection(config.collections.customerWallets)
+                      .doc(tx.userId)
+                      .get();
+
+                  if (customerDoc.exists) {
+                    const customer = customerDoc.data();
+                    userData = {
+                      id: customerDoc.id,
+                      name: customer.name || "Unknown Customer",
+                      email: customer.email || null,
+                      phoneNumber: customer.phone || customer.phoneNumber || null,
+                    };
+                  }
+                }
+              }
+
+              return {
+                id: tx.id,
+                date: tx.timestamp || tx.createdAt || null,
+                type: tx.type || "unknown",
+                client: userData
+                  ? {
+                      id: userData.id,
+                      name: userData.name,
+                      email: userData.email,
+                      phoneNumber: userData.phoneNumber,
+                    }
+                  : {id: tx.userId || "unknown", name: "Unknown User"},
+                amount: tx.amount || 0,
+                currency: tx.currency || "USD",
+                status: tx.status || "unknown",
+                reference: tx.id || tx.metadata?.paymentId || tx.metadata?.invoiceId || null,
+                previousBalance: tx.previousBalance || null,
+                newBalance: tx.newBalance || null,
+                metadata: tx.metadata || {},
+                // Include full transaction data for reference
+                _full: tx,
+              };
+            } catch (error) {
+              console.error(`Error enriching transaction ${tx.id}:`, error.message);
+              // Return basic transaction data if enrichment fails
+              return {
+                id: tx.id,
+                date: tx.timestamp || tx.createdAt || null,
+                type: tx.type || "unknown",
+                client: {id: tx.userId || "unknown", name: "Unknown User"},
+                amount: tx.amount || 0,
+                currency: tx.currency || "USD",
+                status: tx.status || "unknown",
+                reference: tx.id || null,
+                previousBalance: tx.previousBalance || null,
+                newBalance: tx.newBalance || null,
+                metadata: tx.metadata || {},
+                _full: tx,
+              };
+            }
+          }),
+      );
+
+      // Get last transaction ID for pagination
+      const lastTransactionId = enrichedTransactions.length > 0
+        ? enrichedTransactions[enrichedTransactions.length - 1].id
+        : null;
+
+      res.status(200).json({
+        success: true,
+        data: {
+          transactions: enrichedTransactions,
+          pagination: {
+            limit,
+            count: enrichedTransactions.length,
+            total: filteredTransactions.length,
+            hasMore: filteredTransactions.length > limit,
+            startAfter: lastTransactionId,
+          },
+        },
+      });
+    } catch (error) {
+      console.error("Error fetching all transactions:", error);
+      res.status(500).json({
+        success: false,
+        error: "Internal server error",
+        message: error.message,
+      });
+    }
+  } catch (error) {
+    console.error("Error in /admin/transactions endpoint:", error);
     res.status(500).json({
       success: false,
       error: "Internal server error",

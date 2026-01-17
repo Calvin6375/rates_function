@@ -34,6 +34,9 @@ async function logTransaction(
     const txId = generateTransactionId();
     const timestamp = admin.firestore.FieldValue.serverTimestamp();
 
+    // Extract currency from metadata if present (for topup transactions)
+    const currency = metadata.currency || null;
+
     const transactionData = {
       type,
       amount,
@@ -44,6 +47,11 @@ async function logTransaction(
       metadata,
       userId,
     };
+
+    // Add currency as top-level field if present in metadata
+    if (currency) {
+      transactionData.currency = currency;
+    }
 
     await firestore
         .collection("transactions")
