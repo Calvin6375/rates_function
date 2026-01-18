@@ -7,6 +7,7 @@ const admin = require("../admin");
 const config = require("../config");
 const {updateBalanceWithTransaction, getUserBalance, userExists, syncBalanceToRealtimeDatabase} = require("../utils/firestore");
 const {logTransaction} = require("../utils/transactions");
+const {createNotification, NOTIFICATION_TYPES} = require("../utils/notifications");
 
 const db = admin.firestore();
 
@@ -312,6 +313,7 @@ async function creditCustomerWallet(id, amount, description = "Wallet credit", c
       const currentCryptoBalance = Number(currentData.cryptoBalance || currentUsdtBalance || 0);
 
       // Update currency-specific balance based on currency parameter
+      // Only update the specific currency balance, not shared balance fields
       if (currency === "USD") {
         const newUsdBalance = currentUsdBalance + amount;
         const newBalance = currentBalance + amount;
@@ -323,13 +325,9 @@ async function creditCustomerWallet(id, amount, description = "Wallet credit", c
         updateFields.USD = newUsdBalance;
       } else if (currency === "KES") {
         const newKesBalance = currentKesBalance + amount;
-        const newFiatBalance = currentFiatBalance + amount; // KES is also fiat, so update fiatBalance
-        const newBalance = currentBalance + amount;
-        
+        // Only update KES-specific fields, not shared balance or fiatBalance
         updateFields.kesBalance = newKesBalance;
         updateFields.KES = newKesBalance;
-        updateFields.fiatBalance = newFiatBalance; // Update fiatBalance for KES credits
-        updateFields.balance = newBalance;
       } else if (currency === "USDT") {
         const newUsdtBalance = currentUsdtBalance + amount;
         const newCryptoBalance = currentCryptoBalance + amount;
@@ -387,6 +385,27 @@ async function creditCustomerWallet(id, amount, description = "Wallet credit", c
     } catch (syncError) {
       console.error("Failed to sync balance to Realtime DB:", syncError.message);
       // Don't fail the operation if sync fails
+    }
+
+    // Send notification to user (both dashboard and mobile app)
+    try {
+      const newBalance = previousBalance + amount;
+      await createNotification({
+        userId: id,
+        type: NOTIFICATION_TYPES.WALLET_CREDITED,
+        title: "Wallet Credited",
+        message: `Your ${currency} wallet was credited ${amount}. New balance: ${currency} ${newBalance.toFixed(2)}`,
+        metadata: {
+          amount,
+          currency,
+          previousBalance,
+          newBalance,
+          description: description || "Wallet credit",
+          source: "admin_api",
+        },
+      });
+    } catch (notifError) {
+      console.warn("⚠️ Failed to send notification (non-critical):", notifError.message);
     }
 
     // Fetch updated user
@@ -585,6 +604,27 @@ async function debitCustomerWallet(id, amount, description = "Wallet debit", cur
     } catch (syncError) {
       console.error("Failed to sync balance to Realtime DB:", syncError.message);
       // Don't fail the operation if sync fails
+    }
+
+    // Send notification to user (both dashboard and mobile app)
+    try {
+      const newBalance = currentBalance - amount;
+      await createNotification({
+        userId: id,
+        type: NOTIFICATION_TYPES.WALLET_DEBITED,
+        title: "Wallet Debited",
+        message: `Your ${currency} wallet was debited ${amount}. New balance: ${currency} ${newBalance.toFixed(2)}`,
+        metadata: {
+          amount,
+          currency,
+          previousBalance: currentBalance,
+          newBalance,
+          description: description || "Wallet debit",
+          source: "admin_api",
+        },
+      });
+    } catch (notifError) {
+      console.warn("⚠️ Failed to send notification (non-critical):", notifError.message);
     }
 
     // Fetch updated user

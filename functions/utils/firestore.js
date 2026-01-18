@@ -75,18 +75,21 @@ async function updateBalanceWithTransaction(
           updateData.USDT = newUsdtBalance;
         }
       } else {
-        // Fiat transaction: update fiatBalance and currency-specific balance
-        updateData.fiatBalance = currentFiatBalance + amountDelta;
+        // Fiat transaction: update currency-specific balance
+        // Only update shared fiatBalance for USD (not for KES to prevent cross-contamination)
         
         // Update currency-specific balance fields
         if (currency === "USD") {
           newUsdBalance = currentUsdBalance + amountDelta;
           updateData.usdBalance = newUsdBalance;
           updateData.USD = newUsdBalance;
+          // Only update fiatBalance for USD transactions (shared field)
+          updateData.fiatBalance = currentFiatBalance + amountDelta;
         } else if (currency === "KES") {
           newKesBalance = currentKesBalance + amountDelta;
           updateData.kesBalance = newKesBalance;
           updateData.KES = newKesBalance;
+          // DO NOT update fiatBalance for KES - it's a shared field that should only reflect USD
         }
       }
 
@@ -212,7 +215,8 @@ async function syncBalanceToRealtimeDatabase(userId, currency = "USD") {
     const walletRef = rtdb.ref(`wallet/${userId}`);
 
     // Sync fiat balances
-    const usdBalance = Number(userData.usdBalance || userData.USD || userData.fiatBalance || 0);
+    // DO NOT fall back to fiatBalance for USD - it may contain incorrect values from KES transactions
+    const usdBalance = Number(userData.usdBalance || userData.USD || 0);
     const kesBalance = Number(userData.kesBalance || userData.KES || 0);
     
     await walletRef.child("fiat/USD").set(usdBalance);

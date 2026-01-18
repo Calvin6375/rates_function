@@ -37,7 +37,6 @@ exports.getArbitrageRates = onCall(
       cpu: config.resources.cpu,
       memory: config.resources.memory,
       enforceAppCheck: true,
-      minInstances: 1,
     },
     async (request) => {
       try {

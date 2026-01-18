@@ -50,7 +50,6 @@ exports.handleTopUpWebhook = onRequest({
   region: config.region,
   cpu: config.resources.cpu,
   memory: config.resources.memory,
-  minInstances: 1, // Keep warm for webhook reliability
 }, async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).send("Method Not Allowed");
@@ -156,7 +155,6 @@ exports.createPayment = onCall(
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
-      minInstances: 1,
     },
     async (request) => {
       // Get the authenticated user from the request

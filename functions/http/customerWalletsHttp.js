@@ -825,7 +825,6 @@ exports.api = onRequest(
       cpu: config.resources.cpu,
       memory: config.resources.memory,
       enforceAppCheck: true,
-      minInstances: 1,
     },
     app,
 );

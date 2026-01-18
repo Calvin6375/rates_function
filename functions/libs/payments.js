@@ -8,6 +8,7 @@ const crypto = require("crypto");
 const config = require("../config");
 const {updateBalanceWithTransaction} = require("../utils/firestore");
 const {executeWithIdempotency} = require("./idempotency");
+const {createNotification, NOTIFICATION_TYPES} = require("../utils/notifications");
 
 const firestore = admin.firestore();
 
@@ -365,6 +366,24 @@ async function processPaymentWebhook(paymentData, payload) {
           await userRef.update({
             lastTopUp: admin.firestore.Timestamp.fromDate(new Date(completedAt)),
           });
+
+          // Step 5: Send notification to user (both dashboard and mobile app)
+          try {
+            await createNotification({
+              userId: walletId,
+              type: NOTIFICATION_TYPES.PAYMENT_COMPLETED,
+              title: "Payment Received",
+              message: `Your deposit of ${currency} ${amount} was successful. New balance: ${currency} ${balanceResult.newBalance.toFixed(2)}`,
+              metadata: {
+                paymentId,
+                amount,
+                currency,
+                newBalance: balanceResult.newBalance,
+              },
+            });
+          } catch (notifError) {
+            console.warn("⚠️ Failed to send notification (non-critical):", notifError.message);
+          }
 
           return balanceResult;
         },

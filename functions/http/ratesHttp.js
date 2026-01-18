@@ -44,7 +44,6 @@ exports.getBinanceRates = onCall(
       cpu: config.resources.cpu,
       memory: config.resources.memory,
       enforceAppCheck: true,
-      minInstances: 1, // Keep warm for better performance
     },
     async (request) => {
       try {
@@ -92,7 +91,6 @@ exports.fetchBinanceRatesHttp = onRequest(
       cpu: config.resources.cpu,
       memory: config.resources.memory,
       enforceAppCheck: true,
-      minInstances: 1, // Keep warm for better performance
     },
     async (req, res) => {
       // Handle CORS preflight

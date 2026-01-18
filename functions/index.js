@@ -12,6 +12,7 @@ const adminHttp = require("./http/adminHttp");
 const migrateUsersHttp = require("./http/migrateUsersHttp");
 const updatePhoneNumbersHttp = require("./http/updatePhoneNumbersHttp");
 const transactionsHttp = require("./http/transactionsHttp");
+const notificationsHttp = require("./http/notificationsHttp");
 
 // Import triggers
 const usersTrigger = require("./triggers/usersTrigger");
@@ -35,6 +36,9 @@ exports.api = customerWalletsHttp.api;
 
 // Export transactions REST API
 exports.transactionsApi = transactionsHttp.transactionsApi;
+
+// Export notifications REST API
+exports.notificationsApi = notificationsHttp.notificationsApi;
 
 // Export user triggers
 exports.onUserCreated = usersTrigger.onUserCreated;
