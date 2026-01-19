@@ -191,19 +191,51 @@ async function markNotificationAsRead(notificationId) {
  * @returns {Promise<Array>} Notifications
  */
 async function getUserNotifications(userId, limit = 50) {
-  const snapshot = await firestore
-      .collection("notifications")
-      .where("userId", "==", userId)
-      .orderBy("createdAt", "desc")
-      .limit(limit)
-      .get();
+  try {
+    // Try query with index first (most efficient)
+    const snapshot = await firestore
+        .collection("notifications")
+        .where("userId", "==", userId)
+        .orderBy("createdAt", "desc")
+        .limit(limit)
+        .get();
 
-  return snapshot.docs.map((doc) => ({
-    id: doc.id,
-    ...doc.data(),
-    createdAt: doc.data().createdAt?.toDate?.()?.toISOString() || null,
-    updatedAt: doc.data().updatedAt?.toDate?.()?.toISOString() || null,
-  }));
+    return snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+      createdAt: doc.data().createdAt?.toDate?.()?.toISOString() || null,
+      updatedAt: doc.data().updatedAt?.toDate?.()?.toISOString() || null,
+    }));
+  } catch (error) {
+    // Fallback if index doesn't exist: fetch all and sort in memory
+    if (error.code === 9 || error.message?.includes("index")) {
+      console.warn("⚠️ Firestore index missing for notifications. Using fallback query. Create the index for better performance.");
+      
+      const snapshot = await firestore
+          .collection("notifications")
+          .where("userId", "==", userId)
+          .get();
+
+      // Sort in memory and limit
+      const notifications = snapshot.docs
+          .map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+            createdAt: doc.data().createdAt?.toDate?.()?.toISOString() || null,
+            updatedAt: doc.data().updatedAt?.toDate?.()?.toISOString() || null,
+          }))
+          .sort((a, b) => {
+            // Sort by createdAt descending
+            const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+            const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+            return dateB - dateA;
+          })
+          .slice(0, limit);
+
+      return notifications;
+    }
+    throw error;
+  }
 }
 
 module.exports = {
