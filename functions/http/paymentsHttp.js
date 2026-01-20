@@ -244,3 +244,29 @@ exports.createPayment = onCall(
     },
 );
 
+/**
+ * Callable: Mark payment link as opened (client calls when user opens IntaSend checkout)
+ * Accepts invoiceId, intasendCheckoutId, or paymentId. Idempotent; returns { success: true }.
+ */
+exports.handlePaymentWebhook = onCall(
+    {
+      region: config.region,
+      cpu: config.resources.cpu,
+      memory: config.resources.memory,
+    },
+    async (request) => {
+      const auth = request.auth;
+      if (!auth) {
+        throw new HttpsError("unauthenticated", "User must be authenticated");
+      }
+      const raw = request.data;
+      const data = (raw && typeof raw === "object" && !Array.isArray(raw)) ? raw : {};
+      const invoiceId =
+        data.invoiceId || data.intasendCheckoutId || data.paymentId ||
+        (typeof raw === "string" ? raw : null);
+
+      await paymentsLib.markPaymentLinkOpened(auth.uid, invoiceId);
+      return {success: true};
+    },
+);
+

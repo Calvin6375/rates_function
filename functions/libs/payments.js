@@ -500,11 +500,42 @@ async function createPaymentOrder(userId, paymentData) {
   };
 }
 
+/**
+ * Mark payment link as opened (for client callable when user opens IntaSend checkout)
+ * @param {string} userId - User ID
+ * @param {string} invoiceId - Invoice/checkout ID
+ * @returns {Promise<{success: boolean}>}
+ */
+async function markPaymentLinkOpened(userId, invoiceId) {
+  if (!invoiceId) {
+    return {success: true};
+  }
+  try {
+    const ordersCol = firestore.collection(config.collections.orders);
+    const snap = await ordersCol
+        .where("invoiceId", "==", invoiceId)
+        .where("userId", "==", userId)
+        .limit(1)
+        .get();
+    if (!snap.empty) {
+      await snap.docs[0].ref.update({
+        linkOpenedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      console.log(`✅ Marked payment link opened: order ${snap.docs[0].id}, invoice ${invoiceId}`);
+    }
+  } catch (err) {
+    console.warn("⚠️ markPaymentLinkOpened (non-critical):", err.message);
+  }
+  return {success: true};
+}
+
 module.exports = {
   verifySignature,
   parseWebhookPayload,
   resolveWalletId,
   processPaymentWebhook,
   createPaymentOrder,
+  markPaymentLinkOpened,
 };
 

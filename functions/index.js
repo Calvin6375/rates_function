@@ -30,6 +30,7 @@ exports.getArbitrageRates = arbitrageHttp.getArbitrageRates;
 // Export payment functions
 exports.handleTopUpWebhook = paymentsHttp.handleTopUpWebhook;
 exports.createPayment = paymentsHttp.createPayment;
+exports.handlePaymentWebhook = paymentsHttp.handlePaymentWebhook;
 
 // Export customer wallets REST API
 exports.api = customerWalletsHttp.api;
