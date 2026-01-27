@@ -3,7 +3,7 @@
  * Thin controllers that delegate to business logic in libs/userWallets.js
  */
 
-const {onRequest} = require("firebase-functions/v2/https");
+const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("../admin");
 const express = require("express");
 const config = require("../config");
@@ -20,7 +20,7 @@ app.use(express.json());
 // CORS middleware - supports credentials
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  
+
   const allowedOrigins = [
     "https://truepay-72060.web.app",
     "https://truepay-72060.firebaseapp.com",
@@ -31,7 +31,7 @@ app.use((req, res, next) => {
     "http://127.0.0.1:5173",
     "http://127.0.0.1:8080",
   ];
-  
+
   let allowedOrigin = "*";
   if (origin) {
     if (allowedOrigins.includes(origin)) {
@@ -42,13 +42,13 @@ app.use((req, res, next) => {
       allowedOrigin = origin;
     }
   }
-  
+
   res.set("Access-Control-Allow-Origin", allowedOrigin);
   res.set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
   res.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
   res.set("Access-Control-Allow-Credentials", "true");
   res.set("Access-Control-Max-Age", "3600");
-  
+
   if (req.method === "OPTIONS") {
     res.status(204).send("");
     return;
@@ -280,7 +280,7 @@ app.get("/customer-wallets", async (req, res) => {
     const limit = parseInt(req.query.limit) || 100;
     const offset = parseInt(req.query.offset) || 0;
 
-    const {wallets, total} = await userWalletsLib.listCustomerWallets(limit, offset);
+    const { wallets, total } = await userWalletsLib.listCustomerWallets(limit, offset);
 
     res.status(200).json({
       success: true,
@@ -308,8 +308,8 @@ app.get("/customer-wallets", async (req, res) => {
  */
 app.get("/customer-wallets/:id", async (req, res) => {
   try {
-    const {id} = req.params;
-    
+    const { id } = req.params;
+
     const wallet = await userWalletsLib.getCustomerWallet(id);
 
     if (!wallet) {
@@ -340,7 +340,7 @@ app.get("/customer-wallets/:id", async (req, res) => {
  */
 app.put("/customer-wallets/:id", async (req, res) => {
   try {
-    const {id} = req.params;
+    const { id } = req.params;
     const updateData = req.body;
 
     const wallet = await userWalletsLib.updateCustomerWallet(id, updateData);
@@ -372,8 +372,8 @@ app.put("/customer-wallets/:id", async (req, res) => {
  */
 app.post("/customer-wallets/:id/credit", async (req, res) => {
   try {
-    const {id} = req.params;
-    const {amount, currency = "USD", description} = req.body;
+    const { id } = req.params;
+    const { amount, currency = "USD", description } = req.body;
 
     if (!amount || typeof amount !== "number" || amount <= 0) {
       res.status(400).json({
@@ -423,8 +423,8 @@ app.post("/customer-wallets/:id/credit", async (req, res) => {
  */
 app.post("/customer-wallets/:id/debit", async (req, res) => {
   try {
-    const {id} = req.params;
-    const {amount, currency = "USD", description} = req.body;
+    const { id } = req.params;
+    const { amount, currency = "USD", description } = req.body;
 
     if (!amount || typeof amount !== "number" || amount <= 0) {
       res.status(400).json({
@@ -475,7 +475,7 @@ app.post("/customer-wallets/:id/debit", async (req, res) => {
  */
 app.post("/customer-wallets", async (req, res) => {
   try {
-    const {name, email, phone, initialBalance = 0} = req.body;
+    const { name, email, phone, initialBalance = 0 } = req.body;
 
     if (!name || !email) {
       res.status(400).json({
@@ -487,9 +487,9 @@ app.post("/customer-wallets", async (req, res) => {
 
     // Check if customer with same email already exists
     const existingSnapshot = await db.collection(config.collections.customerWallets)
-        .where("email", "==", email)
-        .limit(1)
-        .get();
+      .where("email", "==", email)
+      .limit(1)
+      .get();
 
     if (!existingSnapshot.empty) {
       res.status(409).json({
@@ -540,7 +540,7 @@ async function verifyAdminFromRequest(req) {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return {isAdmin: false, adminId: null};
+      return { isAdmin: false, adminId: null };
     }
 
     const token = authHeader.split("Bearer ")[1];
@@ -550,10 +550,10 @@ async function verifyAdminFromRequest(req) {
     // Check admin claim from token (faster, more secure)
     const isAdminUser = decodedToken.admin === true;
 
-    return {isAdmin: isAdminUser, adminId: isAdminUser ? adminId : null};
+    return { isAdmin: isAdminUser, adminId: isAdminUser ? adminId : null };
   } catch (error) {
     console.error("Error verifying admin from request:", error.message);
-    return {isAdmin: false, adminId: null};
+    return { isAdmin: false, adminId: null };
   }
 }
 
@@ -609,10 +609,24 @@ app.get("/config/fees", async (req, res) => {
 
     const configData = configDoc.data();
 
+    // Get arbitrage fee from config/fees
+    // Note: customerRates is in config/customerRates, but arbitrageFee is in config/fees
+    let arbitrageFee = 1.5; // Default fallback
+    try {
+      const feesRef = db.collection(config.collections.config).doc("fees");
+      const feesDoc = await feesRef.get();
+      if (feesDoc.exists && feesDoc.data().arbitrageFee !== undefined) {
+        arbitrageFee = Number(feesDoc.data().arbitrageFee);
+      }
+    } catch (err) {
+      console.error("Error fetching arbitrage fee:", err);
+    }
+
     res.status(200).json({
       success: true,
       data: {
         rates: configData.rates || {}, // Object with currency pairs as keys
+        arbitrageFee: arbitrageFee,
         updatedAt: configData.updatedAt?.toDate?.()?.toISOString() || null,
         updatedBy: configData.updatedBy || null,
       },
@@ -678,12 +692,12 @@ app.put("/config/fees", async (req, res) => {
       return;
     }
 
-    const {currencyPair, buyRate, sellRate, rates} = req.body || {};
+    const { currencyPair, buyRate, sellRate, rates } = req.body || {};
 
     // Get current config for logging
     const configRef = db.collection(config.collections.config).doc("customerRates");
     const configDoc = await configRef.get();
-    const beforeData = configDoc.exists ? configDoc.data() : {rates: {}};
+    const beforeData = configDoc.exists ? configDoc.data() : { rates: {} };
 
     const updateData = {
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -694,7 +708,7 @@ app.put("/config/fees", async (req, res) => {
     if (!updateData.rates) {
       updateData.rates = beforeData.rates || {};
     } else {
-      updateData.rates = {...beforeData.rates};
+      updateData.rates = { ...beforeData.rates };
     }
 
     // Handle bulk update (rates object)
@@ -775,21 +789,38 @@ app.put("/config/fees", async (req, res) => {
       return;
     }
 
+    // Handle arbitrageFee update if present
+    const { arbitrageFee } = req.body;
+    if (arbitrageFee !== undefined) {
+      const fee = Number(arbitrageFee);
+      if (!isNaN(fee) && fee >= 0) {
+        // Update config/fees document
+        const feesRef = db.collection(config.collections.config).doc("fees");
+        await feesRef.set({
+          arbitrageFee: fee,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedBy: userId,
+        }, { merge: true });
+
+        console.log(`✅ User ${userId} updated arbitrage fee to ${fee}%`);
+      }
+    }
+
     // Update the document
-    await configRef.set(updateData, {merge: true});
+    await configRef.set(updateData, { merge: true });
 
     const afterDoc = await configRef.get();
     const afterData = afterDoc.data();
 
     // Log action (using logAdminAction for consistency, but any authenticated user can update)
-    const {logAdminAction} = require("../utils/transactions");
+    const { logAdminAction } = require("../utils/transactions");
     try {
       await logAdminAction(
-          userId,
-          "system",
-          "updateCustomerRates",
-          beforeData,
-          afterData,
+        userId,
+        "system",
+        "updateCustomerRates",
+        beforeData,
+        afterData,
       );
     } catch (logError) {
       console.error("Failed to log action:", logError.message);
@@ -820,12 +851,12 @@ app.put("/config/fees", async (req, res) => {
 
 // Export as Firebase Function
 exports.api = onRequest(
-    {
-      region: config.region,
-      cpu: config.resources.cpu,
-      memory: config.resources.memory,
-      enforceAppCheck: true,
-    },
-    app,
+  {
+    region: config.region,
+    cpu: config.resources.cpu,
+    memory: config.resources.memory,
+    enforceAppCheck: true,
+  },
+  app,
 );
 

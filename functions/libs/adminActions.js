@@ -5,12 +5,12 @@
 
 const admin = require("../admin");
 const config = require("../config");
-const {updateBalanceWithTransaction, getUserBalance, userExists} = require("../utils/firestore");
-const {logAdminAction} = require("../utils/transactions");
-const {validateBalanceUpdate} = require("../utils/validation");
-const {verifyAdminFromToken} = require("../utils/adminClaims");
+const { updateBalanceWithTransaction, getUserBalance, userExists } = require("../utils/firestore");
+const { logAdminAction } = require("../utils/transactions");
+const { validateBalanceUpdate } = require("../utils/validation");
+const { verifyAdminFromToken } = require("../utils/adminClaims");
 const axios = require("axios");
-const {defineSecret} = require("firebase-functions/params");
+const { defineSecret } = require("firebase-functions/params");
 
 const firestore = admin.firestore();
 
@@ -25,7 +25,7 @@ const intaSendPublishableKey = defineSecret(config.secrets.intaSendPublishableKe
 function getIntaSendKeys() {
   const secretKey = intaSendSecretKey.value() || process.env.INTASEND_SECRET_KEY || null;
   const publishableKey = intaSendPublishableKey.value() || process.env.INTASEND_PUBLISHABLE_KEY || null;
-  return {secretKey, publishableKey};
+  return { secretKey, publishableKey };
 }
 
 /**
@@ -89,11 +89,11 @@ async function updateUserProfile(adminId, userId, updates) {
 
   // Log admin action
   await logAdminAction(
-      adminId,
-      userId,
-      "updateProfile",
-      beforeData,
-      afterData,
+    adminId,
+    userId,
+    "updateProfile",
+    beforeData,
+    afterData,
   );
 
   console.log(`✅ Admin ${adminId} updated profile for user ${userId}`);
@@ -115,7 +115,7 @@ async function updateUserProfile(adminId, userId, updates) {
  */
 async function updateUserBalance(adminId, userId, amount, reason = "Admin balance adjustment") {
   // Validate request
-  const validation = validateBalanceUpdate({userId, amount});
+  const validation = validateBalanceUpdate({ userId, amount });
   if (!validation.valid) {
     throw new Error(validation.error);
   }
@@ -127,15 +127,15 @@ async function updateUserBalance(adminId, userId, amount, reason = "Admin balanc
 
   // Update balance using transaction
   const result = await updateBalanceWithTransaction(
-      userId,
-      amountDelta,
-      amountDelta > 0 ? "credit" : "debit",
-      {
-        source: "admin",
-        adminId,
-        reason: reason,
-        allowNegative: true, // Admins can set negative balances if needed
-      },
+    userId,
+    amountDelta,
+    amountDelta > 0 ? "credit" : "debit",
+    {
+      source: "admin",
+      adminId,
+      reason: reason,
+      allowNegative: true, // Admins can set negative balances if needed
+    },
   );
 
   // Balance is now stored only in Firestore (no RTDB sync needed)
@@ -143,11 +143,11 @@ async function updateUserBalance(adminId, userId, amount, reason = "Admin balanc
 
   // Log admin action
   await logAdminAction(
-      adminId,
-      userId,
-      "updateBalance",
-      {balance: beforeBalance},
-      {balance: result.newBalance, amountDelta},
+    adminId,
+    userId,
+    "updateBalance",
+    { balance: beforeBalance },
+    { balance: result.newBalance, amountDelta },
   );
 
   console.log(`✅ Admin ${adminId} updated balance for user ${userId}`, {
@@ -237,11 +237,11 @@ async function updateKYCStatus(adminId, userId, kycStatus, kycData = null) {
 
   // Log admin action
   await logAdminAction(
-      adminId,
-      userId,
-      "updateKYC",
-      {kycStatus: beforeData.kycStatus, kycData: beforeData.kycData},
-      {kycStatus: afterData.kycStatus, kycData: afterData.kycData},
+    adminId,
+    userId,
+    "updateKYC",
+    { kycStatus: beforeData.kycStatus, kycData: beforeData.kycData },
+    { kycStatus: afterData.kycStatus, kycData: afterData.kycData },
   );
 
   console.log(`✅ Admin ${adminId} updated KYC status for user ${userId}`, {
@@ -312,10 +312,23 @@ async function getCommissionConfig(adminId) {
 
   const configData = configDoc.data();
 
+  // Get arbitrage fee from config/fees
+  let arbitrageFee = 1.5; // Default fallback
+  try {
+    const feesRef = firestore.collection(config.collections.config).doc("fees");
+    const feesDoc = await feesRef.get();
+    if (feesDoc.exists && feesDoc.data().arbitrageFee !== undefined) {
+      arbitrageFee = Number(feesDoc.data().arbitrageFee);
+    }
+  } catch (err) {
+    console.error("Error fetching arbitrage fee:", err);
+  }
+
   return {
     success: true,
     config: {
       rates: configData.rates || {},
+      arbitrageFee: arbitrageFee,
       updatedAt: configData.updatedAt?.toMillis?.() || null,
     },
   };
@@ -327,12 +340,41 @@ async function getCommissionConfig(adminId) {
  * @param {number} buyRate - Customer rate for buying (rate + commission)
  * @param {number} sellRate - Customer rate for selling (rate + commission)
  * @param {string} currencyPair - Currency pair (e.g., "USDT/KES"), optional
+ * @param {number} arbitrageFee - Arbitrage fee percentage (optional)
  * @returns {Promise<Object>} Update result
  */
-async function updateCommissionConfig(adminId, buyRate, sellRate, currencyPair = null) {
-  // Validate that both rates are provided
+async function updateCommissionConfig(adminId, buyRate, sellRate, currencyPair = null, arbitrageFee = null) {
+  // Validate that both rates are provided (if we are updating rates)
+  // If only updating arbitrageFee, skip rate validation
+  if (arbitrageFee === null && (buyRate === undefined || sellRate === undefined)) {
+    throw new Error("Both buyRate and sellRate are required unless only updating arbitrageFee");
+  }
+
+  // Handle arbitrage fee update if provided
+  if (arbitrageFee !== null && arbitrageFee !== undefined) {
+    const fee = Number(arbitrageFee);
+    if (isNaN(fee) || fee < 0) {
+      throw new Error("arbitrageFee must be a non-negative number");
+    }
+
+    // Update config/fees document
+    const feesRef = firestore.collection(config.collections.config).doc("fees");
+    await feesRef.set({
+      arbitrageFee: fee,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedBy: adminId,
+    }, { merge: true });
+  }
+
+  // If rate updates are not provided, we can stop here (or continue if you want to allow partial updates)
   if (buyRate === undefined || sellRate === undefined) {
-    throw new Error("Both buyRate and sellRate are required");
+    return {
+      success: true,
+      message: "Arbitrage fee updated successfully",
+      config: {
+        arbitrageFee: Number(arbitrageFee),
+      }
+    };
   }
 
   const buy = Number(buyRate);
@@ -349,7 +391,7 @@ async function updateCommissionConfig(adminId, buyRate, sellRate, currencyPair =
   // Get current config for logging
   const configRef = firestore.collection(config.collections.config).doc("customerRates");
   const configDoc = await configRef.get();
-  const beforeData = configDoc.exists ? configDoc.data() : {rates: {}};
+  const beforeData = configDoc.exists ? configDoc.data() : { rates: {} };
 
   // Determine currency pair
   const pair = currencyPair || `${config.binance.defaultAsset}/${config.binance.defaultFiat}`;
@@ -368,7 +410,7 @@ async function updateCommissionConfig(adminId, buyRate, sellRate, currencyPair =
   };
 
   // Update or create config document
-  await configRef.set(updateData, {merge: true});
+  await configRef.set(updateData, { merge: true });
 
   // Get updated data for logging
   const afterDoc = await configRef.get();
@@ -376,11 +418,11 @@ async function updateCommissionConfig(adminId, buyRate, sellRate, currencyPair =
 
   // Log admin action
   await logAdminAction(
-      adminId,
-      "system",
-      "updateCustomerRates",
-      beforeData,
-      afterData,
+    adminId,
+    "system",
+    "updateCustomerRates",
+    beforeData,
+    afterData,
   );
 
   console.log(`✅ Admin ${adminId} updated customer rates`, {
@@ -412,18 +454,18 @@ async function getIntaSendPaymentStatus(adminId, invoiceId) {
   }
 
   // Get IntaSend API keys
-  const {secretKey, publishableKey} = getIntaSendKeys();
+  const { secretKey, publishableKey } = getIntaSendKeys();
 
   if (!secretKey) {
     throw new Error("IntaSend API secret key is not configured. Please set INTASEND_SECRET_KEY secret.");
   }
 
   // Determine if we're in sandbox or production
-  const isSandbox = secretKey.includes("sandbox") || secretKey.toLowerCase().includes("test") || 
-                    process.env.INTASEND_ENV === "sandbox";
-  
-  const baseUrl = isSandbox 
-    ? "https://sandbox.intasend.com" 
+  const isSandbox = secretKey.includes("sandbox") || secretKey.toLowerCase().includes("test") ||
+    process.env.INTASEND_ENV === "sandbox";
+
+  const baseUrl = isSandbox
+    ? "https://sandbox.intasend.com"
     : "https://payment.intasend.com";
 
   // IntaSend API endpoint for checking collection status
@@ -456,11 +498,11 @@ async function getIntaSendPaymentStatus(adminId, invoiceId) {
 
     // Log admin action
     await logAdminAction(
-        adminId,
-        "system",
-        "checkPaymentStatus",
-        {},
-        {invoiceId, status: statusData.invoice?.state || "unknown"},
+      adminId,
+      "system",
+      "checkPaymentStatus",
+      {},
+      { invoiceId, status: statusData.invoice?.state || "unknown" },
     );
 
     // Return the status data in a structured format
