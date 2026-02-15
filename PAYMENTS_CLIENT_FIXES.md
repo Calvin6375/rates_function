@@ -48,3 +48,11 @@ If you need an “order” reference in the client after `createPayment`, use th
 The `orders` collection is write-protected. For **swap** (e.g. USDT → USD), do not create an order document from the client. Call the **`createSwapOrder`** callable instead. It creates the order in Firestore, debits the source currency and credits the destination in one transaction, and returns `orderId` and `newBalances`.
 
 **Request data:** `fromCurrency`, `toCurrency`, `fromAmount`, `exchangeRate` (required); `fee` or `feeRate`, `toAmount` (optional). Example: `{ fromCurrency: "USDT", toCurrency: "USD", fromAmount: 6.0, fee: 0.03, exchangeRate: 1.01297 }`.
+
+---
+
+## 4. "Creating order" for send money – use `createSendMoneyOrder` callable
+
+The `orders` collection is write-protected. For **send money** (P2P transfer), do not create an order document from the client. Call the **`createSendMoneyOrder`** callable instead. It creates the order in Firestore, debits the sender and credits the recipient in one transaction, and returns `orderId`, `senderNewBalances`, and `recipientNewBalances`.
+
+**Request data:** `amount`, `currency` (required); either `recipientUserId` or `recipientPhoneNumber` (required); `note` (optional). Example: `{ recipientUserId: "abc123", amount: 1.0, currency: "USD", note: "Lunch" }`. See **FRONTEND_SEND_MONEY_IMPLEMENTATION.md** for full steps.

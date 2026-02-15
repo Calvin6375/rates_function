@@ -8,6 +8,7 @@ const {defineSecret} = require("firebase-functions/params");
 const config = require("../config");
 const paymentsLib = require("../libs/payments");
 const swapLib = require("../libs/swap");
+const sendMoneyLib = require("../libs/sendMoney");
 
 // Secret parameter for IntaSend webhook signature
 const intaSendSecret = defineSecret(config.secrets.intaSendSecret);
@@ -339,6 +340,78 @@ exports.createSwapOrder = onCall(
         }
         console.error("❌ Error creating swap order:", { userId, error: error.message });
         throw new HttpsError("internal", `Failed to create swap order: ${error.message}`);
+      }
+    },
+);
+
+/**
+ * Callable function: Create Send Money Order
+ * P2P transfer: debits sender, credits recipient, creates order in Firestore.
+ * Client must call this instead of writing to the orders collection.
+ *
+ * Request data: {
+ *   recipientUserId?: string,      // Firebase UID of recipient (optional if recipientPhoneNumber set)
+ *   recipientPhoneNumber?: string, // Recipient phone, with or without + (optional if recipientUserId set)
+ *   amount: number,
+ *   currency: string,              // USD, KES, or USDT
+ *   note?: string
+ * }
+ */
+exports.createSendMoneyOrder = onCall(
+    {
+      region: config.region,
+      cpu: config.resources.cpu,
+      memory: config.resources.memory,
+    },
+    async (request) => {
+      const auth = request.auth;
+      if (!auth) {
+        throw new HttpsError("unauthenticated", "User must be authenticated to send money");
+      }
+
+      const senderId = auth.uid;
+      const data = request.data || {};
+
+      const recipientUserId = data.recipientUserId || null;
+      const recipientPhoneNumber = data.recipientPhoneNumber || null;
+      const amount = data.amount;
+      const currency = data.currency || null;
+      const note = data.note || null;
+
+      if (!recipientUserId && !recipientPhoneNumber) {
+        throw new HttpsError(
+          "invalid-argument",
+          "Either recipientUserId or recipientPhoneNumber is required",
+        );
+      }
+      if (amount == null || Number(amount) <= 0) {
+        throw new HttpsError("invalid-argument", "amount must be a positive number");
+      }
+      if (!currency) {
+        throw new HttpsError("invalid-argument", "currency is required");
+      }
+
+      try {
+        const result = await sendMoneyLib.createSendMoneyOrder(senderId, {
+          recipientUserId: recipientUserId || undefined,
+          recipientPhoneNumber: recipientPhoneNumber || undefined,
+          amount: Number(amount),
+          currency: String(currency).toUpperCase(),
+          note: note || undefined,
+        });
+        return result;
+      } catch (error) {
+        if (error.message && error.message.includes("Insufficient")) {
+          throw new HttpsError("failed-precondition", error.message);
+        }
+        if (error.message && (error.message.includes("not found") || error.message.includes("Recipient"))) {
+          throw new HttpsError("not-found", error.message);
+        }
+        if (error.message && (error.message.includes("yourself") || error.message.includes("currency") || error.message.includes("amount"))) {
+          throw new HttpsError("invalid-argument", error.message);
+        }
+        console.error("❌ Error creating send money order:", { senderId, error: error.message });
+        throw new HttpsError("internal", `Failed to create send money order: ${error.message}`);
       }
     },
 );
