@@ -40,3 +40,11 @@ Your Flutter app must **not** create an order document in Firestore from the cli
    - Open the checkout URL in the browser.
 
 If you need an “order” reference in the client after `createPayment`, use the `orderId` (and `invoiceId` / `paymentId`) returned by `createPayment`; do not create a new `orders` document from the client.
+
+---
+
+## 3. "Creating order" for swap – use `createSwapOrder` callable
+
+The `orders` collection is write-protected. For **swap** (e.g. USDT → USD), do not create an order document from the client. Call the **`createSwapOrder`** callable instead. It creates the order in Firestore, debits the source currency and credits the destination in one transaction, and returns `orderId` and `newBalances`.
+
+**Request data:** `fromCurrency`, `toCurrency`, `fromAmount`, `exchangeRate` (required); `fee` or `feeRate`, `toAmount` (optional). Example: `{ fromCurrency: "USDT", toCurrency: "USD", fromAmount: 6.0, fee: 0.03, exchangeRate: 1.01297 }`.

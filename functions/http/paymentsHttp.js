@@ -7,6 +7,7 @@ const {onRequest, onCall, HttpsError} = require("firebase-functions/v2/https");
 const {defineSecret} = require("firebase-functions/params");
 const config = require("../config");
 const paymentsLib = require("../libs/payments");
+const swapLib = require("../libs/swap");
 
 // Secret parameter for IntaSend webhook signature
 const intaSendSecret = defineSecret(config.secrets.intaSendSecret);
@@ -267,6 +268,78 @@ exports.handlePaymentWebhook = onCall(
 
       await paymentsLib.markPaymentLinkOpened(auth.uid, invoiceId);
       return {success: true};
+    },
+);
+
+/**
+ * Callable function: Create Swap Order
+ * Converts one currency to another (e.g. USDT → USD), creates order in Firestore,
+ * and updates user balances atomically. Client must call this instead of writing to orders.
+ *
+ * Request data: {
+ *   fromCurrency: "USDT",
+ *   toCurrency: "USD",
+ *   fromAmount: 6.0,
+ *   fee?: 0.03,           // optional; or use feeRate
+ *   feeRate?: 0.005,      // optional (e.g. 0.5%)
+ *   exchangeRate: 1.01297,
+ *   toAmount?: 6.07782    // optional; computed from fromAmount * exchangeRate if omitted
+ * }
+ */
+exports.createSwapOrder = onCall(
+    {
+      region: config.region,
+      cpu: config.resources.cpu,
+      memory: config.resources.memory,
+    },
+    async (request) => {
+      const auth = request.auth;
+      if (!auth) {
+        throw new HttpsError("unauthenticated", "User must be authenticated to create swap order");
+      }
+
+      const userId = auth.uid;
+      const data = request.data || {};
+
+      const fromCurrency = data.fromCurrency || null;
+      const toCurrency = data.toCurrency || null;
+      const fromAmount = data.fromAmount;
+      const fee = data.fee;
+      const feeRate = data.feeRate;
+      const exchangeRate = data.exchangeRate;
+      const toAmount = data.toAmount;
+
+      if (!fromCurrency || !toCurrency) {
+        throw new HttpsError("invalid-argument", "fromCurrency and toCurrency are required");
+      }
+      if (fromAmount == null || Number(fromAmount) <= 0) {
+        throw new HttpsError("invalid-argument", "fromAmount must be a positive number");
+      }
+      if (exchangeRate == null || Number(exchangeRate) <= 0) {
+        throw new HttpsError("invalid-argument", "exchangeRate must be a positive number");
+      }
+
+      try {
+        const result = await swapLib.createSwapOrder(userId, {
+          fromCurrency,
+          toCurrency,
+          fromAmount: Number(fromAmount),
+          fee: fee != null ? Number(fee) : undefined,
+          feeRate: feeRate != null ? Number(feeRate) : undefined,
+          exchangeRate: Number(exchangeRate),
+          toAmount: toAmount != null ? Number(toAmount) : undefined,
+        });
+        return result;
+      } catch (error) {
+        if (error.message && error.message.includes("Insufficient")) {
+          throw new HttpsError("failed-precondition", error.message);
+        }
+        if (error.message && (error.message.includes("required") || error.message.includes("must be"))) {
+          throw new HttpsError("invalid-argument", error.message);
+        }
+        console.error("❌ Error creating swap order:", { userId, error: error.message });
+        throw new HttpsError("internal", `Failed to create swap order: ${error.message}`);
+      }
     },
 );
 
