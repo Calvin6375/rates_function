@@ -27,15 +27,18 @@ service cloud.firestore {
       // Allow authenticated users to read all user documents (for dashboard)
       allow read: if isAuthenticated();
       
+      // Users can create their own document (e.g. after sign-up) at users/{theirUid}
+      allow create: if isOwner(userId);
+      
       // Users can update their own document EXCEPT balance fields
       // Balance can only be modified by Cloud Functions (server-side) or admins
       allow update: if isOwner(userId) && !modifiesBalance();
       
-      // Admins can update any field including balance
-      allow update: if isAdmin();
+      // Admins can create/update any user document including balance
+      allow create, update: if isAdmin();
       
-      // Only admins can create user documents (or Cloud Functions via server SDK)
-      allow create: if isAdmin() || request.auth == null; // null auth = server SDK
+      // Server SDK (Cloud Functions) can create/update
+      allow create, update: if request.auth == null; // null auth = server SDK
       
       // Users cannot delete their own documents, only admins
       allow delete: if isAdmin();
