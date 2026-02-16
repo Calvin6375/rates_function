@@ -122,6 +122,11 @@ async function getTransactionsFromFirestore(userId, options = {}) {
     }
 
     const snapshot = await query.get();
+    const transactionsCol = config.collections.transactions || "transactions";
+    const queryPath = `${transactionsCol}/${userId}/transactions`;
+    if (snapshot.empty && !type && !status) {
+      console.log("GET /transactions: 0 docs from Firestore path " + queryPath + " (orderBy timestamp desc)");
+    }
 
     // Also check walletTransactions collection for this user
     let walletTxQuery = firestore

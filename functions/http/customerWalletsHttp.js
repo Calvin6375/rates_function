@@ -83,11 +83,26 @@ app.get("/rates", async (req, res) => {
     const configData = configDoc.data();
     const rates = configData.rates || {};
 
+    // Include inverse pairs so e.g. USD/USDT works when only USDT/USD is configured
+    const ratesWithInverses = { ...rates };
+    for (const [pair, pairRates] of Object.entries(rates)) {
+      if (!pairRates || typeof pairRates.buyRate !== "number" || typeof pairRates.sellRate !== "number") continue;
+      if (!pair.includes("/")) continue;
+      const [base, quote] = pair.split("/");
+      const inversePair = `${quote}/${base}`;
+      if (!ratesWithInverses[inversePair]) {
+        ratesWithInverses[inversePair] = {
+          buyRate: 1 / pairRates.sellRate,
+          sellRate: 1 / pairRates.buyRate,
+        };
+      }
+    }
+
     // Return all rates (public access)
     res.status(200).json({
       success: true,
       data: {
-        rates: rates,
+        rates: ratesWithInverses,
         updatedAt: configData.updatedAt?.toDate?.()?.toISOString() || null,
       },
     });
@@ -131,7 +146,24 @@ app.get("/customer-rates", async (req, res) => {
     const configData = configDoc.data();
     const rates = configData.rates || {};
 
-    if (!rates[currencyPair]) {
+    let pairRates = rates[currencyPair];
+    let resolvedPair = currencyPair;
+
+    // If exact pair not found, try inverse (e.g. USD/USDT when only USDT/USD is configured)
+    if (!pairRates && currencyPair.includes("/")) {
+      const [base, quote] = currencyPair.split("/");
+      const inversePair = `${quote}/${base}`;
+      const inverseRates = rates[inversePair];
+      if (inverseRates && typeof inverseRates.buyRate === "number" && typeof inverseRates.sellRate === "number") {
+        pairRates = {
+          buyRate: 1 / inverseRates.sellRate,
+          sellRate: 1 / inverseRates.buyRate,
+        };
+        resolvedPair = currencyPair;
+      }
+    }
+
+    if (!pairRates || typeof pairRates.buyRate !== "number" || typeof pairRates.sellRate !== "number") {
       res.status(404).json({
         success: false,
         error: "Currency pair not found",
@@ -140,12 +172,10 @@ app.get("/customer-rates", async (req, res) => {
       return;
     }
 
-    const pairRates = rates[currencyPair];
-
     res.status(200).json({
       success: true,
       data: {
-        currencyPair,
+        currencyPair: resolvedPair,
         buyRate: pairRates.buyRate,
         sellRate: pairRates.sellRate,
         updatedAt: configData.updatedAt?.toDate?.()?.toISOString() || null,

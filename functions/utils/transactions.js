@@ -1,4 +1,5 @@
 const admin = require("../admin");
+const config = require("../config");
 
 const firestore = admin.firestore();
 
@@ -34,39 +35,56 @@ async function logTransaction(
     const txId = generateTransactionId();
     const timestamp = admin.firestore.FieldValue.serverTimestamp();
 
-    // Extract currency from metadata if present (for topup transactions)
+    // Coerce numbers so Firestore never gets NaN or invalid values
+    const safeAmount = Number(amount);
+    const safePrevious = Number(previousBalance);
+    const safeNew = Number(newBalance);
+
+    // Extract currency from metadata if present (for topup, swap, etc.)
     const currency = metadata.currency || null;
 
+    // Strip undefined from metadata so Firestore accepts the document
+    const sanitizedMetadata = Object.fromEntries(
+      Object.entries(metadata).filter(([, v]) => v !== undefined),
+    );
+
     const transactionData = {
-      type,
-      amount,
-      status,
+      type: String(type),
+      amount: Number.isFinite(safeAmount) ? safeAmount : 0,
+      status: String(status),
       timestamp,
-      previousBalance,
-      newBalance,
-      metadata,
-      userId,
+      previousBalance: Number.isFinite(safePrevious) ? safePrevious : 0,
+      newBalance: Number.isFinite(safeNew) ? safeNew : 0,
+      metadata: sanitizedMetadata,
+      userId: String(userId),
     };
 
     // Add currency as top-level field if present in metadata
     if (currency) {
-      transactionData.currency = currency;
+      transactionData.currency = String(currency);
     }
 
-    await firestore
-        .collection("transactions")
-        .doc(userId)
+    const transactionsCol = config.collections.transactions || "transactions";
+    const userTxRef = firestore.collection(transactionsCol).doc(userId);
+
+    // Ensure parent document exists so the subcollection is visible in console and queries
+    await userTxRef.set(
+      { updatedAt: admin.firestore.FieldValue.serverTimestamp() },
+      { merge: true },
+    );
+
+    await userTxRef
         .collection("transactions")
         .doc(txId)
         .set(transactionData);
 
-    console.log(`✅ Transaction logged: ${txId}`, {
+    console.log("✅ Transaction logged: " + txId, {
       userId,
       type,
-      amount,
+      amount: transactionData.amount,
       status,
-      previousBalance,
-      newBalance,
+      previousBalance: transactionData.previousBalance,
+      newBalance: transactionData.newBalance,
     });
 
     return txId;

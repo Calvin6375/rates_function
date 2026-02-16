@@ -218,9 +218,10 @@ async function syncBalanceToRealtimeDatabase(userId, currency = "USD") {
     // DO NOT fall back to fiatBalance for USD - it may contain incorrect values from KES transactions
     const usdBalance = Number(userData.usdBalance || userData.USD || 0);
     const kesBalance = Number(userData.kesBalance || userData.KES || 0);
-    
+    const tzsBalance = Number(userData.tzsBalance || userData.TZS || 0);
     await walletRef.child("fiat/USD").set(usdBalance);
     await walletRef.child("fiat/KES").set(kesBalance);
+    await walletRef.child("fiat/TZS").set(tzsBalance);
 
     // Sync crypto balances
     const usdtBalance = Number(userData.usdtBalance || userData.USDT || userData.cryptoBalance || 0);
@@ -229,6 +230,7 @@ async function syncBalanceToRealtimeDatabase(userId, currency = "USD") {
     console.log(`✅ Synced balances to Realtime DB for user ${userId}`, {
       USD: usdBalance,
       KES: kesBalance,
+      TZS: tzsBalance,
       USDT: usdtBalance,
     });
   } catch (error) {

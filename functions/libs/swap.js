@@ -6,7 +6,6 @@
 const admin = require("../admin");
 const config = require("../config");
 const {syncBalanceToRealtimeDatabase} = require("../utils/firestore");
-const {logTransaction} = require("../utils/transactions");
 
 const firestore = admin.firestore();
 
@@ -189,6 +188,32 @@ async function createSwapOrder(userId, params) {
     };
     transaction.set(orderRef, orderData);
 
+    // Write transaction record in the same atomic transaction so it always persists
+    const transactionsCol = config.collections.transactions || "transactions";
+    const userTxRef = firestore.collection(transactionsCol).doc(userId);
+    const txId = "tx_" + orderId;
+    const txRef = userTxRef.collection("transactions").doc(txId);
+    transaction.set(userTxRef, { updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+    const txData = {
+      type: "swap",
+      amount: fromAmountNum,
+      status: "completed",
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      previousBalance: currentMaster,
+      newBalance: newMaster,
+      currency: fromCurrency,
+      metadata: {
+        orderId,
+        fromCurrency,
+        toCurrency,
+        toAmount,
+        fee: feeAmount,
+        exchangeRate: rate,
+      },
+      userId,
+    };
+    transaction.set(txRef, txData);
+
     return {
       orderId,
       fromAmount: fromAmountNum,
@@ -209,34 +234,23 @@ async function createSwapOrder(userId, params) {
     console.warn("⚠️ Failed to sync balance to Realtime DB after swap:", syncErr.message);
   }
 
-  const previousMasterBalance = result.newBalances.balance + totalDebit - toAmount;
-  try {
-    await logTransaction(
-      userId,
-      "swap",
-      fromAmountNum,
-      "completed",
-      previousMasterBalance,
-      result.newBalances.balance,
-      {
-        orderId: result.orderId,
-        fromCurrency,
-        toCurrency,
-        toAmount: result.toAmount,
-        fee: result.fee,
-        exchangeRate: rate,
-      },
-    );
-  } catch (logErr) {
-    console.warn("⚠️ Failed to log swap transaction:", logErr.message);
-  }
+  const transactionsCol = config.collections.transactions || "transactions";
+  const txDocId = "tx_" + result.orderId;
+  const txPath = `${transactionsCol}/${userId}/transactions/${txDocId}`;
 
-  console.log(`✅ Swap order created: ${result.orderId}`, {
-    userId,
-    from: `${result.fromAmount} ${fromCurrency}`,
-    to: `${result.toAmount} ${toCurrency}`,
-    fee: result.fee,
-  });
+  // Verify the transaction doc was written (same path the transactions API reads)
+  const verifyRef = firestore.collection(transactionsCol).doc(userId).collection("transactions").doc(txDocId);
+  const verifySnap = await verifyRef.get();
+  if (!verifySnap.exists) {
+    console.error("❌ Swap transaction doc missing after commit (API will return 0): " + txPath);
+  } else {
+    console.log("✅ Swap order created: " + result.orderId + " (transaction at " + txPath + ", verified)", {
+      userId,
+      from: `${result.fromAmount} ${fromCurrency}`,
+      to: `${result.toAmount} ${toCurrency}`,
+      fee: result.fee,
+    });
+  }
 
   return {
     success: true,
