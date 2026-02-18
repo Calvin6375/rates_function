@@ -29,6 +29,7 @@ exports.getArbitrageRates = arbitrageHttp.getArbitrageRates;
 
 // Export payment functions
 exports.handleTopUpWebhook = paymentsHttp.handleTopUpWebhook;
+exports.handleTransFiTopUpWebhook = paymentsHttp.handleTransFiTopUpWebhook;
 exports.createPayment = paymentsHttp.createPayment;
 exports.handlePaymentWebhook = paymentsHttp.handlePaymentWebhook;
 exports.createSwapOrder = paymentsHttp.createSwapOrder;

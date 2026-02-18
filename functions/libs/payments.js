@@ -530,11 +530,185 @@ async function markPaymentLinkOpened(userId, invoiceId) {
   return {success: true};
 }
 
+/**
+ * Verify TransFi webhook signature (HMAC-SHA256 of raw body, hex-encoded)
+ * Uses raw body to avoid key-order mismatches from re-stringified JSON
+ * @param {string} webhookSecret - Webhook secret from TransFi dashboard
+ * @param {Buffer|Uint8Array|string} rawBody - Raw request body as received
+ * @param {string} receivedSignature - Value from X-Transfi-Hmac-Hash header
+ * @returns {boolean} True if signature is valid
+ */
+function verifyTransFiSignature(webhookSecret, rawBody, receivedSignature) {
+  if (!webhookSecret || !rawBody || !receivedSignature) {
+    return false;
+  }
+  const buf = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(rawBody);
+  const computed = crypto.createHmac("sha256", webhookSecret).update(buf).digest("hex");
+  if (computed.length !== receivedSignature.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(Buffer.from(computed, "hex"), Buffer.from(receivedSignature, "hex"));
+}
+
+/**
+ * Parse TransFi webhook payload and extract payment info
+ * Expects fund_settled or payment completed events; customerOrderId format: topup_<userId>_<timestamp>
+ * @param {Object} payload - Parsed JSON payload
+ * @returns {Object|null} { paymentId, userId, amount, currency } or null if not a processable event
+ */
+function parseTransFiWebhookPayload(payload) {
+  const status = payload.status || payload.event;
+  if (!status) {
+    return null;
+  }
+  const processableStatuses = ["fund_settled", "payment_completed", "PAYMENT_COMPLETED", "FUND_SETTLED"];
+  if (!processableStatuses.includes(status)) {
+    return null;
+  }
+
+  const order = payload.order || payload.data?.order || payload.data || {};
+  const customerOrderId = order.customerOrderId || payload.customerOrderId || order.customer_order_id || "";
+  const amount = Number(order.fiatAmount ?? order.fiat_amount ?? order.amount ?? 0);
+  const currency = (order.fiatTicker || order.fiat_ticker || order.currency || "USD").toUpperCase();
+  const paymentId = payload.entityId || payload.entity_id || order.orderId || order.order_id || order.id || customerOrderId;
+
+  if (!customerOrderId || amount <= 0) {
+    return null;
+  }
+
+  const match = customerOrderId.match(/^topup_([^_]+)_(\d+)$/);
+  const userId = match ? match[1] : null;
+
+  return {
+    paymentId: String(paymentId),
+    userId,
+    amount,
+    currency,
+    customerOrderId,
+  };
+}
+
+/**
+ * Process TransFi top-up webhook and credit user's fiat wallet
+ * @param {Object} paymentData - Parsed payment data from parseTransFiWebhookPayload
+ * @returns {Promise<{success: boolean, walletId?: string, duplicate?: boolean, error?: string}>}
+ */
+async function processTransFiWebhook(paymentData) {
+  const {paymentId, userId, amount, currency, customerOrderId} = paymentData;
+
+  if (!userId) {
+    return {
+      success: false,
+      error: "Could not extract userId from customerOrderId (expected format: topup_<userId>_<timestamp>)",
+    };
+  }
+
+  // Check idempotency - already processed?
+  const paymentRecordRef = firestore.collection("payments").doc(`transfi_${paymentId}`);
+  const existingPayment = await paymentRecordRef.get();
+
+  if (existingPayment.exists) {
+    const existingData = existingPayment.data();
+    if (existingData.user_id === userId && existingData.processed_at) {
+      return {
+        success: true,
+        walletId: userId,
+        duplicate: true,
+      };
+    }
+  }
+
+  // Reserve record before processing
+  await paymentRecordRef.set({
+    user_id: userId,
+    processed_at: admin.firestore.FieldValue.serverTimestamp(),
+    status: "processing",
+    amount,
+    currency,
+    customer_order_id: customerOrderId,
+    source: "transfi",
+  }, {merge: true});
+
+  try {
+    const result = await executeWithIdempotency(
+        "processTransFiPayment",
+        async () => {
+          const balanceResult = await updateBalanceWithTransaction(
+              userId,
+              amount,
+              "topup",
+              {
+                paymentId,
+                currency,
+                completedAt: new Date().toISOString(),
+                source: "transfi",
+              },
+          );
+
+          await paymentRecordRef.update({
+            status: "completed",
+            balance_updated: true,
+            new_balance: balanceResult.newBalance,
+          });
+
+          const userRef = firestore.collection(config.collections.users).doc(userId);
+          await userRef.update({
+            lastTopUp: admin.firestore.Timestamp.fromDate(new Date()),
+          });
+
+          try {
+            await createNotification({
+              userId,
+              type: NOTIFICATION_TYPES.PAYMENT_COMPLETED,
+              title: "Payment Received",
+              message: `Your deposit of ${currency} ${amount} was successful. New balance: ${currency} ${balanceResult.newBalance.toFixed(2)}`,
+              metadata: {
+                paymentId,
+                amount,
+                currency,
+                newBalance: balanceResult.newBalance,
+                source: "transfi",
+              },
+            });
+          } catch (notifError) {
+            console.warn("⚠️ Failed to send notification (non-critical):", notifError.message);
+          }
+
+          return balanceResult;
+        },
+        {paymentId, walletId: userId, amount},
+        userId,
+    );
+
+    return {
+      success: true,
+      walletId: userId,
+      balanceResult: result,
+    };
+  } catch (error) {
+    console.error("❌ Error processing TransFi webhook:", {
+      userId,
+      paymentId,
+      amount,
+      error: error.message,
+      stack: error.stack,
+    });
+    return {
+      success: false,
+      error: error.message,
+      walletId: userId,
+    };
+  }
+}
+
 module.exports = {
   verifySignature,
+  verifyTransFiSignature,
   parseWebhookPayload,
+  parseTransFiWebhookPayload,
   resolveWalletId,
   processPaymentWebhook,
+  processTransFiWebhook,
   createPaymentOrder,
   markPaymentLinkOpened,
 };

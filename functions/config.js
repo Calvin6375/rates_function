@@ -36,6 +36,7 @@ const config = {
     intaSendChallenge: "INTASEND_CHALLENGE",
     intaSendSecretKey: "INTASEND_SECRET_KEY",
     intaSendPublishableKey: "INTASEND_PUBLISHABLE_KEY",
+    transfiWebhookSecret: "TRANSFI_WEBHOOK_SECRET",
   },
 
   // Feature flags

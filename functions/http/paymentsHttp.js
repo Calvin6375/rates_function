@@ -3,6 +3,7 @@
  * Thin controllers that delegate to business logic in libs/payments.js
  */
 
+const express = require("express");
 const {onRequest, onCall, HttpsError} = require("firebase-functions/v2/https");
 const {defineSecret} = require("firebase-functions/params");
 const config = require("../config");
@@ -13,6 +14,9 @@ const sendMoneyLib = require("../libs/sendMoney");
 // Secret parameter for IntaSend webhook signature
 const intaSendSecret = defineSecret(config.secrets.intaSendSecret);
 const intaSendChallenge = defineSecret(config.secrets.intaSendChallenge);
+
+// Secret parameter for TransFi webhook signature
+const transfiWebhookSecret = defineSecret(config.secrets.transfiWebhookSecret);
 
 /**
  * Get IntaSend secret from Firebase secrets or environment
@@ -147,6 +151,115 @@ exports.handleTopUpWebhook = onRequest({
 
   res.status(200).send("OK");
 });
+
+/**
+ * Get TransFi webhook secret from Firebase secrets or environment
+ * @returns {string|null} Secret value
+ */
+function getTransFiWebhookSecret() {
+  const fromParams = transfiWebhookSecret.value();
+  if (fromParams) {
+    return fromParams;
+  }
+  if (process.env.TRANSFI_WEBHOOK_SECRET) {
+    return process.env.TRANSFI_WEBHOOK_SECRET;
+  }
+  return null;
+}
+
+/**
+ * TransFi top-up webhook HTTP endpoint
+ * URL: https://us-central1-<project>.cloudfunctions.net/handleTransFiTopUpWebhook
+ * Uses raw body for HMAC verification (X-Transfi-Hmac-Hash).
+ */
+const transfiWebhookApp = express();
+transfiWebhookApp.use(express.raw({type: "application/json"}));
+transfiWebhookApp.post("/", async (req, res) => {
+  if (req.method !== "POST") {
+    res.status(405).send("Method Not Allowed");
+    return;
+  }
+
+  const secret = getTransFiWebhookSecret();
+  if (!secret) {
+    console.error("❌ TransFi: TRANSFI_WEBHOOK_SECRET not configured");
+    res.status(500).send("Configuration error");
+    return;
+  }
+
+  const receivedSignature = req.get("X-Transfi-Hmac-Hash") || req.get("x-transfi-hmac-hash") || "";
+  if (!receivedSignature) {
+    console.error("❌ TransFi: Missing X-Transfi-Hmac-Hash header");
+    res.status(401).send("Unauthorized");
+    return;
+  }
+
+  const rawBody = Buffer.isBuffer(req.body) ? req.body : (req.rawBody ? Buffer.from(req.rawBody) : null);
+  if (!rawBody || rawBody.length === 0) {
+    console.error("❌ TransFi: Empty or missing request body");
+    res.status(400).send("Bad Request");
+    return;
+  }
+
+  if (!paymentsLib.verifyTransFiSignature(secret, rawBody, receivedSignature)) {
+    console.error("❌ TransFi: Invalid webhook signature");
+    res.status(401).send("Unauthorized");
+    return;
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(rawBody.toString("utf8"));
+  } catch (e) {
+    console.error("❌ TransFi: Invalid JSON body", e.message);
+    res.status(400).send("Bad Request");
+    return;
+  }
+
+  const paymentData = paymentsLib.parseTransFiWebhookPayload(payload);
+  if (!paymentData) {
+    const status = payload.status || payload.event;
+    console.log("ℹ️ TransFi: Non-processable event, skipping", {status, payload: Object.keys(payload)});
+    res.status(200).send("OK - Event skipped");
+    return;
+  }
+
+  console.log("💰 TransFi: Processing top-up webhook", {
+    paymentId: paymentData.paymentId,
+    userId: paymentData.userId,
+    amount: paymentData.amount,
+    currency: paymentData.currency,
+  });
+
+  const result = await paymentsLib.processTransFiWebhook(paymentData);
+
+  if (!result.success) {
+    if (result.error && result.error.includes("extract userId")) {
+      console.warn("⚠️ TransFi: Could not resolve user from customerOrderId", {
+        customerOrderId: paymentData.customerOrderId,
+      });
+      res.status(200).send("Recorded without wallet update");
+      return;
+    }
+    console.error("❌ TransFi: Processing failed", result.error);
+    res.status(500).json({error: "internal", message: "Failed to process webhook"});
+    return;
+  }
+
+  if (result.duplicate) {
+    res.status(200).send("OK - Already processed");
+    return;
+  }
+
+  res.status(200).send("OK");
+});
+
+exports.handleTransFiTopUpWebhook = onRequest({
+  secrets: [transfiWebhookSecret],
+  region: config.region,
+  cpu: config.resources.cpu,
+  memory: config.resources.memory,
+}, transfiWebhookApp);
 
 /**
  * Callable function: Create Payment Order
