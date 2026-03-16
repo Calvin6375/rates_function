@@ -72,6 +72,13 @@ const config = {
     outbox: "outbox",
     // Firestore paths for migrated data (previously in RTDB)
     invoiceMappings: "invoiceMappings", // For payment webhook lookups
+    // B2B and ledger (new architecture)
+    partners: "partners",
+    settlements: "settlements",
+    ledgerEntries: "ledger_entries",
+    transactionRecords: "transactionRecords", // Unified transaction log for engine + ledger
+    wallets: "wallets", // Partner wallets; user balances stay in users
+    safariCoinWallets: "safariCoinWallets",
   },
 };
 

@@ -7,6 +7,8 @@
 const ratesHttp = require("./http/ratesHttp");
 const arbitrageHttp = require("./http/arbitrageHttp");
 const paymentsHttp = require("./http/paymentsHttp");
+const webhookApi = require("./http/webhookApi");
+const partnerApi = require("./http/partnerApi");
 const customerWalletsHttp = require("./http/customerWalletsHttp");
 const adminHttp = require("./http/adminHttp");
 const migrateUsersHttp = require("./http/migrateUsersHttp");
@@ -27,9 +29,9 @@ exports.getBinanceRates = ratesHttp.getBinanceRates;
 exports.fetchArbitrageRates = arbitrageHttp.fetchArbitrageRates;
 exports.getArbitrageRates = arbitrageHttp.getArbitrageRates;
 
-// Export payment functions
-exports.handleTopUpWebhook = paymentsHttp.handleTopUpWebhook;
-exports.handleTransFiTopUpWebhook = paymentsHttp.handleTransFiTopUpWebhook;
+// Export payment functions (callables stay in paymentsHttp; webhooks in webhookApi)
+exports.handleTopUpWebhook = webhookApi.handleTopUpWebhook;
+exports.handleTransFiTopUpWebhook = webhookApi.handleTransFiTopUpWebhook;
 exports.createPayment = paymentsHttp.createPayment;
 exports.handlePaymentWebhook = paymentsHttp.handlePaymentWebhook;
 exports.createSwapOrder = paymentsHttp.createSwapOrder;
@@ -37,6 +39,9 @@ exports.createSendMoneyOrder = paymentsHttp.createSendMoneyOrder;
 
 // Export customer wallets REST API
 exports.api = customerWalletsHttp.api;
+
+// Export B2B Partner API (X-API-KEY auth)
+exports.partner = partnerApi.partner;
 
 // Export transactions REST API
 exports.transactionsApi = transactionsHttp.transactionsApi;
