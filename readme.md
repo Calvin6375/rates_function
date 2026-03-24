@@ -53,34 +53,34 @@ This backend system powers the TruePay cryptocurrency exchange platform, providi
 ## System Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│              Firebase Cloud Functions                        │
-├─────────────────────────────────────────────────────────────┤
-│                                                              │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
-│  │  Scheduled   │  │  Callable    │  │     HTTP     │     │
-│  │   Functions  │  │  Functions   │  │  Endpoints   │     │
-│  │              │  │              │  │              │     │
-│  │ • fetchBin   │  │ • getBinance │  │ • fetchBin   │     │
-│  │   anceRates  │  │   Rates      │  │   anceRates  │     │
-│  │ • fetchArbi  │  │ • getArbitr  │  │   Http       │     │
-│  │   trageRates │  │   ageRates   │  │ • handleTop  │     │
-│  │              │  │ • updateUser │  │   UpWebhook  │     │
-│  │              │  │   Balance    │  │ • api/*      │     │
-│  │              │  │ • getUserData│  │   (REST)     │     │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘     │
-│         │                 │                  │             │
-│  ┌──────┴─────────────────┴──────────────────┴───────┐    │
-│  │           Firestore Triggers                      │    │
+┌──────────────────────────────────────────────────────────┐
+│              Firebase Cloud Functions                    |
+├──────────────────────────────────────────────────────────┤
+│                                                          │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
+│  │  Scheduled   │  │  Callable    │  │     HTTP     │    │
+│  │   Functions  │  │  Functions   │  │  Endpoints   │    │
+│  │              │  │              │  │              │    │
+│  │ • fetchBin   │  │ • getBinance │  │ • fetchBin   │    │
+│  │   anceRates  │  │   Rates      │  │   anceRates  │    │
+│  │ • fetchArbi  │  │ • getArbitr  │  │   Http       │    │
+│  │   trageRates │  │   ageRates   │  │ • handleTop  │    │
+│  │              │  │ • updateUser │  │   UpWebhook  │    │
+│  │              │  │   Balance    │  │ • api/*      │    │
+│  │              │  │ • getUserData│  │   (REST)     │    │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘    │
+│         │                 │                 │            │
+│  ┌──────┴─────────────────┴─────────────────┴───────┐    │
+│  │           Firestore Triggers                     │    │
 │  │  • syncBalance (onDocumentUpdated: users/{uid})  │    │
 │  │  • onUserCreated (onDocumentCreated: users/{uid})│    │
 │  └──────────────────────┬───────────────────────────┘    │
-│                         │                                 │
+│                         │                                │
 │  ┌──────────────────────┴───────────────────────────┐    │
 │  │              Auth Triggers                       │    │
-│  │  • userBootstrap (auth.user().onCreate)         │    │
+│  │  • userBootstrap (auth.user().onCreate)          │    │
 │  └──────────────────────┬───────────────────────────┘    │
-└─────────────────────────┼─────────────────────────────────┘
+└─────────────────────────┼────────────────────────────────┘
                           │
          ┌────────────────┼────────────────┐
          │                │                │
