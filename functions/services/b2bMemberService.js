@@ -1,20 +1,21 @@
 /**
  * @fileoverview B2B partner org structure: one org admin per partner (set by platform admin),
- * org admin manages members with roles member | viewer. Custom claims: partnerId, partnerRole.
+ * org admin assigns institutional roles. Custom claims: partnerId, partnerRole.
  */
 
 const admin = require("../admin");
 const { collection, serverTimestamp } = require("../libs/firestore");
-const partnerService = require("./partnerService");
 const { mergeCustomUserClaims, clearPartnerClaims, getCustomClaims } = require("../utils/customClaimsMerge");
 
 const MEMBERS_SUB = "members";
 
+/** Roles org admin may assign (claims + members doc). */
 /** @type {readonly string[]} */
-const ASSIGNABLE_ROLES = ["member", "viewer"];
+const ASSIGNABLE_ROLES = ["member", "viewer", "finance", "support", "auditor", "operations"];
 
+/** All partnerRole values accepted on the portal (token + GET /portal/me). */
 /** @type {readonly string[]} */
-const ALL_PARTNER_ROLES = ["org_admin", "member", "viewer"];
+const ALL_PARTNER_ROLES = ["org_admin", ...ASSIGNABLE_ROLES];
 
 /**
  * @param {string} partnerId
@@ -127,7 +128,7 @@ async function listMembers(partnerId) {
 }
 
 /**
- * Org admin: invite/create a Firebase user and attach to partner with role member|viewer.
+ * Org admin: invite/create a Firebase user and attach to partner with an assignable role.
  *
  * @param {string} partnerId
  * @param {{ email: string, password: string, role: string, displayName?: string }} input
@@ -201,7 +202,7 @@ async function addMember(partnerId, { email, password, role, displayName }, acto
  *
  * @param {string} partnerId
  * @param {string} targetUid
- * @param {string} role - member | viewer
+ * @param {string} role - assignable institutional role
  * @returns {Promise<void>}
  */
 async function updateMemberRole(partnerId, targetUid, role) {

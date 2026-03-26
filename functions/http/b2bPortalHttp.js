@@ -10,6 +10,7 @@ const config = require("../config");
 const { verifyFirebaseAuth } = require("../libs/auth");
 const partnerService = require("../services/partnerService");
 const b2bMemberService = require("../services/b2bMemberService");
+const platformConsumerService = require("../services/platformConsumerService");
 
 const { ALL_PARTNER_ROLES } = b2bMemberService;
 
@@ -176,6 +177,48 @@ app.get("/platform/partners/:partnerId/members", loadFirebaseUser, requirePlatfo
     res.status(200).json({ success: true, data: { members } });
   } catch (err) {
     console.error("b2bPortal GET platform members:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/** Unified dashboard: counts for consumer app users vs B2B partners */
+app.get("/platform/overview", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+  try {
+    const counts = await platformConsumerService.getPlatformOverviewCounts();
+    res.status(200).json({ success: true, data: counts });
+  } catch (err) {
+    console.error("b2bPortal GET /platform/overview:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/** Paginated list of customer-app users (Firestore users) — platform admin only */
+app.get("/platform/consumer-users", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+  try {
+    const limit = parseInt(String(req.query.limit || "50"), 10) || 50;
+    const startAfter = req.query.startAfter ? String(req.query.startAfter) : null;
+    const { users, nextCursor } = await platformConsumerService.listConsumerUsers(limit, startAfter);
+    res.status(200).json({
+      success: true,
+      data: { users, nextCursor },
+    });
+  } catch (err) {
+    console.error("b2bPortal GET /platform/consumer-users:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/** Single customer-app user profile (read-only summary for super-admin dashboard) */
+app.get("/platform/consumer-users/:userId", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+  try {
+    const user = await platformConsumerService.getConsumerUser(req.params.userId);
+    if (!user) {
+      res.status(404).json({ success: false, error: "User not found" });
+      return;
+    }
+    res.status(200).json({ success: true, data: user });
+  } catch (err) {
+    console.error("b2bPortal GET /platform/consumer-users/:userId:", err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
