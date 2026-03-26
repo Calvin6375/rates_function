@@ -35,6 +35,8 @@ async function createPartner({ name, settlementCurrency = "KES", webhookUrl = nu
     settlementCurrency: String(settlementCurrency),
     webhookUrl: webhookUrl || null,
     status: "active",
+    /** @type {string|null} Firebase Auth UID of the partner org admin (set by platform admin) */
+    orgAdminUid: null,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   };
@@ -57,7 +59,12 @@ async function getPartner(partnerId) {
   if (!doc.exists) return null;
   const d = doc.data();
   const { apiKey, ...safe } = d;
-  return { id: doc.id, ...safe, apiKeyMasked: apiKey ? `${apiKey.slice(0, 8)}...` : null };
+  return {
+    id: doc.id,
+    ...safe,
+    orgAdminUid: d.orgAdminUid ?? null,
+    apiKeyMasked: apiKey ? `${apiKey.slice(0, 8)}...` : null,
+  };
 }
 
 /**

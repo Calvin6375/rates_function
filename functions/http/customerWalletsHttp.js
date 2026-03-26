@@ -57,6 +57,52 @@ app.use((req, res, next) => {
 });
 
 /**
+ * Express middleware: valid Firebase ID token and custom claim admin === true
+ */
+async function requireAdmin(req, res, next) {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      res.status(401).json({
+        success: false,
+        error: "Unauthorized",
+        message: "Authentication required. Please provide a valid Firebase Auth token.",
+      });
+      return;
+    }
+    const token = authHeader.slice(7);
+    let decodedToken;
+    try {
+      decodedToken = await admin.auth().verifyIdToken(token);
+    } catch {
+      res.status(401).json({
+        success: false,
+        error: "Unauthorized",
+        message: "Invalid or expired authentication token.",
+      });
+      return;
+    }
+    if (decodedToken.admin !== true) {
+      res.status(403).json({
+        success: false,
+        error: "Forbidden",
+        message: "Admin access required.",
+      });
+      return;
+    }
+    req.adminId = decodedToken.uid;
+    next();
+  } catch (err) {
+    console.error("requireAdmin middleware:", err.message);
+    res.status(500).json({
+      success: false,
+      error: "Internal error",
+      message: err.message,
+    });
+  }
+}
+
+/**
  * GET /rates
  * Get all customer rates (view-only, public endpoint)
  * No authentication required - public access for displaying rates
@@ -304,8 +350,9 @@ app.post("/p2p/listings", async (req, res) => {
 /**
  * GET /customer-wallets
  * List all customer wallets with pagination
+ * Authentication: Admin only
  */
-app.get("/customer-wallets", async (req, res) => {
+app.get("/customer-wallets", requireAdmin, async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 100;
     const offset = parseInt(req.query.offset) || 0;
@@ -335,8 +382,9 @@ app.get("/customer-wallets", async (req, res) => {
 /**
  * GET /customer-wallets/:id
  * Get a specific customer wallet by ID
+ * Authentication: Admin only
  */
-app.get("/customer-wallets/:id", async (req, res) => {
+app.get("/customer-wallets/:id", requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -367,8 +415,9 @@ app.get("/customer-wallets/:id", async (req, res) => {
 /**
  * PUT /customer-wallets/:id
  * Update customer wallet details
+ * Authentication: Admin only
  */
-app.put("/customer-wallets/:id", async (req, res) => {
+app.put("/customer-wallets/:id", requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const updateData = req.body;
@@ -399,8 +448,10 @@ app.put("/customer-wallets/:id", async (req, res) => {
  *   "currency": "KES",  // Optional: "USD", "KES", "USDT" - defaults to "USD"
  *   "description": "Deposit"
  * }
+ *
+ * Authentication: Admin only
  */
-app.post("/customer-wallets/:id/credit", async (req, res) => {
+app.post("/customer-wallets/:id/credit", requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { amount, currency = "USD", description } = req.body;
@@ -450,8 +501,10 @@ app.post("/customer-wallets/:id/credit", async (req, res) => {
  *   "currency": "KES",  // Optional: "USD", "KES", "USDT" - defaults to "USD"
  *   "description": "Withdrawal"
  * }
+ *
+ * Authentication: Admin only
  */
-app.post("/customer-wallets/:id/debit", async (req, res) => {
+app.post("/customer-wallets/:id/debit", requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { amount, currency = "USD", description } = req.body;
@@ -502,8 +555,9 @@ app.post("/customer-wallets/:id/debit", async (req, res) => {
 /**
  * POST /customer-wallets
  * Create a new customer wallet
+ * Authentication: Admin only
  */
-app.post("/customer-wallets", async (req, res) => {
+app.post("/customer-wallets", requireAdmin, async (req, res) => {
   try {
     const { name, email, phone, initialBalance = 0 } = req.body;
 
@@ -561,31 +615,6 @@ app.post("/customer-wallets", async (req, res) => {
     });
   }
 });
-
-/**
- * Helper: Verify admin from Firebase Auth token (for REST API)
- * Uses Custom Claims for better security and performance
- */
-async function verifyAdminFromRequest(req) {
-  try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return { isAdmin: false, adminId: null };
-    }
-
-    const token = authHeader.split("Bearer ")[1];
-    const decodedToken = await admin.auth().verifyIdToken(token);
-    const adminId = decodedToken.uid;
-
-    // Check admin claim from token (faster, more secure)
-    const isAdminUser = decodedToken.admin === true;
-
-    return { isAdmin: isAdminUser, adminId: isAdminUser ? adminId : null };
-  } catch (error) {
-    console.error("Error verifying admin from request:", error.message);
-    return { isAdmin: false, adminId: null };
-  }
-}
 
 /**
  * GET /config/fees
@@ -674,8 +703,8 @@ app.get("/config/fees", async (req, res) => {
 /**
  * PUT /config/fees
  * Update customer rates configuration (buyRate and sellRate)
- * Authentication: Required (any authenticated user can update)
- * 
+ * Authentication: Admin only (Firebase Auth Bearer token + admin custom claim)
+ *
  * Accepts customer rates (rate + commission combined) in Buy and Sell format.
  * Rates are stored per currency pair (e.g., "USDT/KES").
  * 
@@ -694,33 +723,9 @@ app.get("/config/fees", async (req, res) => {
  *   }
  * }
  */
-app.put("/config/fees", async (req, res) => {
+app.put("/config/fees", requireAdmin, async (req, res) => {
   try {
-    // Verify user is authenticated (but don't require admin for updating rates)
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      res.status(401).json({
-        success: false,
-        error: "Unauthorized",
-        message: "Authentication required. Please provide a valid Firebase Auth token.",
-      });
-      return;
-    }
-
-    let userId = null;
-    try {
-      const token = authHeader.split("Bearer ")[1];
-      const decodedToken = await admin.auth().verifyIdToken(token);
-      userId = decodedToken.uid;
-      // Token is valid, proceed
-    } catch (authError) {
-      res.status(401).json({
-        success: false,
-        error: "Unauthorized",
-        message: "Invalid or expired authentication token.",
-      });
-      return;
-    }
+    const adminId = req.adminId;
 
     const { currencyPair, buyRate, sellRate, rates } = req.body || {};
 
@@ -731,7 +736,7 @@ app.put("/config/fees", async (req, res) => {
 
     const updateData = {
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      updatedBy: userId,
+      updatedBy: adminId,
     };
 
     // Initialize rates object if it doesn't exist
@@ -829,10 +834,10 @@ app.put("/config/fees", async (req, res) => {
         await feesRef.set({
           arbitrageFee: fee,
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          updatedBy: userId,
+          updatedBy: adminId,
         }, { merge: true });
 
-        console.log(`✅ User ${userId} updated arbitrage fee to ${fee}%`);
+        console.log(`✅ Admin ${adminId} updated arbitrage fee to ${fee}%`);
       }
     }
 
@@ -842,11 +847,10 @@ app.put("/config/fees", async (req, res) => {
     const afterDoc = await configRef.get();
     const afterData = afterDoc.data();
 
-    // Log action (using logAdminAction for consistency, but any authenticated user can update)
     const { logAdminAction } = require("../utils/transactions");
     try {
       await logAdminAction(
-        userId,
+        adminId,
         "system",
         "updateCustomerRates",
         beforeData,
@@ -856,7 +860,7 @@ app.put("/config/fees", async (req, res) => {
       console.error("Failed to log action:", logError.message);
     }
 
-    console.log(`✅ User ${userId} updated customer rates via REST API`, {
+    console.log(`✅ Admin ${adminId} updated customer rates via REST API`, {
       rates: updateData.rates,
     });
 
@@ -865,7 +869,7 @@ app.put("/config/fees", async (req, res) => {
       data: {
         rates: afterData.rates || {},
         updatedAt: afterData.updatedAt?.toDate?.()?.toISOString() || new Date().toISOString(),
-        updatedBy: userId,
+        updatedBy: adminId,
       },
       message: "Customer rates updated successfully",
     });

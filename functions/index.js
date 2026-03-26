@@ -15,6 +15,7 @@ const migrateUsersHttp = require("./http/migrateUsersHttp");
 const updatePhoneNumbersHttp = require("./http/updatePhoneNumbersHttp");
 const transactionsHttp = require("./http/transactionsHttp");
 const notificationsHttp = require("./http/notificationsHttp");
+const b2bPortalHttp = require("./http/b2bPortalHttp");
 
 // Import triggers
 const usersTrigger = require("./triggers/usersTrigger");
@@ -42,6 +43,9 @@ exports.api = customerWalletsHttp.api;
 
 // Export B2B Partner API (X-API-KEY auth)
 exports.partner = partnerApi.partner;
+
+// B2B portal: platform admin + partner org admin / members (Firebase Bearer auth)
+exports.b2bPortal = b2bPortalHttp.b2bPortal;
 
 // Export transactions REST API
 exports.transactionsApi = transactionsHttp.transactionsApi;

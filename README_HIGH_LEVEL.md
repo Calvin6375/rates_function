@@ -44,52 +44,89 @@ TruePay is a cryptocurrency exchange platform backend that enables users to exch
 
 ## Architecture
 
+Sketch of how the **customer app**, **B2B** (API key + portal), **SafariCoin**, and **admin** surfaces map to Cloud Functions and storage. Exports live in `functions/index.js`.
+
 ```
-┌──────────────────────────────────────────────────────────┐
-│              Firebase Cloud Functions                    │
-├──────────────────────────────────────────────────────────┤
-│                                                          │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
-│  │  Scheduled   │  │  Callable    │  │     HTTP     │    │
-│  │   Functions  │  │  Functions   │  │  Endpoints   │    │
-│  │              │  │              │  │              │    │
-│  │ • fetchBin   │  │ • getBinance │  │ • fetchBin   │    │
-│  │   anceRates  │  │   Rates      │  │   anceRates  │    │
-│  │ • fetchArbi  │  │ • getArbitr  │  │   Http       │    │
-│  │   trageRates │  │   ageRates   │  │ • handleTop  │    │
-│  │              │  │ • createPay  │  │   UpWebhook  │    │
-│  │              │  │   ment       │  │ • api/*      │    │
-│  │              │  │ • userBoot   │  │   (REST)     │    │
-│  │              │  │   strap      │  │              │    │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘    │
-│         │                 │                 │            │
-│  ┌──────┴─────────────────┴─────────────────┴───────┐    │
-│  │           Firestore Triggers                     │    │
-│  │  • syncBalance (onDocumentUpdated: users/{uid})  │    │
-│  │  • onUserCreated (onDocumentCreated: users/{uid})│    │
-│  └──────────────────────┬───────────────────────────┘    │
-│                         │                                │
-│  ┌──────────────────────┴───────────────────────────┐    │
-│  │              Auth Triggers                       │    │
-│  │  • userBootstrap (auth.user().onCreate)          │    │
-│  └──────────────────────┬───────────────────────────┘    │
-└─────────────────────────┼────────────────────────────────┘
-                          │
-         ┌────────────────┼────────────────┐
-         │                │                │
-         ▼                ▼                ▼
-┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│  Firestore   │  │  Realtime DB │  │   Binance    │
-│              │  │              │  │   P2P API    │
-│ • users      │  │ • wallet/    │  │              │
-│ • p2pRates   │  │   {uid}/fiat │  │              │
-│ • config     │  │ • wallet/    │  │              │
-│ • transact   │  │   rates      │  │              │
-│   ions       │  │ • payments   │  │              │
-│ • adminLogs  │  │ • pending    │  │              │
-│ • orders     │  │   Topups     │  │              │
-└──────────────┘  └──────────────┘  └──────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                     Firebase Cloud Functions (v2)                              │
+│  Scheduled (rate jobs) · Callable · HTTP · Webhooks · Firestore / Auth triggers │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+   CUSTOMER APP                    B2B (integrations)              B2B (portal)
+   Firebase Auth                    X-API-KEY                       Bearer + claims
+   ID token                         (partners.apiKey)               (admin / partnerId)
+        │                                  │                                │
+        ▼                                  ▼                                ▼
+ ┌──────────────────┐              ┌──────────────────┐              ┌──────────────────┐
+ │ api              │              │ partner          │              │ b2bPortal        │
+ │ customerWallets  │              │ partnerApi       │              │ b2bPortalHttp    │
+ ├──────────────────┤              ├──────────────────┤              ├──────────────────┤
+ │ Public / app:    │              │ /rates           │              │ /platform/…      │
+ │  GET /rates,     │              │ /payments        │              │  partners CRUD   │
+ │  /customer-rates │              │  → partner       │              │  assign org      │
+ │  /binance/rates  │              │  wallets + tx    │              │  admin (claim)   │
+ │  POST /p2p/      │              │ /transactions    │              │ /portal/…        │
+ │   listings       │              │ /settlements     │              │  members, roles  │
+ │ Auth (user):     │              │ /wallet (fiat)   │              │  org_admin only  │
+ │  transactionsApi │              │                  │              └────────┬─────────┘
+ │  notificationsApi│            │ SafariCoin       │                       │
+ │ Admin routes *:   │              │ GET /safaricoin/ │                       │
+ │  customer-       │              │     balance      │                       │
+ │  wallets,        │              │  → safariCoin    │                       │
+ │  PUT /config/fees│              │     Service **   │                       │
+ ├──────────────────┤              │  (mock; doc id   │                       │
+ │ Callables:       │              │   = partnerId)   │                       │
+ │ createPayment,   │              └────────┬─────────┘                       │
+ │ userBootstrap,   │                       │                               │
+ │ getBinanceRates, │                       └───────────────┬─────────────────┘
+ │ …                │                                       │
+ └────────┬─────────┘                                       │
+          │                                                 │
+          │         ADMIN DASHBOARD (TruePay staff)           │
+          │         admin claim + App Check on callables     │
+          │                      │                           │
+          └──────────────────────┼───────────────────────────┘
+                                 ▼
+ ┌──────────────────────────────────────────────────────────────────────────────┐
+ │ Shared libs / services                                                        │
+ │ rateService · userWallets · walletService · transactionService ·               │
+ │ settlementService · safariCoinService ** · payments · …                      │
+ └──────────────────────────────────────────────────────────────────────────────┘
+                                 │
+         ┌───────────────────────┼───────────────────────┐
+         ▼                       ▼                       ▼
+ ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐
+ │ Firestore       │   │ Realtime DB     │   │ External APIs   │
+ ├─────────────────┤   ├─────────────────┤   ├─────────────────┤
+ │ Customer:       │   │ wallet/{uid}/   │   │ Binance P2P     │
+ │  users, orders, │   │   fiat, rates,  │   │ IntaSend, etc.  │
+ │  customerWallets│   │   pending…      │   │                 │
+ │ B2B:            │   │                 │   │                 │
+ │  partners +     │   │                 │   │                 │
+ │   members ***,  │   │                 │   │                 │
+ │  wallets,       │   │                 │   │                 │
+ │  settlements,   │   │                 │   │                 │
+ │  transaction    │   │                 │   │                 │
+ │  Records (B2B)  │   │                 │   │                 │
+ │  safariCoin     │   │                 │   │                 │
+ │  Wallets        │   │                 │   │                 │
+ │ Shared:         │   │                 │   │                 │
+ │  p2pRates,      │   │                 │   │                 │
+ │  config, …      │   │                 │   │                 │
+ └─────────────────┘   └─────────────────┘   └─────────────────┘
+
+ Triggers: syncBalance · onUserCreated · userBootstrap (auth onCreate)
+
+ *  On api, sensitive REST paths require Firebase custom claim admin: true.
+ ** safariCoinService is a mock placeholder; balances in safariCoinWallets.
+ *** partners/{partnerId}/members — managed via b2bPortal, not X-API-KEY.
 ```
+
+**How to read this**
+
+- **Customer app** talks mainly to **`api`**, **`transactionsApi`**, **`notificationsApi`**, and **callables** (payments, bootstrap, rates). Data lives in **`users`**, **`customerWallets`**, orders, RTDB wallet cache, etc.
+- **B2B integrations** use the **`partner`** HTTP function with **`X-API-KEY`** (from `partners` in Firestore): rates, recording payments into **partner `wallets`**, settlements, **transaction records**, and **SafariCoin** balance via **`GET …/safaricoin/balance`** (backed by **`safariCoinService`** / **`safariCoinWallets`** — currently mock).
+- **B2B portal** uses **`b2bPortal`**: platform **`admin`** users manage all partners and assign each partner’s single **org admin**; that org admin manages **`partners/{id}/members`** and **`partnerId` / `partnerRole`** custom claims (separate from the API-key integration path).
 
 ### Architecture Improvements (December 2025 Refactor)
 
