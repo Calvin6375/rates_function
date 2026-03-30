@@ -10,6 +10,7 @@ const config = require("../config");
 const userWalletsLib = require("../libs/userWallets");
 const ratesLib = require("../libs/rates");
 const p2pListingsLib = require("../libs/p2pListings");
+const { sanitizeRatesObject, maybeFixResolvedPair } = require("../utils/customerRatesSanitize");
 
 const db = admin.firestore();
 const app = express();
@@ -144,6 +145,8 @@ app.get("/rates", async (req, res) => {
       }
     }
 
+    await sanitizeRatesObject(ratesWithInverses);
+
     // Return all rates (public access)
     res.status(200).json({
       success: true,
@@ -218,12 +221,14 @@ app.get("/customer-rates", async (req, res) => {
       return;
     }
 
+    const fixedPairRates = await maybeFixResolvedPair(resolvedPair, pairRates);
+
     res.status(200).json({
       success: true,
       data: {
         currencyPair: resolvedPair,
-        buyRate: pairRates.buyRate,
-        sellRate: pairRates.sellRate,
+        buyRate: fixedPairRates.buyRate,
+        sellRate: fixedPairRates.sellRate,
         updatedAt: configData.updatedAt?.toDate?.()?.toISOString() || null,
       },
     });
