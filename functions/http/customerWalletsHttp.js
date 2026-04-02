@@ -83,16 +83,34 @@ async function requireAdmin(req, res, next) {
       });
       return;
     }
-    if (decodedToken.admin !== true) {
-      res.status(403).json({
-        success: false,
-        error: "Forbidden",
-        message: "Admin access required.",
-      });
+
+    // Fast path: admin claim is already in the token (most common case after first login)
+    if (decodedToken.admin === true) {
+      req.adminId = decodedToken.uid;
+      next();
       return;
     }
-    req.adminId = decodedToken.uid;
-    next();
+
+    // Fallback: token claim may be stale (admin claim was set after this token was issued).
+    // Check the live Firebase Auth record for current custom claims.
+    // This avoids forcing re-login immediately after an admin is promoted.
+    try {
+      const userRecord = await admin.auth().getUser(decodedToken.uid);
+      if (userRecord.customClaims && userRecord.customClaims.admin === true) {
+        console.log(`requireAdmin: stale token for ${decodedToken.uid} — live claim check passed`);
+        req.adminId = decodedToken.uid;
+        next();
+        return;
+      }
+    } catch (userLookupErr) {
+      console.warn("requireAdmin: live claim lookup failed:", userLookupErr.message);
+    }
+
+    res.status(403).json({
+      success: false,
+      error: "Forbidden",
+      message: "Admin access required.",
+    });
   } catch (err) {
     console.error("requireAdmin middleware:", err.message);
     res.status(500).json({
