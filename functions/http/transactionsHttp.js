@@ -12,6 +12,93 @@ const firestore = admin.firestore();
 const rtdb = admin.database();
 const app = express();
 
+/**
+ * Sort key for `orders` docs (createdAt)
+ * @param {FirebaseFirestore.DocumentData} data
+ * @returns {number}
+ */
+function orderDocCreatedMs(data) {
+  const c = data && data.createdAt;
+  if (!c) {
+    return 0;
+  }
+  if (typeof c.toDate === "function") {
+    return c.toDate().getTime();
+  }
+  if (typeof c.toMillis === "function") {
+    return c.toMillis();
+  }
+  return 0;
+}
+
+/**
+ * Firestore composite index missing or still building
+ * @param {Error} err
+ * @returns {boolean}
+ */
+function isFirestoreIndexMissingError(err) {
+  const code = err && err.code;
+  const msg = err && err.message ? String(err.message) : "";
+  return (
+    code === 9 ||
+    code === "failed-precondition" ||
+    msg.includes("FAILED_PRECONDITION") ||
+    msg.includes("requires an index")
+  );
+}
+
+/**
+ * Short label from Firebase UID for admin lists (avoids bare "Unknown User").
+ * @param {string|null|undefined} uid
+ * @returns {string}
+ */
+function displayNameFromUserId(uid) {
+  if (!uid || typeof uid !== "string") {
+    return "Unknown User";
+  }
+  return `User ${uid.slice(0, 8)}`;
+}
+
+/**
+ * Best display name from users/{uid} or customerWallets/{id} document fields.
+ * @param {Object|null|undefined} rec
+ * @param {string|null|undefined} uid
+ * @returns {string}
+ */
+function resolveClientDisplayName(rec, uid) {
+  if (!rec || typeof rec !== "object") {
+    return displayNameFromUserId(uid);
+  }
+
+  const trim = (s) => (typeof s === "string" ? s.trim() : "");
+
+  const direct =
+    trim(rec.name) ||
+    trim(rec.displayName) ||
+    trim(rec.fullName) ||
+    trim(rec.username);
+
+  if (direct) {
+    return direct;
+  }
+
+  const fn = trim(rec.firstName);
+  const ln = trim(rec.lastName);
+  if (fn || ln) {
+    return [fn, ln].filter(Boolean).join(" ");
+  }
+
+  const em = rec.email;
+  if (typeof em === "string" && em.includes("@")) {
+    const local = em.split("@")[0].trim();
+    if (local) {
+      return local;
+    }
+  }
+
+  return displayNameFromUserId(uid);
+}
+
 // Middleware
 app.use(express.json());
 
@@ -487,25 +574,22 @@ app.get("/transactions/:transactionId", async (req, res) => {
 
 /**
  * GET /admin/transactions
- * Get all transaction histories for dashboard
- * Supports filtering, pagination, and includes client information
- * 
+ * Lists **direct top-up orders only** (`orders` where `orderType === "direct_topup"`).
+ * Does not include IntaSend topups, swaps, credits, or wallet ledger rows.
+ *
  * Query parameters:
  * - limit: number (default: 50, max: 200)
- * - startAfter: transaction ID for pagination
- * - userId: filter by specific user ID
- * - type: filter by transaction type (credit, debit, topup, etc.)
- * - status: filter by status (completed, pending, failed)
- * - currency: filter by currency (USD, KES, USDT, etc.)
- * - startDate: filter from date (ISO format)
- * - endDate: filter to date (ISO format)
- * 
+ * - startAfter: order document ID for pagination (last `id` from previous page)
+ * - userId: filter by customer Firebase UID
+ * - status: filter (pending, completed, …) applied after fetch
+ * - currency: filter (USD, KES, …) applied after fetch
+ * - startDate / endDate: ISO date filters applied after fetch
+ *
  * Headers:
  * - Authorization: Bearer <Firebase Auth token> (Authentication required)
  */
 app.get("/admin/transactions", async (req, res) => {
   try {
-    // Verify user is authenticated (but don't require admin for reading)
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       res.status(401).json({
@@ -519,7 +603,6 @@ app.get("/admin/transactions", async (req, res) => {
     try {
       const token = authHeader.split("Bearer ")[1];
       await admin.auth().verifyIdToken(token);
-      // Token is valid, proceed
     } catch (authError) {
       res.status(401).json({
         success: false,
@@ -532,161 +615,155 @@ app.get("/admin/transactions", async (req, res) => {
     const {
       limit: limitParam = 50,
       startAfter = null,
-      userId = null,
-      type = null,
-      status = null,
-      currency = null,
+      userId: userIdFilter = null,
+      status: statusFilter = null,
+      currency: currencyFilter = null,
       startDate = null,
       endDate = null,
     } = req.query;
 
-    const limit = Math.min(parseInt(limitParam) || 50, 200);
+    const limit = Math.min(parseInt(String(limitParam), 10) || 50, 200);
+    const fetchSize = Math.min(limit + 1, 201);
 
     try {
-      // Collect all transactions from all users
-      const allTransactions = [];
+      const ordersCol = firestore.collection(config.collections.orders);
 
-      // Strategy 1: Query transactions subcollection for all users
-      // Get all user documents first
-      const usersSnapshot = await firestore.collection(config.collections.users).limit(500).get();
-      const userIds = usersSnapshot.docs.map((doc) => doc.id);
+      let docs;
+      let hasMore;
 
-      // Query transactions for each user
-      const transactionPromises = userIds.map(async (uid) => {
-        try {
-          let query = firestore
-              .collection(config.collections.transactions)
-              .doc(uid)
-              .collection("transactions")
-              .orderBy("timestamp", "desc")
-              .limit(limit * 2); // Get more to account for filtering
-
-          // Apply filters
-          if (type) {
-            query = query.where("type", "==", type);
-          }
-          if (status) {
-            query = query.where("status", "==", status);
-          }
-          if (currency) {
-            query = query.where("currency", "==", currency);
-          }
-          if (userId && uid !== userId) {
-            return []; // Skip if filtering by specific user
-          }
-
-          const snapshot = await query.get();
-          const transactions = snapshot.docs.map((doc) => ({
-            id: doc.id,
-            userId: uid,
-            ...doc.data(),
-            timestamp: doc.data().timestamp?.toDate?.()?.toISOString() || null,
-          }));
-
-          return transactions;
-        } catch (error) {
-          console.error(`Error fetching transactions for user ${uid}:`, error.message);
-          return [];
-        }
-      });
-
-      const transactionArrays = await Promise.all(transactionPromises);
-      allTransactions.push(...transactionArrays.flat());
-
-      // Strategy 2: Also query walletTransactions collection
       try {
-        let walletTxQuery = firestore
-            .collection("walletTransactions")
-            .orderBy("createdAt", "desc")
-            .limit(limit * 2);
+        let q = ordersCol
+            .where("orderType", "==", "direct_topup")
+            .orderBy("createdAt", "desc");
 
-        if (userId) {
-          walletTxQuery = walletTxQuery.where("userId", "==", userId);
-        }
-        if (type) {
-          walletTxQuery = walletTxQuery.where("type", "==", type);
-        }
-        if (currency) {
-          walletTxQuery = walletTxQuery.where("currency", "==", currency);
+        if (userIdFilter && typeof userIdFilter === "string") {
+          q = q.where("userId", "==", userIdFilter.trim());
         }
 
-        const walletTxSnapshot = await walletTxQuery.get();
-        walletTxSnapshot.forEach((doc) => {
-          const data = doc.data();
-          // Avoid duplicates
-          const exists = allTransactions.some((tx) => tx.id === doc.id);
-          if (!exists) {
-            allTransactions.push({
-              id: doc.id,
-              ...data,
-              timestamp: data.createdAt?.toDate?.()?.toISOString() || null,
-              createdAt: data.createdAt?.toDate?.()?.toISOString() || null,
-            });
+        if (startAfter && typeof startAfter === "string") {
+          const cursor = await ordersCol.doc(startAfter.trim()).get();
+          if (cursor.exists) {
+            q = q.startAfter(cursor);
           }
-        });
-      } catch (walletTxError) {
-        console.error("Error querying walletTransactions:", walletTxError.message);
+        }
+
+        q = q.limit(fetchSize);
+
+        const snapshot = await q.get();
+        hasMore = snapshot.docs.length > limit;
+        docs = hasMore ? snapshot.docs.slice(0, limit) : snapshot.docs;
+      } catch (queryErr) {
+        if (!isFirestoreIndexMissingError(queryErr)) {
+          throw queryErr;
+        }
+        console.warn(
+            "admin/transactions: Firestore index missing or building;",
+            "using single-field query + in-memory sort (deploy firestore:indexes).",
+            queryErr.message,
+        );
+        const MAX_SCAN = 2000;
+        const snap = await ordersCol
+            .where("orderType", "==", "direct_topup")
+            .limit(MAX_SCAN)
+            .get();
+
+        let rows = snap.docs.map((doc) => ({
+          doc,
+          ms: orderDocCreatedMs(doc.data()),
+        }));
+
+        if (userIdFilter && typeof userIdFilter === "string") {
+          const uid = userIdFilter.trim();
+          rows = rows.filter((r) => (r.doc.data().userId || "") === uid);
+        }
+
+        rows.sort((a, b) => b.ms - a.ms);
+
+        let startIdx = -1;
+        if (startAfter && typeof startAfter === "string") {
+          startIdx = rows.findIndex((r) => r.doc.id === startAfter.trim());
+        }
+        const from = startIdx >= 0 ? startIdx + 1 : 0;
+        const windowRows = rows.slice(from, from + fetchSize);
+        hasMore = windowRows.length > limit;
+        docs = (hasMore ? windowRows.slice(0, limit) : windowRows).map(
+            (r) => r.doc,
+        );
       }
 
-      // Apply date filters if provided
-      let filteredTransactions = allTransactions;
+      let orders = docs.map((doc) => {
+        const d = doc.data();
+        const created = d.createdAt?.toDate?.()?.toISOString?.() || null;
+        return {
+          id: doc.id,
+          userId: d.userId || null,
+          orderType: d.orderType,
+          status: d.status || "unknown",
+          amount: d.amount,
+          currency: d.currency || "USD",
+          referenceId: d.referenceId || null,
+          phoneNumber: d.phoneNumber || null,
+          metadata: d.metadata || {},
+          createdAt: created,
+          raw: d,
+        };
+      });
+
+      if (statusFilter && typeof statusFilter === "string") {
+        orders = orders.filter((o) => o.status === statusFilter);
+      }
+      if (currencyFilter && typeof currencyFilter === "string") {
+        const c = String(currencyFilter).toUpperCase();
+        orders = orders.filter(
+            (o) => String(o.currency || "").toUpperCase() === c,
+        );
+      }
       if (startDate) {
         const start = new Date(startDate);
-        filteredTransactions = filteredTransactions.filter((tx) => {
-          const txDate = new Date(tx.timestamp || tx.createdAt || 0);
-          return txDate >= start;
+        orders = orders.filter((o) => {
+          if (!o.createdAt) return false;
+          return new Date(o.createdAt) >= start;
         });
       }
       if (endDate) {
         const end = new Date(endDate);
-        end.setHours(23, 59, 59, 999); // End of day
-        filteredTransactions = filteredTransactions.filter((tx) => {
-          const txDate = new Date(tx.timestamp || tx.createdAt || 0);
-          return txDate <= end;
+        end.setHours(23, 59, 59, 999);
+        orders = orders.filter((o) => {
+          if (!o.createdAt) return false;
+          return new Date(o.createdAt) <= end;
         });
       }
 
-      // Sort by timestamp descending
-      filteredTransactions.sort((a, b) => {
-        const timeA = new Date(a.timestamp || a.createdAt || 0).getTime();
-        const timeB = new Date(b.timestamp || b.createdAt || 0).getTime();
-        return timeB - timeA;
-      });
-
-      // Apply limit after filtering
-      let limitedTransactions = filteredTransactions.slice(0, limit);
-
-      // Fetch user/client information for each transaction
       const enrichedTransactions = await Promise.all(
-          limitedTransactions.map(async (tx) => {
+          orders.map(async (orderRow) => {
             try {
               let userData = null;
-              if (tx.userId) {
+              const uid = orderRow.userId;
+              if (uid) {
                 const userDoc = await firestore
                     .collection(config.collections.users)
-                    .doc(tx.userId)
+                    .doc(uid)
                     .get();
 
                 if (userDoc.exists) {
                   const user = userDoc.data();
                   userData = {
                     id: userDoc.id,
-                    name: user.name || user.displayName || "Unknown User",
+                    name: resolveClientDisplayName(user, userDoc.id),
                     email: user.email || null,
                     phoneNumber: user.phoneNumber || user.phone || null,
                   };
                 } else {
-                  // Try customerWallets collection
                   const customerDoc = await firestore
                       .collection(config.collections.customerWallets)
-                      .doc(tx.userId)
+                      .doc(uid)
                       .get();
 
                   if (customerDoc.exists) {
                     const customer = customerDoc.data();
                     userData = {
                       id: customerDoc.id,
-                      name: customer.name || "Unknown Customer",
+                      name: resolveClientDisplayName(customer, customerDoc.id),
                       email: customer.email || null,
                       phoneNumber: customer.phone || customer.phoneNumber || null,
                     };
@@ -694,10 +771,11 @@ app.get("/admin/transactions", async (req, res) => {
                 }
               }
 
+              const fallbackClientId = orderRow.userId || "unknown";
               return {
-                id: tx.id,
-                date: tx.timestamp || tx.createdAt || null,
-                type: tx.type || "unknown",
+                id: orderRow.id,
+                date: orderRow.createdAt,
+                type: "direct_topup",
                 client: userData
                   ? {
                       id: userData.id,
@@ -705,42 +783,53 @@ app.get("/admin/transactions", async (req, res) => {
                       email: userData.email,
                       phoneNumber: userData.phoneNumber,
                     }
-                  : {id: tx.userId || "unknown", name: "Unknown User"},
-                amount: tx.amount || 0,
-                currency: tx.currency || "USD",
-                status: tx.status || "unknown",
-                reference: tx.id || tx.metadata?.paymentId || tx.metadata?.invoiceId || null,
-                previousBalance: tx.previousBalance || null,
-                newBalance: tx.newBalance || null,
-                metadata: tx.metadata || {},
-                // Include full transaction data for reference
-                _full: tx,
+                  : {
+                      id: fallbackClientId,
+                      name: displayNameFromUserId(orderRow.userId),
+                      email: null,
+                      phoneNumber: null,
+                    },
+                amount: orderRow.amount != null ? Number(orderRow.amount) : 0,
+                currency: orderRow.currency || "USD",
+                status: orderRow.status || "unknown",
+                reference:
+                  orderRow.referenceId ||
+                  orderRow.metadata.invoiceId ||
+                  orderRow.id,
+                previousBalance: null,
+                newBalance: null,
+                metadata: {
+                  ...orderRow.metadata,
+                  orderType: "direct_topup",
+                  referenceId: orderRow.referenceId,
+                },
+                _full: orderRow.raw,
               };
-            } catch (error) {
-              console.error(`Error enriching transaction ${tx.id}:`, error.message);
-              // Return basic transaction data if enrichment fails
+            } catch (err) {
+              console.error(`Error enriching order ${orderRow.id}:`, err.message);
               return {
-                id: tx.id,
-                date: tx.timestamp || tx.createdAt || null,
-                type: tx.type || "unknown",
-                client: {id: tx.userId || "unknown", name: "Unknown User"},
-                amount: tx.amount || 0,
-                currency: tx.currency || "USD",
-                status: tx.status || "unknown",
-                reference: tx.id || null,
-                previousBalance: tx.previousBalance || null,
-                newBalance: tx.newBalance || null,
-                metadata: tx.metadata || {},
-                _full: tx,
+                id: orderRow.id,
+                date: orderRow.createdAt,
+                type: "direct_topup",
+                client: {
+                  id: orderRow.userId || "unknown",
+                  name: displayNameFromUserId(orderRow.userId),
+                },
+                amount: orderRow.amount != null ? Number(orderRow.amount) : 0,
+                currency: orderRow.currency || "USD",
+                status: orderRow.status || "unknown",
+                reference: orderRow.referenceId || orderRow.id,
+                metadata: orderRow.metadata || {},
+                _full: orderRow.raw,
               };
             }
           }),
       );
 
-      // Get last transaction ID for pagination
-      const lastTransactionId = enrichedTransactions.length > 0
-        ? enrichedTransactions[enrichedTransactions.length - 1].id
-        : null;
+      const lastId =
+        enrichedTransactions.length > 0
+          ? enrichedTransactions[enrichedTransactions.length - 1].id
+          : null;
 
       res.status(200).json({
         success: true,
@@ -749,14 +838,14 @@ app.get("/admin/transactions", async (req, res) => {
           pagination: {
             limit,
             count: enrichedTransactions.length,
-            total: filteredTransactions.length,
-            hasMore: filteredTransactions.length > limit,
-            startAfter: lastTransactionId,
+            total: enrichedTransactions.length,
+            hasMore,
+            startAfter: lastId,
           },
         },
       });
     } catch (error) {
-      console.error("Error fetching all transactions:", error);
+      console.error("Error fetching direct top-up orders:", error);
       res.status(500).json({
         success: false,
         error: "Internal server error",

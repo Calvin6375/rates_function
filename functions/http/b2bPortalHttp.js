@@ -223,18 +223,76 @@ app.get("/platform/consumer-users/:userId", loadFirebaseUser, requirePlatformAdm
   }
 });
 
-// --- Partner portal (org admin) ---
-
-app.get("/portal/me", loadFirebaseUser, attachPartnerContext, async (req, res) => {
+/**
+ * Session/bootstrap for platform super-admins (Firebase claim admin: true).
+ * Unlike GET /portal/me, does not require B2B partnerId / partnerRole claims.
+ */
+app.get("/platform/me", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
   try {
-    const partner = await partnerService.getPartner(req.partnerId);
     res.status(200).json({
       success: true,
       data: {
         userId: req.userId,
-        partnerId: req.partnerId,
-        partnerRole: req.partnerRole,
-        partner: partner || { id: req.partnerId },
+        admin: true,
+        email: (req.decodedToken && req.decodedToken.email) || null,
+      },
+    });
+  } catch (err) {
+    console.error("b2bPortal GET /platform/me:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// --- Partner portal (org admin) ---
+
+/**
+ * GET /portal/me — partner session, or platform admin without B2B claims.
+ * Master admin dashboards often call this path; allow admin + no partnerId (403 was wrong).
+ */
+app.get("/portal/me", loadFirebaseUser, async (req, res) => {
+  try {
+    const dt = req.decodedToken || {};
+    const isPlatformAdmin = dt.admin === true;
+    const pid = dt.partnerId;
+    const role = dt.partnerRole;
+
+    const hasPartner =
+      typeof pid === "string" &&
+      pid.length > 0 &&
+      typeof role === "string" &&
+      ALL_PARTNER_ROLES.includes(role);
+
+    if (isPlatformAdmin && !hasPartner) {
+      res.status(200).json({
+        success: true,
+        data: {
+          userId: req.userId,
+          admin: true,
+          partnerId: null,
+          partnerRole: null,
+          partner: null,
+        },
+      });
+      return;
+    }
+
+    if (!hasPartner) {
+      res.status(403).json({
+        success: false,
+        error: "Not a B2B partner user (missing partnerId claim)",
+      });
+      return;
+    }
+
+    const partner = await partnerService.getPartner(pid);
+    res.status(200).json({
+      success: true,
+      data: {
+        userId: req.userId,
+        admin: isPlatformAdmin,
+        partnerId: pid,
+        partnerRole: role,
+        partner: partner || { id: pid },
       },
     });
   } catch (err) {

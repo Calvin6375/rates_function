@@ -8,7 +8,11 @@ const crypto = require("crypto");
 const config = require("../config");
 const {updateBalanceWithTransaction} = require("../utils/firestore");
 const {executeWithIdempotency} = require("./idempotency");
-const {createNotification, NOTIFICATION_TYPES} = require("../utils/notifications");
+const {
+  createNotification,
+  NOTIFICATION_TYPES,
+  notifyDirectTopupAdmins,
+} = require("../utils/notifications");
 
 const firestore = admin.firestore();
 
@@ -501,6 +505,118 @@ async function createPaymentOrder(userId, paymentData) {
 }
 
 /**
+ * Create a direct (manual / bank) top-up request from the customer app.
+ * Unlike createPaymentOrder: no IntaSend checkout, no invoiceMappings (webhooks do not apply).
+ * Unlike admin POST /customer-wallets/:id/credit: does not credit the wallet; creates a pending order only.
+ *
+ * @param {string} userId - Authenticated user
+ * @param {Object} params
+ * @param {number} params.amount
+ * @param {string} params.currency
+ * @param {string} [params.phoneNumber]
+ * @param {string} [params.note] - Optional message for operations / reference
+ * @param {Object} [params.metadata]
+ * @returns {Promise<Object>}
+ */
+async function createDirectTopupOrder(userId, params) {
+  const {amount, currency, phoneNumber, note, metadata = {}} = params;
+
+  let userPhoneNumber = phoneNumber;
+  if (!userPhoneNumber) {
+    try {
+      const userDoc = await firestore.collection(config.collections.users).doc(userId).get();
+      if (userDoc.exists) {
+        const userData = userDoc.data();
+        userPhoneNumber = userData.phoneNumber || userData.phone || null;
+      }
+    } catch (err) {
+      console.warn("⚠️ Could not fetch user phone number:", err.message);
+    }
+  }
+
+  const orderRef = firestore.collection(config.collections.orders).doc();
+  const orderId = orderRef.id;
+  const referenceId = `DIR-${orderId}`;
+
+  const orderData = {
+    userId,
+    orderType: "direct_topup",
+    status: "pending",
+    amount,
+    currency,
+    // Align with IntaSend topup orders so admin UIs do not assume missing fields
+    invoiceId: null,
+    checkoutUrl: null,
+    referenceId,
+    phoneNumber: userPhoneNumber,
+    metadata: {
+      ...metadata,
+      source: "customer_direct_topup",
+      referenceId,
+      phoneNumber: userPhoneNumber,
+      note: note || null,
+      createdAt: new Date().toISOString(),
+    },
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+
+  await orderRef.set(orderData);
+  console.log(`✅ Created direct_topup order: ${orderId} (${referenceId})`);
+
+  try {
+    await createNotification({
+      userId,
+      type: NOTIFICATION_TYPES.DIRECT_TOPUP_REQUESTED,
+      title: "Direct top-up requested",
+      message:
+        `We received your request to add ${currency} ${amount}. ` +
+        `Reference: ${referenceId}. ` +
+        "Complete your transfer using the instructions in the app.",
+      metadata: {
+        orderId,
+        referenceId,
+        amount,
+        currency,
+        orderType: "direct_topup",
+      },
+    });
+  } catch (notifError) {
+    console.warn(
+        "⚠️ Failed to send direct top-up notification (non-critical):",
+        notifError.message,
+    );
+  }
+
+  try {
+    await notifyDirectTopupAdmins({
+      customerUserId: userId,
+      customerPhone: userPhoneNumber,
+      orderId,
+      referenceId,
+      amount,
+      currency,
+    });
+  } catch (adminNotifErr) {
+    console.warn(
+        "⚠️ notifyDirectTopupAdmins (non-critical):",
+        adminNotifErr.message,
+    );
+  }
+
+  return {
+    success: true,
+    orderId,
+    referenceId,
+    amount,
+    currency,
+    status: "pending",
+    orderType: "direct_topup",
+    createdAt: new Date().toISOString(),
+  };
+}
+
+/**
  * Mark payment link as opened (for client callable when user opens IntaSend checkout)
  * @param {string} userId - User ID
  * @param {string} invoiceId - Invoice/checkout ID
@@ -710,6 +826,7 @@ module.exports = {
   processPaymentWebhook,
   processTransFiWebhook,
   createPaymentOrder,
+  createDirectTopupOrder,
   markPaymentLinkOpened,
 };
 

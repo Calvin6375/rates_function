@@ -30,10 +30,11 @@ exports.getBinanceRates = ratesHttp.getBinanceRates;
 exports.fetchArbitrageRates = arbitrageHttp.fetchArbitrageRates;
 exports.getArbitrageRates = arbitrageHttp.getArbitrageRates;
 
-// Export payment functions (callables stay in paymentsHttp; webhooks in webhookApi)
+// Export payment functions (callables: paymentsHttp; webhooks: webhookApi)
 exports.handleTopUpWebhook = webhookApi.handleTopUpWebhook;
 exports.handleTransFiTopUpWebhook = webhookApi.handleTransFiTopUpWebhook;
 exports.createPayment = paymentsHttp.createPayment;
+exports.createDirectTopup = paymentsHttp.createDirectTopup;
 exports.handlePaymentWebhook = paymentsHttp.handlePaymentWebhook;
 exports.createSwapOrder = paymentsHttp.createSwapOrder;
 exports.createSendMoneyOrder = paymentsHttp.createSendMoneyOrder;

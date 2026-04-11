@@ -15,6 +15,35 @@ const { sanitizeRatesObject, maybeFixResolvedPair } = require("../utils/customer
 const db = admin.firestore();
 const app = express();
 
+/**
+ * Only return pairs with valid positive buy/sell (avoids admin UI .toLocaleString on undefined).
+ * @param {Object} rates
+ * @returns {Object} Map of pair string to buyRate/sellRate numbers
+ */
+function sanitizeCustomerRatesObject(rates) {
+  const out = {};
+  if (!rates || typeof rates !== "object") {
+    return out;
+  }
+  for (const [pair, row] of Object.entries(rates)) {
+    if (!row || typeof row !== "object") {
+      continue;
+    }
+    const buyRate = Number(row.buyRate);
+    const sellRate = Number(row.sellRate);
+    if (
+      !Number.isFinite(buyRate) ||
+      !Number.isFinite(sellRate) ||
+      buyRate <= 0 ||
+      sellRate <= 0
+    ) {
+      continue;
+    }
+    out[pair] = { buyRate, sellRate };
+  }
+  return out;
+}
+
 // Middleware
 app.use(express.json());
 
@@ -75,7 +104,8 @@ async function requireAdmin(req, res, next) {
     let decodedToken;
     try {
       decodedToken = await admin.auth().verifyIdToken(token);
-    } catch {
+    } catch (verifyErr) {
+      void verifyErr;
       res.status(401).json({
         success: false,
         error: "Unauthorized",
@@ -704,11 +734,15 @@ app.get("/config/fees", async (req, res) => {
       console.error("Error fetching arbitrage fee:", err);
     }
 
+    const safeRates = sanitizeCustomerRatesObject(configData.rates || {});
+    const feeNum = Number(arbitrageFee);
+    const safeArbitrage = Number.isFinite(feeNum) && feeNum > 0 ? feeNum : 1.5;
+
     res.status(200).json({
       success: true,
       data: {
-        rates: configData.rates || {}, // Object with currency pairs as keys
-        arbitrageFee: arbitrageFee,
+        rates: safeRates,
+        arbitrageFee: safeArbitrage,
         updatedAt: configData.updatedAt?.toDate?.()?.toISOString() || null,
         updatedBy: configData.updatedBy || null,
       },

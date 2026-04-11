@@ -43,6 +43,11 @@ service cloud.firestore {
       // Users cannot delete their own documents, only admins
       allow delete: if isAdmin();
     }
+
+    // Subcollections under users (e.g. FCM/device docs, settings) — parent doc rules do not apply
+    match /users/{userId}/{document=**} {
+      allow read, write: if isOwner(userId) || isAdmin();
+    }
     
     // Transactions collection - users can read their own transactions
     match /transactions/{transactionId} {

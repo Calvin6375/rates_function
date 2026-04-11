@@ -1,4 +1,5 @@
 const admin = require("../admin");
+const config = require("../config");
 const firestore = admin.firestore();
 const messaging = admin.messaging();
 
@@ -7,6 +8,10 @@ const messaging = admin.messaging();
  */
 const NOTIFICATION_TYPES = {
   PAYMENT_COMPLETED: "payment_completed",
+  /** Customer requested a bank/manual direct top-up (not IntaSend checkout, not admin credit) */
+  DIRECT_TOPUP_REQUESTED: "direct_topup_requested",
+  /** Admin dashboard + optional FCM to configured admin UIDs */
+  DIRECT_TOPUP_ADMIN_ALERT: "direct_topup_admin_alert",
   WALLET_CREDITED: "wallet_credited",
   WALLET_DEBITED: "wallet_debited",
   TRANSACTION_COMPLETED: "transaction_completed",
@@ -170,6 +175,99 @@ async function sendPushNotification(userId, payload) {
 }
 
 /**
+ * Firestore config doc: config/directTopup — { adminUserIds: string[] }
+ * Pushes to each UID with an fcmToken; also writes one "system" notification for the admin web dashboard.
+ * @param {Object} params
+ * @param {string} params.customerUserId
+ * @param {string|null} [params.customerPhone]
+ * @param {string} params.orderId
+ * @param {string} params.referenceId
+ * @param {number} params.amount
+ * @param {string} params.currency
+ * @returns {Promise<void>}
+ */
+async function notifyDirectTopupAdmins(params) {
+  const {
+    customerUserId,
+    customerPhone = null,
+    orderId,
+    referenceId,
+    amount,
+    currency,
+  } = params;
+
+  const title = "New direct top-up request";
+  const phonePart = customerPhone ? ` · ${customerPhone}` : "";
+  const message =
+    `${currency} ${amount} · ${referenceId} · user ${customerUserId}` +
+    phonePart;
+
+  const meta = {
+    orderId,
+    referenceId,
+    amount,
+    currency,
+    customerUserId,
+    customerPhone: customerPhone || "",
+    orderType: "direct_topup",
+  };
+
+  try {
+    await createNotification({
+      userId: null,
+      type: NOTIFICATION_TYPES.DIRECT_TOPUP_ADMIN_ALERT,
+      title,
+      message,
+      metadata: meta,
+      sendPush: false,
+    });
+  } catch (err) {
+    console.warn(
+        "⚠️ Failed to save admin direct-top-up notification:",
+        err.message,
+    );
+  }
+
+  let adminUserIds = [];
+  try {
+    const cfgSnap = await firestore
+        .collection(config.collections.config)
+        .doc("directTopup")
+        .get();
+    if (cfgSnap.exists) {
+      const raw = cfgSnap.data().adminUserIds;
+      adminUserIds = Array.isArray(raw) ? raw : [];
+    }
+  } catch (err) {
+    console.warn(
+        "⚠️ Could not read config/directTopup for admin push:",
+        err.message,
+    );
+    return;
+  }
+
+  for (const adminId of adminUserIds) {
+    if (typeof adminId !== "string" || !adminId.trim()) {
+      continue;
+    }
+    try {
+      await sendPushNotification(adminId.trim(), {
+        notificationId: "",
+        type: NOTIFICATION_TYPES.DIRECT_TOPUP_ADMIN_ALERT,
+        title,
+        message,
+        data: meta,
+      });
+    } catch (pushErr) {
+      console.warn(
+          `⚠️ Admin push failed for ${adminId}:`,
+          pushErr.message,
+      );
+    }
+  }
+}
+
+/**
  * Mark notification as read
  * @param {string} notificationId - Notification ID
  * @returns {Promise<void>}
@@ -241,6 +339,7 @@ async function getUserNotifications(userId, limit = 50) {
 module.exports = {
   createNotification,
   sendPushNotification,
+  notifyDirectTopupAdmins,
   markNotificationAsRead,
   getUserNotifications,
   NOTIFICATION_TYPES,

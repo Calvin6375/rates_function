@@ -250,7 +250,7 @@ List all B2B partners (API keys **masked** in list items).
 
 | Parameter | Default | Max |
 |-----------|---------|-----|
-| `limit` | 50 | 100 |
+| `limit`   | 50      | 100 |
 
 **Response** `200`
 

@@ -108,6 +108,70 @@ exports.createPayment = onCall(
 );
 
 /**
+ * Callable: Create direct (manual / bank) top-up order from the customer app.
+ * Does not call IntaSend or credit the wallet (pending ops / admin settlement).
+ * Admin wallet credit stays on POST /customer-wallets/:id/credit.
+ */
+exports.createDirectTopup = onCall(
+    {
+      region: config.region,
+      cpu: config.resources.cpu,
+      memory: config.resources.memory,
+    },
+    async (request) => {
+      const auth = request.auth;
+      if (!auth) {
+        throw new HttpsError(
+            "unauthenticated",
+            "User must be authenticated to create a direct top-up",
+        );
+      }
+
+      const userId = auth.uid;
+      const data = request.data || {};
+      const amount = Number(data.amount);
+      const currency = String(data.currency || "KES").toUpperCase();
+      const phoneNumber = data.phoneNumber || null;
+      const note = data.note != null ? String(data.note) : null;
+      let metadata = {};
+      if (data.metadata && typeof data.metadata === "object" &&
+          !Array.isArray(data.metadata)) {
+        metadata = data.metadata;
+      }
+
+      if (!amount || amount <= 0) {
+        throw new HttpsError(
+            "invalid-argument",
+            "Amount must be a positive number",
+        );
+      }
+      if (!currency) {
+        throw new HttpsError("invalid-argument", "Currency is required");
+      }
+
+      try {
+        return await paymentsLib.createDirectTopupOrder(userId, {
+          amount,
+          currency,
+          phoneNumber,
+          note,
+          metadata,
+        });
+      } catch (error) {
+        console.error("❌ Error creating direct top-up order:", {
+          userId,
+          error: error.message,
+          stack: error.stack,
+        });
+        throw new HttpsError(
+            "internal",
+            `Failed to create direct top-up: ${error.message}`,
+        );
+      }
+    },
+);
+
+/**
  * Callable: Mark payment link as opened (client calls when user opens IntaSend checkout)
  * Accepts invoiceId, intasendCheckoutId, or paymentId. Idempotent; returns { success: true }.
  */
