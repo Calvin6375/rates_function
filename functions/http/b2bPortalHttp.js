@@ -181,6 +181,37 @@ app.get("/platform/partners/:partnerId/members", loadFirebaseUser, requirePlatfo
   }
 });
 
+/**
+ * Platform admin: add a member to a partner org (same rules as POST /portal/members).
+ * Body: { email, password?, role, displayName? } — password required only when creating a new Auth user.
+ */
+app.post("/platform/partners/:partnerId/members", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+  try {
+    const partnerId = req.params.partnerId;
+    const partner = await partnerService.getPartner(partnerId);
+    if (!partner) {
+      res.status(404).json({ success: false, error: "Partner not found" });
+      return;
+    }
+    const { email, password, role, displayName } = req.body || {};
+    const out = await b2bMemberService.addMember(
+        partnerId,
+        { email, password, role, displayName },
+        req.userId,
+    );
+    res.status(201).json({
+      success: true,
+      data: out,
+      message: "User should sign in and refresh token to receive partner claims.",
+    });
+  } catch (err) {
+    console.error("b2bPortal POST /platform/partners/:id/members:", err.message);
+    const status =
+      err.message && err.message.includes("not found") ? 404 : 400;
+    res.status(status).json({ success: false, error: err.message });
+  }
+});
+
 /** Unified dashboard: counts for consumer app users vs B2B partners */
 app.get("/platform/overview", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
   try {
@@ -239,6 +270,24 @@ app.get("/platform/me", loadFirebaseUser, requirePlatformAdmin, async (req, res)
     });
   } catch (err) {
     console.error("b2bPortal GET /platform/me:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * Idempotent: create or patch Firestore `users/{uid}` using Admin SDK (matches userBootstrap shape).
+ * Call from the dashboard immediately after Firebase sign-in with the ID token, before loading profile
+ * by email — fixes missing docs for legacy B2B users and email case mismatches on queries.
+ */
+app.post("/portal/ensure-dashboard-profile", loadFirebaseUser, async (req, res) => {
+  try {
+    await b2bMemberService.ensureUserDashboardProfileFromAuthUid(req.userId);
+    res.status(200).json({
+      success: true,
+      message: "Dashboard profile ensured",
+    });
+  } catch (err) {
+    console.error("b2bPortal POST /portal/ensure-dashboard-profile:", err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });

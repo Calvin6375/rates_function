@@ -99,6 +99,58 @@ function resolveClientDisplayName(rec, uid) {
   return displayNameFromUserId(uid);
 }
 
+/**
+ * Pending direct top-up queue rows (no ledger entry until settled).
+ * @param {string} userId
+ * @param {number} limit
+ * @returns {Promise<Array>}
+ */
+async function fetchUserDirectTopupOrdersForTransactionFeed(userId, limit) {
+  const col = firestore.collection(config.collections.orders);
+  const cap = Math.min(limit || 50, 50);
+  const mapDoc = (doc) => {
+    const d = doc.data();
+    return {
+      id: `order_topup_${doc.id}`,
+      type: "direct_topup",
+      status: d.status || "pending",
+      amount: Number(d.amount) || 0,
+      currency: d.currency || "USD",
+      timestamp: d.createdAt?.toDate?.()?.toISOString() || null,
+      referenceId: d.referenceId || null,
+      orderId: doc.id,
+      source: "orders",
+      userId,
+    };
+  };
+
+  try {
+    const snap = await col
+        .where("userId", "==", userId)
+        .where("orderType", "==", "direct_topup")
+        .orderBy("createdAt", "desc")
+        .limit(cap)
+        .get();
+    return snap.docs.map(mapDoc);
+  } catch (err) {
+    if (!isFirestoreIndexMissingError(err)) {
+      throw err;
+    }
+    const snap = await col
+        .where("userId", "==", userId)
+        .where("orderType", "==", "direct_topup")
+        .limit(200)
+        .get();
+    const rows = snap.docs.map((doc) => ({
+      doc,
+      ms: orderDocCreatedMs(doc.data()),
+      row: mapDoc(doc),
+    }));
+    rows.sort((a, b) => b.ms - a.ms);
+    return rows.slice(0, cap).map((r) => r.row);
+  }
+}
+
 // Middleware
 app.use(express.json());
 
@@ -177,22 +229,16 @@ async function getTransactionsFromFirestore(userId, options = {}) {
     status = null,
   } = options;
 
+  const fetchCap = Math.min(Math.max(Number(limit) * 2, 60), 150);
+
   try {
-    // Query user transactions subcollection
+    // Query user transactions subcollection (filter type/status in memory so we can merge orders feed)
     let query = firestore
         .collection(config.collections.transactions)
         .doc(userId)
         .collection("transactions")
         .orderBy("timestamp", "desc")
-        .limit(limit);
-
-    // Apply filters
-    if (type) {
-      query = query.where("type", "==", type);
-    }
-    if (status) {
-      query = query.where("status", "==", status);
-    }
+        .limit(fetchCap);
 
     // Apply pagination cursor
     if (startAfter) {
@@ -216,15 +262,11 @@ async function getTransactionsFromFirestore(userId, options = {}) {
     }
 
     // Also check walletTransactions collection for this user
-    let walletTxQuery = firestore
+    const walletTxQuery = firestore
         .collection("walletTransactions")
         .where("userId", "==", userId)
         .orderBy("createdAt", "desc")
-        .limit(limit);
-
-    if (type) {
-      walletTxQuery = walletTxQuery.where("type", "==", type);
-    }
+        .limit(fetchCap);
 
     const walletTxSnapshot = await walletTxQuery.get();
 
@@ -258,14 +300,40 @@ async function getTransactionsFromFirestore(userId, options = {}) {
       }
     });
 
-    // Sort by timestamp descending and apply limit
+    // Pending direct top-ups (orders only — no subcollection row yet)
+    try {
+      const topupFeed = await fetchUserDirectTopupOrdersForTransactionFeed(
+          userId,
+          limit,
+      );
+      transactions.push(...topupFeed);
+    } catch (topupErr) {
+      console.warn(
+          "⚠️ Could not load direct top-up orders for feed:",
+          topupErr.message,
+      );
+    }
+
+    // Sort by timestamp descending
     transactions.sort((a, b) => {
       const timeA = new Date(a.timestamp || a.createdAt || 0).getTime();
       const timeB = new Date(b.timestamp || b.createdAt || 0).getTime();
       return timeB - timeA;
     });
 
-    return transactions.slice(0, limit);
+    let filtered = transactions;
+    if (type) {
+      filtered = filtered.filter(
+          (tx) => String(tx.type || "") === String(type),
+      );
+    }
+    if (status) {
+      filtered = filtered.filter(
+          (tx) => String(tx.status || "") === String(status),
+      );
+    }
+
+    return filtered.slice(0, limit);
   } catch (error) {
     console.error("Error querying Firestore transactions:", error);
     throw error;
@@ -573,9 +641,9 @@ app.get("/transactions/:transactionId", async (req, res) => {
 });
 
 /**
- * GET /admin/transactions
- * Lists **direct top-up orders only** (`orders` where `orderType === "direct_topup"`).
- * Does not include IntaSend topups, swaps, credits, or wallet ledger rows.
+ * GET /admin/transactions — `orderType === "direct_topup"` (manual deposit queue).
+ * GET /admin/payouts — `orderType === "direct_payout"` (manual payout queue).
+ * Same query params and auth for both.
  *
  * Query parameters:
  * - limit: number (default: 50, max: 200)
@@ -588,7 +656,7 @@ app.get("/transactions/:transactionId", async (req, res) => {
  * Headers:
  * - Authorization: Bearer <Firebase Auth token> (Authentication required)
  */
-app.get("/admin/transactions", async (req, res) => {
+async function handleAdminDirectOrdersList(req, res, { orderType, listKey }) {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -633,7 +701,7 @@ app.get("/admin/transactions", async (req, res) => {
 
       try {
         let q = ordersCol
-            .where("orderType", "==", "direct_topup")
+            .where("orderType", "==", orderType)
             .orderBy("createdAt", "desc");
 
         if (userIdFilter && typeof userIdFilter === "string") {
@@ -663,7 +731,7 @@ app.get("/admin/transactions", async (req, res) => {
         );
         const MAX_SCAN = 2000;
         const snap = await ordersCol
-            .where("orderType", "==", "direct_topup")
+            .where("orderType", "==", orderType)
             .limit(MAX_SCAN)
             .get();
 
@@ -775,7 +843,7 @@ app.get("/admin/transactions", async (req, res) => {
               return {
                 id: orderRow.id,
                 date: orderRow.createdAt,
-                type: "direct_topup",
+                type: orderType,
                 client: userData
                   ? {
                       id: userData.id,
@@ -800,7 +868,7 @@ app.get("/admin/transactions", async (req, res) => {
                 newBalance: null,
                 metadata: {
                   ...orderRow.metadata,
-                  orderType: "direct_topup",
+                  orderType,
                   referenceId: orderRow.referenceId,
                 },
                 _full: orderRow.raw,
@@ -810,7 +878,7 @@ app.get("/admin/transactions", async (req, res) => {
               return {
                 id: orderRow.id,
                 date: orderRow.createdAt,
-                type: "direct_topup",
+                type: orderType,
                 client: {
                   id: orderRow.userId || "unknown",
                   name: displayNameFromUserId(orderRow.userId),
@@ -831,21 +899,23 @@ app.get("/admin/transactions", async (req, res) => {
           ? enrichedTransactions[enrichedTransactions.length - 1].id
           : null;
 
+      const payload = {
+        pagination: {
+          limit,
+          count: enrichedTransactions.length,
+          total: enrichedTransactions.length,
+          hasMore,
+          startAfter: lastId,
+        },
+      };
+      payload[listKey] = enrichedTransactions;
+
       res.status(200).json({
         success: true,
-        data: {
-          transactions: enrichedTransactions,
-          pagination: {
-            limit,
-            count: enrichedTransactions.length,
-            total: enrichedTransactions.length,
-            hasMore,
-            startAfter: lastId,
-          },
-        },
+        data: payload,
       });
     } catch (error) {
-      console.error("Error fetching direct top-up orders:", error);
+      console.error("Error fetching direct orders (" + orderType + "):", error);
       res.status(500).json({
         success: false,
         error: "Internal server error",
@@ -853,14 +923,28 @@ app.get("/admin/transactions", async (req, res) => {
       });
     }
   } catch (error) {
-    console.error("Error in /admin/transactions endpoint:", error);
+    console.error("Error in handleAdminDirectOrdersList:", error);
     res.status(500).json({
       success: false,
       error: "Internal server error",
       message: error.message,
     });
   }
-});
+}
+
+app.get("/admin/transactions", (req, res) =>
+  handleAdminDirectOrdersList(req, res, {
+    orderType: "direct_topup",
+    listKey: "transactions",
+  }),
+);
+
+app.get("/admin/payouts", (req, res) =>
+  handleAdminDirectOrdersList(req, res, {
+    orderType: "direct_payout",
+    listKey: "payouts",
+  }),
+);
 
 // Export as Firebase Function
 exports.transactionsApi = onRequest(

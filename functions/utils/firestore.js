@@ -34,15 +34,31 @@ async function updateBalanceWithTransaction(
       const currentBalance = Number(userData.balance || 0);
       const currentFiatBalance = Number(userData.fiatBalance || 0);
       const currentCryptoBalance = Number(userData.cryptoBalance || 0);
+      const currency = metadata.currency || "USD";
+      const currentEtbPre = Number(userData.etbBalance || userData.ETB || 0);
+
+      if (
+        currency === "ETB" &&
+        currentEtbPre + amountDelta < 0 &&
+        !metadata.allowNegative
+      ) {
+        throw new Error(
+            `Insufficient ETB balance. Current: ${currentEtbPre}, Attempted: ${amountDelta}`,
+        );
+      }
+
       const newBalance = currentBalance + amountDelta;
 
-      // Prevent negative balance (unless explicitly allowed in metadata)
-      if (newBalance < 0 && !metadata.allowNegative) {
+      // Prevent negative master balance (ETB checked against etbBalance above)
+      if (
+        currency !== "ETB" &&
+        newBalance < 0 &&
+        !metadata.allowNegative
+      ) {
         throw new Error(`Insufficient balance. Current: ${currentBalance}, Attempted: ${amountDelta}`);
       }
 
       // Determine which balance field to update based on transaction type and currency
-      const currency = metadata.currency || "USD";
       const isCryptoTransaction = currency === "USDT" || 
                                    currency === "BTC" || 
                                    currency === "ETH" ||
@@ -59,11 +75,13 @@ async function updateBalanceWithTransaction(
       // Get current currency-specific balances
       const currentUsdBalance = Number(userData.usdBalance || userData.USD || currentFiatBalance || 0);
       const currentKesBalance = Number(userData.kesBalance || userData.KES || 0);
+      const currentEtbBalance = Number(userData.etbBalance || userData.ETB || 0);
       const currentUsdtBalance = Number(userData.usdtBalance || userData.USDT || 0);
 
       // Calculate new balances for all currencies
       let newUsdBalance = currentUsdBalance;
       let newKesBalance = currentKesBalance;
+      let newEtbBalance = currentEtbBalance;
       let newUsdtBalance = currentUsdtBalance;
 
       if (isCryptoTransaction) {
@@ -90,6 +108,10 @@ async function updateBalanceWithTransaction(
           updateData.kesBalance = newKesBalance;
           updateData.KES = newKesBalance;
           // DO NOT update fiatBalance for KES - it's a shared field that should only reflect USD
+        } else if (currency === "ETB") {
+          newEtbBalance = currentEtbBalance + amountDelta;
+          updateData.etbBalance = newEtbBalance;
+          updateData.ETB = newEtbBalance;
         }
       }
 
@@ -98,6 +120,7 @@ async function updateBalanceWithTransaction(
       updateData.wallets = {
         USD: newUsdBalance,
         KES: newKesBalance,
+        ETB: newEtbBalance,
         USDT: newUsdtBalance,
       };
 
@@ -117,18 +140,24 @@ async function updateBalanceWithTransaction(
       console.error("⚠️ Failed to sync balance to Realtime DB (balance updated successfully):", syncError.message);
     }
 
-    // Log transaction after successful update
+    // Log transaction after successful update (status override e.g. pending settlement)
+    const logStatus = metadata.transactionStatus || "completed";
+    const metaForLog = {...metadata};
+    if (metaForLog.transactionStatus !== undefined) {
+      delete metaForLog.transactionStatus;
+    }
+
     let transactionId;
     try {
       transactionId = await logTransaction(
           userId,
           transactionType,
           Math.abs(amountDelta),
-          "completed",
+          logStatus,
           result.previousBalance,
           result.newBalance,
           {
-            ...metadata,
+            ...metaForLog,
             amountDelta,
           },
       );
@@ -219,9 +248,11 @@ async function syncBalanceToRealtimeDatabase(userId, currency = "USD") {
     const usdBalance = Number(userData.usdBalance || userData.USD || 0);
     const kesBalance = Number(userData.kesBalance || userData.KES || 0);
     const tzsBalance = Number(userData.tzsBalance || userData.TZS || 0);
+    const etbBalance = Number(userData.etbBalance || userData.ETB || 0);
     await walletRef.child("fiat/USD").set(usdBalance);
     await walletRef.child("fiat/KES").set(kesBalance);
     await walletRef.child("fiat/TZS").set(tzsBalance);
+    await walletRef.child("fiat/ETB").set(etbBalance);
 
     // Sync crypto balances
     const usdtBalance = Number(userData.usdtBalance || userData.USDT || userData.cryptoBalance || 0);
@@ -231,6 +262,7 @@ async function syncBalanceToRealtimeDatabase(userId, currency = "USD") {
       USD: usdBalance,
       KES: kesBalance,
       TZS: tzsBalance,
+      ETB: etbBalance,
       USDT: usdtBalance,
     });
   } catch (error) {

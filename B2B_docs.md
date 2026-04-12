@@ -448,6 +448,14 @@ Lists all members under **`partners/{partnerId}/members`**.
 
 Org admin must have **`partnerRole: org_admin`** and matching **`partnerId`** in the ID token.
 
+#### `POST /portal/ensure-dashboard-profile`
+
+**Any authenticated user** (Bearer Firebase ID token). Idempotently creates or patches the Firestore **`users/{uid}`** document (same shape as `userBootstrap`). Use this **immediately after** email/password sign-in if the dashboard loads profile data from the `users` collection (including queries by email). Does not require B2B partner claims.
+
+**Response** `200` — `{ "success": true, "message": "Dashboard profile ensured" }`
+
+**Errors** `401` if token missing/invalid.
+
 #### `GET /portal/me`
 
 Any B2B user with valid **`partnerId`** + **`partnerRole`** (including institutional roles below).

@@ -172,6 +172,75 @@ exports.createDirectTopup = onCall(
 );
 
 /**
+ * Callable: Create direct (manual / bank) payout request from the customer app.
+ * Does not debit wallet or send money; ops settle offline.
+ */
+exports.createDirectPayout = onCall(
+    {
+      region: config.region,
+      cpu: config.resources.cpu,
+      memory: config.resources.memory,
+    },
+    async (request) => {
+      const auth = request.auth;
+      if (!auth) {
+        throw new HttpsError(
+            "unauthenticated",
+            "User must be authenticated to request a direct payout",
+        );
+      }
+
+      const userId = auth.uid;
+      const data = request.data || {};
+      const amount = Number(data.amount);
+      const currency = String(data.currency || "KES").toUpperCase();
+      const phoneNumber = data.phoneNumber || null;
+      const note = data.note != null ? String(data.note) : null;
+      const payoutMethod =
+        data.payoutMethod != null ? String(data.payoutMethod) : null;
+      let metadata = {};
+      if (data.metadata && typeof data.metadata === "object" &&
+          !Array.isArray(data.metadata)) {
+        metadata = data.metadata;
+      }
+
+      if (!amount || amount <= 0) {
+        throw new HttpsError(
+            "invalid-argument",
+            "Amount must be a positive number",
+        );
+      }
+      if (!currency) {
+        throw new HttpsError("invalid-argument", "Currency is required");
+      }
+
+      try {
+        return await paymentsLib.createDirectPayoutOrder(userId, {
+          amount,
+          currency,
+          phoneNumber,
+          note,
+          payoutMethod,
+          metadata,
+        });
+      } catch (error) {
+        console.error("❌ Error creating direct payout order:", {
+          userId,
+          error: error.message,
+          stack: error.stack,
+        });
+        if (error.message && error.message.includes("Insufficient")) {
+          throw new HttpsError("failed-precondition", error.message);
+        }
+        throw new HttpsError(
+            "internal",
+            `Failed to create direct payout: ${error.message}`,
+        );
+      }
+    },
+);
+
+/**
  * Callable: Mark payment link as opened (client calls when user opens IntaSend checkout)
  * Accepts invoiceId, intasendCheckoutId, or paymentId. Idempotent; returns { success: true }.
  */

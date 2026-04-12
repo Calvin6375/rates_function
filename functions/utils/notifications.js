@@ -12,6 +12,9 @@ const NOTIFICATION_TYPES = {
   DIRECT_TOPUP_REQUESTED: "direct_topup_requested",
   /** Admin dashboard + optional FCM to configured admin UIDs */
   DIRECT_TOPUP_ADMIN_ALERT: "direct_topup_admin_alert",
+  /** Customer requested a manual / bank payout (ops settles outside app) */
+  DIRECT_PAYOUT_REQUESTED: "direct_payout_requested",
+  DIRECT_PAYOUT_ADMIN_ALERT: "direct_payout_admin_alert",
   WALLET_CREDITED: "wallet_credited",
   WALLET_DEBITED: "wallet_debited",
   TRANSACTION_COMPLETED: "transaction_completed",
@@ -268,6 +271,108 @@ async function notifyDirectTopupAdmins(params) {
 }
 
 /**
+ * Same as direct-top-up admin alerts; reads config/directPayout then falls back to directTopup.
+ * @param {Object} params
+ * @param {string} params.customerUserId
+ * @param {string|null} [params.customerPhone]
+ * @param {string} params.orderId
+ * @param {string} params.referenceId
+ * @param {number} params.amount
+ * @param {string} params.currency
+ * @returns {Promise<void>}
+ */
+async function notifyDirectPayoutAdmins(params) {
+  const {
+    customerUserId,
+    customerPhone = null,
+    orderId,
+    referenceId,
+    amount,
+    currency,
+  } = params;
+
+  const title = "New direct payout request";
+  const phonePart = customerPhone ? ` · ${customerPhone}` : "";
+  const message =
+    `${currency} ${amount} · ${referenceId} · user ${customerUserId}` +
+    phonePart;
+
+  const meta = {
+    orderId,
+    referenceId,
+    amount,
+    currency,
+    customerUserId,
+    customerPhone: customerPhone || "",
+    orderType: "direct_payout",
+  };
+
+  try {
+    await createNotification({
+      userId: null,
+      type: NOTIFICATION_TYPES.DIRECT_PAYOUT_ADMIN_ALERT,
+      title,
+      message,
+      metadata: meta,
+      sendPush: false,
+    });
+  } catch (err) {
+    console.warn(
+        "⚠️ Failed to save admin direct-payout notification:",
+        err.message,
+    );
+  }
+
+  let adminUserIds = [];
+  try {
+    const payoutCfg = await firestore
+        .collection(config.collections.config)
+        .doc("directPayout")
+        .get();
+    if (payoutCfg.exists) {
+      const raw = payoutCfg.data().adminUserIds;
+      adminUserIds = Array.isArray(raw) ? raw : [];
+    }
+    if (adminUserIds.length === 0) {
+      const topupCfg = await firestore
+          .collection(config.collections.config)
+          .doc("directTopup")
+          .get();
+      if (topupCfg.exists) {
+        const raw = topupCfg.data().adminUserIds;
+        adminUserIds = Array.isArray(raw) ? raw : [];
+      }
+    }
+  } catch (err) {
+    console.warn(
+        "⚠️ Could not read config for direct payout admin push:",
+        err.message,
+    );
+    return;
+  }
+
+  for (const adminId of adminUserIds) {
+    if (typeof adminId !== "string" || !adminId.trim()) {
+      continue;
+    }
+    try {
+      await sendPushNotification(adminId.trim(), {
+        notificationId: "",
+        type: NOTIFICATION_TYPES.DIRECT_PAYOUT_ADMIN_ALERT,
+        title,
+        message,
+        data: meta,
+      });
+    } catch (pushErr) {
+      console.warn(
+          `⚠️ Admin payout push failed for ${adminId}:`,
+          pushErr.message,
+      );
+    }
+  }
+}
+
+/**
  * Mark notification as read
  * @param {string} notificationId - Notification ID
  * @returns {Promise<void>}
@@ -340,6 +445,7 @@ module.exports = {
   createNotification,
   sendPushNotification,
   notifyDirectTopupAdmins,
+  notifyDirectPayoutAdmins,
   markNotificationAsRead,
   getUserNotifications,
   NOTIFICATION_TYPES,

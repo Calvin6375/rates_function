@@ -26,6 +26,76 @@ function membersCollection(partnerId) {
 }
 
 /**
+ * Ensure `users/{uid}` exists so dashboard login and consumer flows can resolve the profile.
+ * Shape aligns with `userBootstrap` (name, email, balance, country, timestamps); idempotent.
+ *
+ * @param {string} uid
+ * @param {{ email: string, displayName?: string|null }} opts
+ * @returns {Promise<void>}
+ */
+async function ensureUserDashboardProfile(uid, { email, displayName }) {
+  const normalizedEmail =
+    email && String(email).trim()
+      ? String(email).trim().toLowerCase()
+      : null;
+  const userRef = collection("users").doc(uid);
+  const snap = await userRef.get();
+  const display =
+    displayName && String(displayName).trim() ? String(displayName).trim() : null;
+
+  if (!snap.exists) {
+    await userRef.set(
+        {
+          name: display,
+          email: normalizedEmail,
+          createdAt: serverTimestamp(),
+          balance: 0,
+          country: null,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+    );
+    return;
+  }
+
+  const existing = snap.data() || {};
+  const updates = {};
+  if (normalizedEmail) {
+    const prev = existing.email ? String(existing.email).trim().toLowerCase() : "";
+    if (!prev || prev !== normalizedEmail) {
+      updates.email = normalizedEmail;
+    }
+  }
+  if (display && !existing.name && !existing.firstName) {
+    updates.name = display;
+  }
+  if (!("balance" in existing) && existing.balance === undefined) {
+    updates.balance = 0;
+  }
+  if (!("country" in existing) && existing.country === undefined) {
+    updates.country = null;
+  }
+  if (Object.keys(updates).length > 0) {
+    updates.updatedAt = serverTimestamp();
+    await userRef.update(updates);
+  }
+}
+
+/**
+ * Load Auth record and ensure `users/{uid}` exists (for HTTP bootstrap after sign-in).
+ *
+ * @param {string} uid
+ * @returns {Promise<void>}
+ */
+async function ensureUserDashboardProfileFromAuthUid(uid) {
+  const userRecord = await admin.auth().getUser(uid);
+  await ensureUserDashboardProfile(uid, {
+    email: userRecord.email || "",
+    displayName: userRecord.displayName || "",
+  });
+}
+
+/**
  * @param {FirebaseFirestore.DocumentSnapshot} doc
  * @returns {Object}
  */
@@ -115,6 +185,11 @@ async function setPartnerOrgAdmin(partnerId, newOrgAdminUid, actorUid) {
     { merge: true },
   );
 
+  await ensureUserDashboardProfile(newOrgAdminUid, {
+    email,
+    displayName: newUser.displayName || "",
+  });
+
   return { partnerId, orgAdminUid: newOrgAdminUid };
 }
 
@@ -194,6 +269,11 @@ async function addMember(partnerId, { email, password, role, displayName }, acto
     { merge: true },
   );
 
+  await ensureUserDashboardProfile(uid, {
+    email: normalizedEmail,
+    displayName: displayName || userRecord.displayName || "",
+  });
+
   return { userId: uid, email: normalizedEmail, role };
 }
 
@@ -270,4 +350,6 @@ module.exports = {
   updateMemberRole,
   removeMember,
   isAssignablePartnerRole,
+  ensureUserDashboardProfile,
+  ensureUserDashboardProfileFromAuthUid,
 };

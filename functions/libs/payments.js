@@ -12,6 +12,7 @@ const {
   createNotification,
   NOTIFICATION_TYPES,
   notifyDirectTopupAdmins,
+  notifyDirectPayoutAdmins,
 } = require("../utils/notifications");
 
 const firestore = admin.firestore();
@@ -617,6 +618,159 @@ async function createDirectTopupOrder(userId, params) {
 }
 
 /**
+ * Create a direct (manual / bank) payout request from the customer app.
+ * Debits the wallet for `amount` in `currency` immediately; order stays pending until ops settle.
+ *
+ * @param {string} userId - Authenticated user
+ * @param {Object} params
+ * @param {number} params.amount
+ * @param {string} params.currency
+ * @param {string} [params.phoneNumber]
+ * @param {string} [params.note]
+ * @param {string} [params.payoutMethod] - e.g. bank, mobile_money
+ * @param {Object} [params.metadata]
+ * @returns {Promise<Object>}
+ */
+async function createDirectPayoutOrder(userId, params) {
+  const {
+    amount,
+    currency,
+    phoneNumber,
+    note,
+    payoutMethod,
+    metadata = {},
+  } = params;
+
+  const amt = Number(amount);
+  if (!amt || amt <= 0) {
+    throw new Error("Amount must be a positive number");
+  }
+  const cur = String(currency || "USD").toUpperCase();
+
+  let userPhoneNumber = phoneNumber;
+  if (!userPhoneNumber) {
+    try {
+      const userDoc = await firestore.collection(config.collections.users).doc(userId).get();
+      if (userDoc.exists) {
+        const userData = userDoc.data();
+        userPhoneNumber = userData.phoneNumber || userData.phone || null;
+      }
+    } catch (err) {
+      console.warn("⚠️ Could not fetch user phone number:", err.message);
+    }
+  }
+
+  const orderRef = firestore.collection(config.collections.orders).doc();
+  const orderId = orderRef.id;
+  const referenceId = `DPY-${orderId}`;
+
+  let balanceResult;
+  try {
+    balanceResult = await updateBalanceWithTransaction(
+        userId,
+        -Math.abs(amt),
+        "direct_payout",
+        {
+          currency: cur,
+          transactionStatus: "pending",
+          referenceId,
+          orderId,
+          note: note || null,
+          payoutMethod: payoutMethod || null,
+        },
+    );
+  } catch (balErr) {
+    console.error("❌ Direct payout balance update failed:", balErr.message);
+    throw balErr;
+  }
+
+  const orderData = {
+    userId,
+    orderType: "direct_payout",
+    status: "pending",
+    amount: amt,
+    currency: cur,
+    invoiceId: null,
+    checkoutUrl: null,
+    referenceId,
+    phoneNumber: userPhoneNumber,
+    balanceTransactionId: balanceResult.transactionId || null,
+    previousBalance: balanceResult.previousBalance,
+    newBalance: balanceResult.newBalance,
+    metadata: {
+      ...metadata,
+      source: "customer_direct_payout",
+      referenceId,
+      phoneNumber: userPhoneNumber,
+      note: note || null,
+      payoutMethod: payoutMethod || null,
+      balanceTransactionId: balanceResult.transactionId || null,
+      createdAt: new Date().toISOString(),
+    },
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+
+  await orderRef.set(orderData);
+  console.log(`✅ Created direct_payout order: ${orderId} (${referenceId})`);
+
+  try {
+    await createNotification({
+      userId,
+      type: NOTIFICATION_TYPES.DIRECT_PAYOUT_REQUESTED,
+      title: "Payout requested",
+      message:
+        `${cur} ${amt} reserved for payout. Reference: ${referenceId}. ` +
+        "We will send funds using your payout details.",
+      metadata: {
+        orderId,
+        referenceId,
+        amount: amt,
+        currency: cur,
+        orderType: "direct_payout",
+        transactionId: balanceResult.transactionId || null,
+        newBalance: balanceResult.newBalance,
+      },
+    });
+  } catch (notifError) {
+    console.warn(
+        "⚠️ Failed to send direct payout notification (non-critical):",
+        notifError.message,
+    );
+  }
+
+  try {
+    await notifyDirectPayoutAdmins({
+      customerUserId: userId,
+      customerPhone: userPhoneNumber,
+      orderId,
+      referenceId,
+      amount: amt,
+      currency: cur,
+    });
+  } catch (adminNotifErr) {
+    console.warn(
+        "⚠️ notifyDirectPayoutAdmins (non-critical):",
+        adminNotifErr.message,
+    );
+  }
+
+  return {
+    success: true,
+    orderId,
+    referenceId,
+    amount: amt,
+    currency: cur,
+    status: "pending",
+    orderType: "direct_payout",
+    transactionId: balanceResult.transactionId || null,
+    previousBalance: balanceResult.previousBalance,
+    newBalance: balanceResult.newBalance,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+/**
  * Mark payment link as opened (for client callable when user opens IntaSend checkout)
  * @param {string} userId - User ID
  * @param {string} invoiceId - Invoice/checkout ID
@@ -827,6 +981,7 @@ module.exports = {
   processTransFiWebhook,
   createPaymentOrder,
   createDirectTopupOrder,
+  createDirectPayoutOrder,
   markPaymentLinkOpened,
 };
 

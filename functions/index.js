@@ -35,6 +35,7 @@ exports.handleTopUpWebhook = webhookApi.handleTopUpWebhook;
 exports.handleTransFiTopUpWebhook = webhookApi.handleTransFiTopUpWebhook;
 exports.createPayment = paymentsHttp.createPayment;
 exports.createDirectTopup = paymentsHttp.createDirectTopup;
+exports.createDirectPayout = paymentsHttp.createDirectPayout;
 exports.handlePaymentWebhook = paymentsHttp.handlePaymentWebhook;
 exports.createSwapOrder = paymentsHttp.createSwapOrder;
 exports.createSendMoneyOrder = paymentsHttp.createSendMoneyOrder;
