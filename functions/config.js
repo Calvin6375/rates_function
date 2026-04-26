@@ -60,6 +60,18 @@ const config = {
     arbitrageCacheValidityMinutes: 10,
   },
 
+  /**
+   * B2B `partnerSandbox` HTTP function only: static public test key and virtual partner id.
+   * Override `B2B_SANDBOX_PUBLIC_API_KEY` in production if you want a non-default secret.
+   */
+  b2bSandbox: {
+    apiKey:
+      getEnv("B2B_SANDBOX_PUBLIC_API_KEY") ||
+      getEnv("B2B_SANDBOX_API_KEY") ||
+      "KalvoB2B-Sandbox-public-test-key-2026",
+    partnerId: getEnv("B2B_SANDBOX_PARTNER_ID", "__b2b_sandbox__"),
+  },
+
   // Firestore collections
   collections: {
     users: "users",

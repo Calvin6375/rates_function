@@ -103,6 +103,7 @@ functions/
 
 - **Base path:** Firebase function name `partner` → `https://<region>-<project>.cloudfunctions.net/partner`
 - **Auth:** `X-API-KEY` header (partner’s `apiKey` from `partners`).
+- **Sandbox:** Function `partnerSandbox` — same route shapes, static public `X-API-KEY`, in-memory mocks (`http/partnerSandboxHttp.js`, `services/b2bSandboxPartnerService.js`). See repo root `B2B_SANDBOX.md`.
 
 | Method | Path | Description |
 |--------|------|-------------|

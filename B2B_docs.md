@@ -20,16 +20,18 @@ https://{region}-{projectId}.cloudfunctions.net/{functionName}
 | Function name | Purpose |
 |---------------|---------|
 | `partner` | Machine / backend integrations — **X-API-KEY** auth |
+| `partnerSandbox` | Public test Partner API — **static** `X-API-KEY`, in-memory mocks ([`B2B_SANDBOX.md`](./B2B_SANDBOX.md)) |
 | `b2bPortal` | Human-facing portal — **Firebase ID token** (`Authorization: Bearer`) |
 
 Example bases:
 
 ```text
 https://us-central1-your-project-id.cloudfunctions.net/partner
+https://us-central1-your-project-id.cloudfunctions.net/partnerSandbox
 https://us-central1-your-project-id.cloudfunctions.net/b2bPortal
 ```
 
-Append the path from each section below (e.g. `.../partner/rates`, `.../b2bPortal/platform/partners`).
+Append the path from each section below (e.g. `.../partner/rates`, `.../partnerSandbox/rates`, `.../b2bPortal/platform/partners`).
 
 ---
 
@@ -40,6 +42,8 @@ Append the path from each section below (e.g. `.../partner/rates`, `.../b2bPorta
 - Send header: **`X-API-KEY: <apiKey>`** (case-insensitive header name is accepted).
 - The key is stored on the partner document in Firestore when the partner is created; it is **only returned once** at creation (see `POST /platform/partners`).
 - Partners with `status` **`suspended`** or **`inactive`** are rejected.
+
+For a **separate** sandbox with a **static public** API key and its own base URL, use the **`partnerSandbox`** function — see [`B2B_SANDBOX.md`](./B2B_SANDBOX.md).
 
 ### 1.2 B2B portal (`b2bPortal`) — Firebase Auth
 
@@ -96,6 +100,8 @@ Returns Binance P2P–based rate payload (includes fee), for the authenticated p
 ```
 
 **Errors** `401` invalid/missing key; `500` server error.
+
+**Fixture rates (no Binance):** Use **`partnerSandbox`** — see [`B2B_SANDBOX.md`](./B2B_SANDBOX.md).
 
 ---
 
@@ -579,10 +585,11 @@ Typical HTTP status codes:
 
 3. **Server / PMS / POS integration**  
    - Use **`partner`** with **`X-API-KEY`** only (no Firebase user required).  
-   - Typical flow: **`GET /rates`** → **`POST /checkout`** (optional UX helper) → collect payment → **`POST /payments`**.
+   - Typical flow: **`GET /rates`** → **`POST /checkout`** (optional UX helper) → collect payment → **`POST /payments`**.  
+   - For **integration tests / demos** without a real partner key, use **`partnerSandbox`** ([`B2B_SANDBOX.md`](./B2B_SANDBOX.md)).
 
 4. **SafariCoin**  
-   - **`GET /partner/safaricoin/balance`** only; balances are **mock** until real integration replaces `safariCoinService`.
+   - **`GET /partner/safaricoin/balance`** (live) or **`GET /partnerSandbox/safaricoin/balance`** (full sandbox fixture); backend **`safariCoinService`** is still **mock** (no blockchain) for the live path.
 
 5. **Token refresh**  
    - After any **`org-admin`** or **member role** change, affected users must obtain a **new ID token** before calling portal endpoints that rely on claims.
@@ -594,10 +601,12 @@ Typical HTTP status codes:
 | Area | Path |
 |------|------|
 | Partner HTTP app | `functions/http/partnerApi.js` |
+| Partner sandbox HTTP app | `functions/http/partnerSandboxHttp.js` |
+| Sandbox in-memory logic | `functions/services/b2bSandboxPartnerService.js` |
 | B2B portal HTTP app | `functions/http/b2bPortalHttp.js` |
 | API key verification | `functions/libs/auth.js` (`verifyPartnerRequest`) |
 | Partner Firestore CRUD | `functions/services/partnerService.js` |
 | Members / org admin / institutional roles | `functions/services/b2bMemberService.js` |
 | Super-admin consumer user list & counts | `functions/services/platformConsumerService.js` |
 | Claim merge helper | `functions/utils/customClaimsMerge.js` |
-| Exports | `functions/index.js` (`partner`, `b2bPortal`) |
+| Exports | `functions/index.js` (`partner`, `partnerSandbox`, `b2bPortal`) |

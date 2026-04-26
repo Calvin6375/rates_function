@@ -52,9 +52,10 @@ async function verifyPartnerApiKey(apiKey) {
   if (!apiKey || !apiKey.trim()) {
     return { success: false, error: "Missing X-API-KEY" };
   }
+  const trimmed = apiKey.trim();
   try {
     const partnersRef = collection("partners");
-    const snapshot = await partnersRef.where("apiKey", "==", apiKey.trim()).limit(1).get();
+    const snapshot = await partnersRef.where("apiKey", "==", trimmed).limit(1).get();
     if (snapshot.empty) {
       return { success: false, error: "Invalid API key" };
     }

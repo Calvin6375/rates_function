@@ -9,6 +9,7 @@ const arbitrageHttp = require("./http/arbitrageHttp");
 const paymentsHttp = require("./http/paymentsHttp");
 const webhookApi = require("./http/webhookApi");
 const partnerApi = require("./http/partnerApi");
+const partnerSandboxHttp = require("./http/partnerSandboxHttp");
 const customerWalletsHttp = require("./http/customerWalletsHttp");
 const adminHttp = require("./http/adminHttp");
 const migrateUsersHttp = require("./http/migrateUsersHttp");
@@ -45,6 +46,9 @@ exports.api = customerWalletsHttp.api;
 
 // Export B2B Partner API (X-API-KEY auth)
 exports.partner = partnerApi.partner;
+
+// B2B Partner API sandbox (static public X-API-KEY; in-memory mocks — see B2B_SANDBOX.md)
+exports.partnerSandbox = partnerSandboxHttp.partnerSandbox;
 
 // B2B portal: platform admin + partner org admin / members (Firebase Bearer auth)
 exports.b2bPortal = b2bPortalHttp.b2bPortal;
