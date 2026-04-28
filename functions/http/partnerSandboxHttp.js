@@ -40,6 +40,39 @@ function requireSandboxKey(req, res, next) {
   next();
 }
 
+app.get("/currencies", requireSandboxKey, (req, res) => {
+  try {
+    const data = b2bSandboxPartnerService.getSandboxCurrencies();
+    res.status(200).json({ success: true, sandbox: true, data });
+  } catch (err) {
+    console.error("partnerSandbox GET /currencies:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/rates/all", requireSandboxKey, (req, res) => {
+  try {
+    const data = b2bSandboxPartnerService.getAllSandboxRates();
+    res.status(200).json({ success: true, sandbox: true, data });
+  } catch (err) {
+    console.error("partnerSandbox GET /rates/all:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/rates/pair", requireSandboxKey, (req, res) => {
+  try {
+    const fiat = req.query.fiat || config.binance.defaultFiat;
+    const asset = req.query.asset || config.binance.defaultAsset;
+    const data = b2bSandboxPartnerService.getSandboxRates(fiat, asset);
+    res.status(200).json({ success: true, sandbox: true, data });
+  } catch (err) {
+    console.error("partnerSandbox GET /rates/pair:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/** Same as GET /rates/pair — kept for parity with live `GET /partner/rates`. */
 app.get("/rates", requireSandboxKey, (req, res) => {
   try {
     const fiat = req.query.fiat || config.binance.defaultFiat;
@@ -80,6 +113,20 @@ app.get("/transactions", requireSandboxKey, (req, res) => {
     res.status(200).json({ success: true, sandbox: true, data: { transactions } });
   } catch (err) {
     console.error("partnerSandbox GET /transactions:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/transactions/:transactionId", requireSandboxKey, (req, res) => {
+  try {
+    const row = b2bSandboxPartnerService.getSandboxTransactionById(req.params.transactionId);
+    if (!row) {
+      res.status(404).json({ success: false, sandbox: true, error: "Transaction not found" });
+      return;
+    }
+    res.status(200).json({ success: true, sandbox: true, data: row });
+  } catch (err) {
+    console.error("partnerSandbox GET /transactions/:transactionId:", err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });

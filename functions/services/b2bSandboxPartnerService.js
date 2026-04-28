@@ -22,6 +22,22 @@ const FIAT_MARKET = {
 const FEE_DECIMAL = 0.015;
 
 /**
+ * Fiat and asset codes supported in the sandbox (fixtures + in-memory wallet).
+ * @returns {{ fiats: string[], assets: string[], paymentCurrencies: string[], defaultFiat: string, defaultAsset: string, all: string[] }}
+ */
+function getSandboxCurrencies() {
+  const defaultFiat = String(config.binance.defaultFiat || "KES").toUpperCase();
+  const defaultAsset = String(config.binance.defaultAsset || "USDT").toUpperCase();
+  const fiats = Object.keys(FIAT_MARKET).map((c) => c.toUpperCase()).sort();
+  const assets = [defaultAsset];
+  const paymentCurrencies = Object.keys(walletBalances)
+    .map((c) => c.toUpperCase())
+    .sort();
+  const all = [...new Set([...fiats, ...assets, ...paymentCurrencies])].sort();
+  return { fiats, assets, paymentCurrencies, defaultFiat, defaultAsset, all };
+}
+
+/**
  * @param {string} fiat
  * @param {string} asset
  * @returns {Object}
@@ -33,7 +49,6 @@ function getSandboxRates(fiat, asset) {
   const customerPrice = Math.round(marketPrice * (1 + FEE_DECIMAL) * 100) / 100;
   const now = Date.now();
   return {
-    marketPrice,
     customerPrice,
     feePercentage: FEE_DECIMAL * 100,
     currencyPair: `${a}/${f}`,
@@ -43,6 +58,27 @@ function getSandboxRates(fiat, asset) {
     updatedAt: new Date(now).toISOString(),
     source: "sandbox_fixture",
   };
+}
+
+/**
+ * All fixture fiat pairs against the default asset (one row per listed fiat market).
+ * @returns {{ rates: Object[], defaultAsset: string }}
+ */
+function getAllSandboxRates() {
+  const defaultAsset = String(config.binance.defaultAsset || "USDT").toUpperCase();
+  const fiats = Object.keys(FIAT_MARKET);
+  const rates = fiats.map((fiat) => getSandboxRates(fiat, defaultAsset));
+  return { rates, defaultAsset };
+}
+
+/**
+ * @param {string} transactionId
+ * @returns {Object|null}
+ */
+function getSandboxTransactionById(transactionId) {
+  const id = String(transactionId || "").trim();
+  if (!id) return null;
+  return transactions.find((t) => t.id === id) || null;
 }
 
 function nextSandboxTxId() {
@@ -168,7 +204,10 @@ function resetSandboxState() {
 }
 
 module.exports = {
+  getSandboxCurrencies,
   getSandboxRates,
+  getAllSandboxRates,
+  getSandboxTransactionById,
   recordSandboxPayment,
   listSandboxTransactions,
   getSandboxCheckoutPayload,
