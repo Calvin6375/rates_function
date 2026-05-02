@@ -22,9 +22,18 @@ function generateApiKey() {
  * @param {string} [params.settlementCurrency='KES']
  * @param {string} [params.webhookUrl]
  * @param {string} [params.apiKey] - If not provided, one is generated
+ * @param {string} [params.status='active'] - e.g. active | pending_review (self-serve before go-live)
+ * @param {string} [params.onboardingSource] - optional audit: "self" | "platform"
  * @returns {Promise<{ partnerId: string, apiKey: string, partner: Object }>}
  */
-async function createPartner({ name, settlementCurrency = "KES", webhookUrl = null, apiKey = null }) {
+async function createPartner({
+  name,
+  settlementCurrency = "KES",
+  webhookUrl = null,
+  apiKey = null,
+  status = "active",
+  onboardingSource = null,
+}) {
   const col = collection("partners");
   const partnerId = `partner_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   const key = apiKey || generateApiKey();
@@ -34,12 +43,15 @@ async function createPartner({ name, settlementCurrency = "KES", webhookUrl = nu
     settlementAccount: null, // Can be set later (bank details)
     settlementCurrency: String(settlementCurrency),
     webhookUrl: webhookUrl || null,
-    status: "active",
+    status: String(status),
     /** @type {string|null} Firebase Auth UID of the partner org admin (set by platform admin) */
     orgAdminUid: null,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   };
+  if (onboardingSource) {
+    data.onboardingSource = String(onboardingSource);
+  }
   await col.doc(partnerId).set(data);
   return {
     partnerId,

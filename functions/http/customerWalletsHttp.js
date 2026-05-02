@@ -11,6 +11,7 @@ const userWalletsLib = require("../libs/userWallets");
 const ratesLib = require("../libs/rates");
 const p2pListingsLib = require("../libs/p2pListings");
 const { sanitizeRatesObject, maybeFixResolvedPair } = require("../utils/customerRatesSanitize");
+const supportedCountriesService = require("../services/supportedCountriesService");
 
 const db = admin.firestore();
 const app = express();
@@ -208,6 +209,32 @@ app.get("/rates", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to get rates",
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * GET /countries
+ * Supported country codes (ISO 3166-1 alpha-3) for onboarding and KYC UI.
+ * Public — same App Check enforcement as the rest of this HTTP function.
+ */
+app.get("/countries", async (req, res) => {
+  try {
+    const payload = await supportedCountriesService.getSupportedCountries();
+    res.status(200).json({
+      success: true,
+      data: {
+        countries: payload.countries,
+        updatedAt: payload.updatedAt,
+        isDefault: payload.isDefault,
+      },
+    });
+  } catch (error) {
+    console.error("Error getting supported countries:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to get supported countries",
       message: error.message,
     });
   }

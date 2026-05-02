@@ -85,6 +85,8 @@ const config = {
     // Firestore paths for migrated data (previously in RTDB)
     invoiceMappings: "invoiceMappings", // For payment webhook lookups
     // B2B and ledger (new architecture)
+    /** B2B portal self-serve wizard + checklist (doc id = Firebase Auth uid) */
+    onboarding: "onboarding",
     partners: "partners",
     settlements: "settlements",
     ledgerEntries: "ledger_entries",

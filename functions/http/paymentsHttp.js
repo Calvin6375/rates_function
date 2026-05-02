@@ -10,6 +10,28 @@ const swapLib = require("../libs/swap");
 const sendMoneyLib = require("../libs/sendMoney");
 
 /**
+ * Derive stable payment reference from checkout URL (TransFi vs IntaSend).
+ * @param {string} checkoutUrl
+ * @returns {string|null}
+ */
+function extractInvoiceIdFromCheckoutUrl(checkoutUrl) {
+  if (!checkoutUrl || typeof checkoutUrl !== "string") {
+    return null;
+  }
+  // TransFi: .../checkout/payment-link/<id>
+  const transfi = checkoutUrl.match(/\/checkout\/payment-link\/([^/?#]+)/i);
+  if (transfi && transfi[1]) {
+    return transfi[1];
+  }
+  // IntaSend: .../checkout/<invoice-id>/express/ or .../checkout/<invoice-id>
+  const inta = checkoutUrl.match(/checkout\/([^/?#]+)/i);
+  if (inta && inta[1] && inta[1].toLowerCase() !== "payment-link") {
+    return inta[1];
+  }
+  return null;
+}
+
+/**
  * Callable function: Create Payment Order
  * Creates order document in Firestore and invoice mapping in Firestore
  */
@@ -55,14 +77,9 @@ exports.createPayment = onCall(
         throw new HttpsError("invalid-argument", "Currency is required");
       }
 
-      // Extract invoice ID from checkout URL if not provided directly
+      // Extract invoice / payment-link ID from checkout URL if not provided directly
       if (!invoiceId && checkoutUrl) {
-        // Extract invoice ID from IntaSend checkout URL
-        // Format: https://payment.intasend.com/checkout/{invoice-id}/express/
-        const match = checkoutUrl.match(/checkout\/([^\/]+)/);
-        if (match && match[1]) {
-          invoiceId = match[1];
-        }
+        invoiceId = extractInvoiceIdFromCheckoutUrl(checkoutUrl);
       }
 
       if (!invoiceId) {

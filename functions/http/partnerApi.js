@@ -12,6 +12,7 @@ const transactionService = require("../services/transactionService");
 const settlementService = require("../services/settlementService");
 const walletService = require("../services/walletService");
 const safariCoinService = require("../services/safariCoinService");
+const supportedCountriesService = require("../services/supportedCountriesService");
 
 const app = express();
 app.use(express.json());
@@ -52,6 +53,27 @@ app.get("/rates", requirePartner, async (req, res) => {
     res.status(200).json({ success: true, data: rates });
   } catch (err) {
     console.error("Partner API GET /rates:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /partner/countries
+ * Supported country codes for B2B integrations (same list as consumer app).
+ */
+app.get("/countries", requirePartner, async (req, res) => {
+  try {
+    const payload = await supportedCountriesService.getSupportedCountries();
+    res.status(200).json({
+      success: true,
+      data: {
+        countries: payload.countries,
+        updatedAt: payload.updatedAt,
+        isDefault: payload.isDefault,
+      },
+    });
+  } catch (err) {
+    console.error("Partner API GET /countries:", err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });

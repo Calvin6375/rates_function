@@ -8,6 +8,9 @@
 
 const admin = require("../admin");
 
+/** Only this account may change platform supported countries via `setSupportedCountries`. */
+const SUPER_ADMIN_EMAIL = "calvinrumba8@gmail.com";
+
 /**
  * Set admin claim for a user
  * @param {string} userId - User ID
@@ -65,10 +68,30 @@ function verifyAdminFromToken(auth) {
   return auth.token.admin === true;
 }
 
+/**
+ * True if Firebase Auth user for uid has the super-admin email (platform owner).
+ * @param {string} uid
+ * @returns {Promise<boolean>}
+ */
+async function isSuperAdminUid(uid) {
+  if (!uid || typeof uid !== "string") {
+    return false;
+  }
+  try {
+    const userRecord = await admin.auth().getUser(uid);
+    const email = (userRecord.email || "").trim().toLowerCase();
+    return email === SUPER_ADMIN_EMAIL.toLowerCase();
+  } catch (error) {
+    console.error(`Error checking super admin for ${uid}:`, error.message);
+    return false;
+  }
+}
+
 module.exports = {
   setAdminClaim,
   removeAdminClaim,
   hasAdminClaim,
   verifyAdminFromToken,
+  isSuperAdminUid,
 };
 

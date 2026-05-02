@@ -81,6 +81,7 @@ exports.syncUserBalanceToRealtime = adminHttp.syncUserBalanceToRealtime; // Depr
 exports.getCommissionConfig = adminHttp.getCommissionConfig;
 exports.updateCommissionConfig = adminHttp.updateCommissionConfig;
 exports.getIntaSendPaymentStatus = adminHttp.getIntaSendPaymentStatus;
+exports.setSupportedCountries = adminHttp.setSupportedCountries;
 
 // Export admin claims management functions
 exports.setAdminClaim = adminClaimsHttp.setAdminClaim;

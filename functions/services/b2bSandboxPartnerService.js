@@ -3,6 +3,7 @@
  * Used only by the `partnerSandbox` HTTP function (no Firestore).
  */
 
+const crypto = require("crypto");
 const config = require("../config");
 
 /** @type {{ KES: number, USD: number, USDT: number }} */
@@ -12,6 +13,11 @@ let walletBalances = { KES: 25000, USD: 100, USDT: 50 };
 let transactions = [];
 
 let txSeq = 0;
+
+/** @type {Map<string, Object>} */
+const checkoutSessions = new Map();
+
+const MAX_CHECKOUT_SESSIONS = 500;
 
 const FIAT_MARKET = {
   KES: 129.5,
@@ -130,22 +136,61 @@ function listSandboxTransactions(limit) {
   return { transactions: transactions.slice(0, limit) };
 }
 
+function trimCheckoutSessions() {
+  while (checkoutSessions.size > MAX_CHECKOUT_SESSIONS) {
+    const first = checkoutSessions.keys().next().value;
+    checkoutSessions.delete(first);
+  }
+}
+
+function newSandboxCheckoutId() {
+  return `sbx_co_${crypto.randomBytes(16).toString("base64url")}`;
+}
+
 /**
+ * Creates a checkout session (pay link / QR). No on-chain move; merchant records with POST /payments.
  * @param {string} partnerId
  * @param {number} amount
  * @param {string} currency
+ * @param {number|null|undefined} customerFacingRateOverride from request body; if invalid, fixture rate is used
+ * @returns {Object}
  */
-function getSandboxCheckoutPayload(partnerId, amount, currency) {
+function createSandboxCheckoutSession(partnerId, amount, currency, customerFacingRateOverride) {
   const cur = String(currency || "KES").toUpperCase();
   const rates = getSandboxRates(cur, config.binance.defaultAsset);
-  return {
+  const overrideNum = Number(customerFacingRateOverride);
+  const customerFacingRate =
+    customerFacingRateOverride != null &&
+    !Number.isNaN(overrideNum) &&
+    overrideNum > 0
+      ? Math.round(overrideNum * 100) / 100
+      : rates.customerPrice;
+  const checkoutId = newSandboxCheckoutId();
+  const session = {
+    checkoutId,
     amount,
     currency: cur,
-    rate: rates.customerPrice,
+    customerFacingRate,
+    rate: customerFacingRate,
+    asset: rates.asset,
+    currencyPair: rates.currencyPair,
+    validUntil: rates.validUntil,
     partnerId,
-    message:
-      "Sandbox: no real payment. Use POST /payments to simulate crediting the in-memory wallet.",
+    createdAt: new Date().toISOString(),
   };
+  checkoutSessions.set(checkoutId, session);
+  trimCheckoutSessions();
+  return session;
+}
+
+/**
+ * @param {string} checkoutId
+ * @returns {Object|null}
+ */
+function getSandboxCheckoutSession(checkoutId) {
+  const id = String(checkoutId || "").trim();
+  if (!id) return null;
+  return checkoutSessions.get(id) || null;
 }
 
 /**
@@ -201,6 +246,7 @@ function resetSandboxState() {
   walletBalances = { KES: 25000, USD: 100, USDT: 50 };
   transactions = [];
   txSeq = 0;
+  checkoutSessions.clear();
 }
 
 module.exports = {
@@ -210,7 +256,8 @@ module.exports = {
   getSandboxTransactionById,
   recordSandboxPayment,
   listSandboxTransactions,
-  getSandboxCheckoutPayload,
+  createSandboxCheckoutSession,
+  getSandboxCheckoutSession,
   listSandboxSettlements,
   getSandboxWallet,
   getSandboxSafariCoinBalance,

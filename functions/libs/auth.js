@@ -61,8 +61,20 @@ async function verifyPartnerApiKey(apiKey) {
     }
     const doc = snapshot.docs[0];
     const data = doc.data();
-    if (data.status === "suspended" || data.status === "inactive") {
-      return { success: false, error: "Partner account is not active" };
+    const st = data.status;
+    if (
+      st === "suspended" ||
+      st === "inactive" ||
+      st === "pending_review" ||
+      st === "pending_kyc"
+    ) {
+      return {
+        success: false,
+        error:
+          st === "pending_review" || st === "pending_kyc"
+            ? "Partner account is pending activation"
+            : "Partner account is not active",
+      };
     }
     return {
       success: true,

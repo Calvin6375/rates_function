@@ -8,7 +8,8 @@ const config = require("../config");
 const { updateBalanceWithTransaction, getUserBalance, userExists } = require("../utils/firestore");
 const { logAdminAction } = require("../utils/transactions");
 const { validateBalanceUpdate } = require("../utils/validation");
-const { verifyAdminFromToken } = require("../utils/adminClaims");
+const { verifyAdminFromToken, isSuperAdminUid } = require("../utils/adminClaims");
+const supportedCountriesService = require("../services/supportedCountriesService");
 const axios = require("axios");
 const { defineSecret } = require("firebase-functions/params");
 
@@ -541,6 +542,35 @@ async function getIntaSendPaymentStatus(adminId, invoiceId) {
   }
 }
 
+/**
+ * Replace platform supported countries (super admin only — enforced here).
+ * @param {string} adminId - Caller Firebase uid
+ * @param {unknown} countries - ISO 3166-1 alpha-3 codes
+ * @returns {Promise<Object>}
+ */
+async function setSupportedCountries(adminId, countries) {
+  const ok = await isSuperAdminUid(adminId);
+  if (!ok) {
+    throw new Error("Super admin access required");
+  }
+
+  const result = await supportedCountriesService.setSupportedCountries(adminId, countries);
+
+  await logAdminAction(
+    adminId,
+    "system",
+    "setSupportedCountries",
+    { countries: result.before },
+    { countries: result.countries, updatedBy: result.updatedBy },
+  );
+
+  return {
+    success: true,
+    countries: result.countries,
+    updatedAt: result.updatedAt,
+  };
+}
+
 module.exports = {
   verifyAdmin,
   updateUserProfile,
@@ -552,5 +582,6 @@ module.exports = {
   updateCommissionConfig,
   getIntaSendPaymentStatus,
   getIntaSendKeys,
+  setSupportedCountries,
 };
 

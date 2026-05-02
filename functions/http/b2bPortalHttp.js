@@ -10,6 +10,7 @@ const config = require("../config");
 const { verifyFirebaseAuth } = require("../libs/auth");
 const partnerService = require("../services/partnerService");
 const b2bMemberService = require("../services/b2bMemberService");
+const b2bOnboardingService = require("../services/b2bOnboardingService");
 const platformConsumerService = require("../services/platformConsumerService");
 
 const { ALL_PARTNER_ROLES } = b2bMemberService;
@@ -289,6 +290,90 @@ app.post("/portal/ensure-dashboard-profile", loadFirebaseUser, async (req, res) 
   } catch (err) {
     console.error("b2bPortal POST /portal/ensure-dashboard-profile:", err.message);
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// --- Self-serve onboarding (Firebase user; no partner claims required) ---
+
+app.get("/portal/onboarding", loadFirebaseUser, async (req, res) => {
+  try {
+    const dt = req.decodedToken || {};
+    const onboarding = await b2bOnboardingService.getOnboarding(req.userId);
+    res.status(200).json({
+      success: true,
+      data: {
+        onboarding,
+        emailVerified: dt.email_verified === true,
+        sandbox: {
+          publicApiKey: config.b2bSandbox.apiKey,
+          virtualPartnerId: config.b2bSandbox.partnerId,
+          hint:
+            "Use the partnerSandbox HTTP function base URL with header X-API-KEY: publicApiKey " +
+            "(see B2B_SANDBOX.md). Machine Partner API is blocked until platform sets partner status active.",
+        },
+      },
+    });
+  } catch (err) {
+    console.error("b2bPortal GET /portal/onboarding:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.patch("/portal/onboarding", loadFirebaseUser, async (req, res) => {
+  try {
+    const updated = await b2bOnboardingService.patchOnboarding(req.userId, req.body || {});
+    res.status(200).json({ success: true, data: { onboarding: updated } });
+  } catch (err) {
+    console.error("b2bPortal PATCH /portal/onboarding:", err.message);
+    const status = err.message.includes("Provide at least one") ? 400 : 500;
+    res.status(status).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * Create partners/{partnerId} (status pending_review), assign caller as org_admin, persist onboarding.
+ * Returns apiKey once when newly created; idempotent retries omit apiKey (alreadyRegistered: true).
+ */
+app.post("/portal/onboarding/register-partner", loadFirebaseUser, async (req, res) => {
+  try {
+    const { name, settlementCurrency, webhookUrl } = req.body || {};
+    const out = await b2bOnboardingService.registerSelfServePartner(req.userId, {
+      name,
+      settlementCurrency,
+      webhookUrl,
+    });
+    const payload = {
+      partnerId: out.partnerId,
+      orgAdminUid: out.orgAdminUid,
+      alreadyRegistered: out.alreadyRegistered === true,
+    };
+    if (out.apiKey) {
+      payload.apiKey = out.apiKey;
+    }
+    res.status(out.alreadyRegistered ? 200 : 201).json({
+      success: true,
+      data: payload,
+      message: "Refresh your ID token (sign out/in) so partner claims apply to this session.",
+    });
+  } catch (err) {
+    console.error("b2bPortal POST /portal/onboarding/register-partner:", err.message);
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+/** Require terms + AML attestation; sets onboardingStatus submitted (live API still requires platform activation). */
+app.post("/portal/onboarding/complete", loadFirebaseUser, async (req, res) => {
+  try {
+    const { termsAccepted, amlAccepted } = req.body || {};
+    const out = await b2bOnboardingService.completeOnboarding(req.userId, { termsAccepted, amlAccepted });
+    res.status(200).json({
+      success: true,
+      data: out,
+      message: "Onboarding submitted. Live Partner API remains blocked until a platform admin sets status active.",
+    });
+  } catch (err) {
+    console.error("b2bPortal POST /portal/onboarding/complete:", err.message);
+    res.status(400).json({ success: false, error: err.message });
   }
 });
 

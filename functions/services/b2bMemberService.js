@@ -119,10 +119,12 @@ function serializeMemberDoc(doc) {
  *
  * @param {string} partnerId
  * @param {string} newOrgAdminUid - Existing Firebase Auth UID
- * @param {string} actorUid - Platform admin uid (for audit)
+ * @param {string} actorUid - Platform admin uid, or same as newOrgAdminUid for self-serve
+ * @param {{ selfServe?: boolean }} [opts]
  * @returns {Promise<{ partnerId: string, orgAdminUid: string }>}
  */
-async function setPartnerOrgAdmin(partnerId, newOrgAdminUid, actorUid) {
+async function setPartnerOrgAdmin(partnerId, newOrgAdminUid, actorUid, opts = {}) {
+  const selfServe = opts.selfServe === true;
   const partnerSnap = await collection("partners").doc(partnerId).get();
   if (!partnerSnap.exists) {
     throw new Error("Partner not found");
@@ -171,19 +173,23 @@ async function setPartnerOrgAdmin(partnerId, newOrgAdminUid, actorUid) {
   });
 
   const email = newUser.email || "";
-  await membersCollection(partnerId).doc(newOrgAdminUid).set(
-    {
-      email,
-      displayName: newUser.displayName || "",
-      role: "org_admin",
-      status: "active",
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-      createdByUid: actorUid,
-      assignedByPlatformAdminUid: actorUid,
-    },
-    { merge: true },
-  );
+  /** @type {Record<string, unknown>} */
+  const memberRow = {
+    email,
+    displayName: newUser.displayName || "",
+    role: "org_admin",
+    status: "active",
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    createdByUid: actorUid,
+  };
+  if (selfServe) {
+    memberRow.selfOnboardedAt = serverTimestamp();
+    memberRow.assignedByPlatformAdminUid = null;
+  } else {
+    memberRow.assignedByPlatformAdminUid = actorUid;
+  }
+  await membersCollection(partnerId).doc(newOrgAdminUid).set(memberRow, { merge: true });
 
   await ensureUserDashboardProfile(newOrgAdminUid, {
     email,

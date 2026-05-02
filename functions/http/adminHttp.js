@@ -428,3 +428,49 @@ exports.getIntaSendPaymentStatus = onCall(
   },
 );
 
+/**
+ * Callable: set supported countries (ISO 3166-1 alpha-3), super admin only.
+ * Request: { countries: string[] } e.g. ["KEN","NGA","GHA","ETH"]
+ */
+exports.setSupportedCountries = onCall(
+  {
+    region: config.region,
+    cpu: config.resources.cpu,
+    memory: config.resources.memory,
+    // Web admin dashboards (e.g. Vite on localhost) often omit App Check; without a token
+    // Firebase returns 401 UNAUTHENTICATED before the handler runs. Auth + super-admin
+    // email check in adminActions still applies.
+    enforceAppCheck: false,
+  },
+  async (request) => {
+    try {
+      const uid = request.auth?.uid;
+      if (!uid) {
+        throw new HttpsError("unauthenticated", "Authentication required");
+      }
+
+      const { countries } = request.data || {};
+      return await adminActionsLib.setSupportedCountries(uid, countries);
+    } catch (error) {
+      console.error("setSupportedCountries:", {
+        uid: request.auth?.uid,
+        error: error.message,
+      });
+
+      if (error instanceof HttpsError) {
+        throw error;
+      }
+
+      if (error.message.includes("Super admin")) {
+        throw new HttpsError("permission-denied", error.message);
+      }
+
+      if (error.message.includes("Invalid") || error.message.includes("must be") || error.message.includes("Too many")) {
+        throw new HttpsError("invalid-argument", error.message);
+      }
+
+      throw new HttpsError("internal", `Failed to update supported countries: ${error.message}`);
+    }
+  },
+);
+
