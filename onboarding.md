@@ -32,6 +32,26 @@ Partner API (machine / backend): https://{region}-{projectId}.cloudfunctions.net
 
 ---
 
+## Self-serve onboarding (alternative to Steps 1–2)
+
+A signed-in Firebase user can create their own partner row, become **`org_admin`**, and store KYB/KYC-style data under **`onboarding/{uid}`** without **`admin: true`**. Platform operators can still use **Step 1** and **Step 2** for assisted onboarding.
+
+**Important**
+
+- Self-created partners get Firestore **`status: pending_review`**. The live **`partner`** HTTP API rejects **`X-API-KEY`** for `pending_review` / `pending_kyc` until a platform admin sets **`status: active`** via `PATCH .../platform/partners/{partnerId}`.
+- For **integration testing**, use the public **`partnerSandbox`** key and base URL (see [`B2B_SANDBOX.md`](./B2B_SANDBOX.md)); `GET /portal/onboarding` echoes the configured sandbox key for the dashboard.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/b2bPortal/portal/onboarding` | Read `onboarding/{uid}`, `emailVerified` from token, sandbox helper metadata |
+| `PATCH` | `/b2bPortal/portal/onboarding` | Merge allowed keys: `business`, `owner`, `payments`, `kyc`, `useCases`, `terms`, `progress`, `sandbox` |
+| `POST` | `/b2bPortal/portal/onboarding/register-partner` | Body: `{ "name", "settlementCurrency?", "webhookUrl?" }` — creates partner, assigns caller as org admin, returns **`apiKey` once** (idempotent retries omit it) |
+| `POST` | `/b2bPortal/portal/onboarding/complete` | Body: `{ "termsAccepted": true, "amlAccepted": true }` — sets onboarding submitted; does **not** activate live API |
+
+After **`register-partner`**, the user should **refresh their ID token** before calling **`GET /b2bPortal/portal/me`**.
+
+---
+
 ## Step 1 — Create the partner (platform admin)
 
 **Who:** Firebase user with `admin: true`.
@@ -172,12 +192,14 @@ curl -sS \
 
 | # | Action | Endpoint |
 |---|--------|----------|
-| 1 | Create partner + receive API key | `POST /b2bPortal/platform/partners` |
-| 2 | Assign org admin (`uid`) | `PUT /b2bPortal/platform/partners/{partnerId}/org-admin` |
+| 1 | Create partner + receive API key | `POST /b2bPortal/platform/partners` **or** self-serve `POST /b2bPortal/portal/onboarding/register-partner` |
+| 2 | Assign org admin (`uid`) | `PUT /b2bPortal/platform/partners/{partnerId}/org-admin` (not needed if self-serve register assigned you) |
 | 3 | (Optional) Ensure user profile doc | `POST /b2bPortal/portal/ensure-dashboard-profile` |
+| 3b | (Self-serve) Wizard / KYB fields | `PATCH /b2bPortal/portal/onboarding` |
+| 3c | (Self-serve) Terms + submit | `POST /b2bPortal/portal/onboarding/complete` |
 | 4 | Confirm partner session | `GET /b2bPortal/portal/me` |
 | 5 | Invite team | `POST /b2bPortal/portal/members` (or platform `POST .../platform/partners/{partnerId}/members`) |
-| 6 | Integrate servers | `GET/POST .../partner/*` with `X-API-KEY` |
+| 6 | Integrate servers | `GET/POST .../partner/*` with `X-API-KEY` (live key works only after **`status: active`**) |
 
 ---
 

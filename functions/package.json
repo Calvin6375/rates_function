@@ -14,12 +14,20 @@
   },
   "main": "index.js",
   "dependencies": {
-    "axios": "^1.12.2",
+    "axios": "^1.16.0",
     "express": "^5.2.0",
-    "firebase-admin": "^13.7.0",
+    "firebase-admin": "^13.8.0",
     "firebase-functions": "^7.0.0",
     "node-cron": "^4.2.1",
     "qrcode": "^1.5.4"
+  },
+  "overrides": {
+    "uuid": "^14.0.0",
+    "retry-request": "^8.0.2",
+    "teeny-request": "^10.1.2",
+    "http-proxy-agent": "^7.0.2",
+    "https-proxy-agent": "^7.0.2",
+    "@tootallnate/once": "^3.0.0"
   },
   "devDependencies": {
     "eslint": "^8.57.1",
