@@ -430,7 +430,9 @@ exports.getIntaSendPaymentStatus = onCall(
 
 /**
  * Callable: set supported countries (ISO 3166-1 alpha-3), super admin only.
- * Request: { countries: string[] } e.g. ["KEN","NGA","GHA","ETH"]
+ * Request: { countries: string[], replace?: boolean }
+ * - Default (replace omitted or false): **merges** with the stored list (add-only; safe if the UI sends only new codes).
+ * - replace: true — persist `countries` as the full list (use to remove codes or reset the set).
  */
 exports.setSupportedCountries = onCall(
   {
@@ -449,8 +451,10 @@ exports.setSupportedCountries = onCall(
         throw new HttpsError("unauthenticated", "Authentication required");
       }
 
-      const { countries } = request.data || {};
-      return await adminActionsLib.setSupportedCountries(uid, countries);
+      const { countries, replace } = request.data || {};
+      return await adminActionsLib.setSupportedCountries(uid, countries, {
+        replace: replace === true,
+      });
     } catch (error) {
       console.error("setSupportedCountries:", {
         uid: request.auth?.uid,
@@ -472,5 +476,48 @@ exports.setSupportedCountries = onCall(
       throw new HttpsError("internal", `Failed to update supported countries: ${error.message}`);
     }
   },
+);
+
+/**
+ * Callable: remove Firestore/RTDB data for user ids that have no Auth record (orphans).
+ * Paginated — pass { startAfterUserId, limit } from prior response nextCursor until done.
+ */
+exports.pruneOrphanFirestoreUsers = onCall(
+    {
+      region: config.region,
+      cpu: config.resources.cpu,
+      memory: "512MiB",
+      enforceAppCheck: false,
+    },
+    async (request) => {
+      try {
+        const adminId = request.auth?.uid;
+        if (!adminId) {
+          throw new HttpsError("unauthenticated", "Authentication required");
+        }
+        if (!verifyAdminFromToken(request.auth)) {
+          throw new HttpsError("permission-denied", "Admin access required");
+        }
+        return await adminActionsLib.pruneOrphanFirestoreUsers(
+            adminId,
+            request.data || {},
+        );
+      } catch (error) {
+        console.error("pruneOrphanFirestoreUsers:", {
+          adminId: request.auth?.uid,
+          error: error.message,
+        });
+        if (error instanceof HttpsError) {
+          throw error;
+        }
+        if (error.message.includes("Admin access required")) {
+          throw new HttpsError("permission-denied", error.message);
+        }
+        throw new HttpsError(
+            "internal",
+            `pruneOrphanFirestoreUsers failed: ${error.message}`,
+        );
+      }
+    },
 );
 

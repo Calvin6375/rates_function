@@ -9,6 +9,10 @@ const { mergeCustomUserClaims, clearPartnerClaims, getCustomClaims } = require("
 
 const MEMBERS_SUB = "members";
 
+/** Portal provisioning: Firestore `users` doc markers (Partner dashboard signup). */
+const INSTITUTION_PARTNER_DASHBOARD = "PartnerDashboard";
+const CHANNEL_B2B = "B2B";
+
 /** Roles org admin may assign (claims + members doc). */
 /** @type {readonly string[]} */
 const ASSIGNABLE_ROLES = ["member", "viewer", "finance", "support", "auditor", "operations"];
@@ -26,14 +30,56 @@ function membersCollection(partnerId) {
 }
 
 /**
+ * Parse optional Institution + Channel from ensure-dashboard-profile body.
+ * Accepts PascalCase (admin dashboard) or camelCase keys. Typo PatnerDashboard
+ * normalizes to PartnerDashboard.
+ *
+ * @param {Object|null|undefined} body
+ * @return {{ institution: string, channel: string }|null} null = omit provisioning fields
+ * @throws {Error} invalid or partial pair
+ */
+function parsePortalProvisioningFields(body) {
+  if (!body || typeof body !== "object") {
+    return null;
+  }
+  const rawInst =
+      body.Institution !== undefined ? body.Institution : body.institution;
+  const rawCh = body.Channel !== undefined ? body.Channel : body.channel;
+  const hasInst =
+    rawInst !== undefined && rawInst !== null && String(rawInst).trim() !== "";
+  const hasCh =
+    rawCh !== undefined && rawCh !== null && String(rawCh).trim() !== "";
+  if (!hasInst && !hasCh) {
+    return null;
+  }
+  if (hasInst !== hasCh) {
+    throw new Error("Institution and Channel must both be provided together");
+  }
+  let institution = String(rawInst).trim();
+  if (institution === "PatnerDashboard") {
+    institution = INSTITUTION_PARTNER_DASHBOARD;
+  }
+  const channel = String(rawCh).trim();
+  if (institution !== INSTITUTION_PARTNER_DASHBOARD) {
+    throw new Error(
+        `Invalid Institution "${institution}" (expected ${INSTITUTION_PARTNER_DASHBOARD})`,
+    );
+  }
+  if (channel !== CHANNEL_B2B) {
+    throw new Error(`Invalid Channel "${channel}" (expected ${CHANNEL_B2B})`);
+  }
+  return { institution, channel };
+}
+
+/**
  * Ensure `users/{uid}` exists so dashboard login and consumer flows can resolve the profile.
  * Shape aligns with `userBootstrap` (name, email, balance, country, timestamps); idempotent.
  *
  * @param {string} uid
- * @param {{ email: string, displayName?: string|null }} opts
+ * @param {{ email: string, displayName?: string|null, institution?: string, channel?: string }} opts
  * @returns {Promise<void>}
  */
-async function ensureUserDashboardProfile(uid, { email, displayName }) {
+async function ensureUserDashboardProfile(uid, { email, displayName, institution, channel }) {
   const normalizedEmail =
     email && String(email).trim()
       ? String(email).trim().toLowerCase()
@@ -43,18 +89,24 @@ async function ensureUserDashboardProfile(uid, { email, displayName }) {
   const display =
     displayName && String(displayName).trim() ? String(displayName).trim() : null;
 
+  const provisioning =
+      institution && channel ? { institution, channel } : null;
+
   if (!snap.exists) {
-    await userRef.set(
-        {
-          name: display,
-          email: normalizedEmail,
-          createdAt: serverTimestamp(),
-          balance: 0,
-          country: null,
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true },
-    );
+    /** @type {Record<string, unknown>} */
+    const initial = {
+      name: display,
+      email: normalizedEmail,
+      createdAt: serverTimestamp(),
+      balance: 0,
+      country: null,
+      updatedAt: serverTimestamp(),
+    };
+    if (provisioning) {
+      initial.institution = provisioning.institution;
+      initial.channel = provisioning.channel;
+    }
+    await userRef.set(initial, { merge: true });
     return;
   }
 
@@ -75,6 +127,10 @@ async function ensureUserDashboardProfile(uid, { email, displayName }) {
   if (!("country" in existing) && existing.country === undefined) {
     updates.country = null;
   }
+  if (provisioning) {
+    updates.institution = provisioning.institution;
+    updates.channel = provisioning.channel;
+  }
   if (Object.keys(updates).length > 0) {
     updates.updatedAt = serverTimestamp();
     await userRef.update(updates);
@@ -85,13 +141,16 @@ async function ensureUserDashboardProfile(uid, { email, displayName }) {
  * Load Auth record and ensure `users/{uid}` exists (for HTTP bootstrap after sign-in).
  *
  * @param {string} uid
+ * @param {{ institution?: string, channel?: string }} [provisioning]
  * @returns {Promise<void>}
  */
-async function ensureUserDashboardProfileFromAuthUid(uid) {
+async function ensureUserDashboardProfileFromAuthUid(uid, provisioning = {}) {
   const userRecord = await admin.auth().getUser(uid);
   await ensureUserDashboardProfile(uid, {
     email: userRecord.email || "",
     displayName: userRecord.displayName || "",
+    institution: provisioning.institution,
+    channel: provisioning.channel,
   });
 }
 
@@ -350,12 +409,15 @@ module.exports = {
   MEMBERS_SUB,
   ASSIGNABLE_ROLES,
   ALL_PARTNER_ROLES,
+  INSTITUTION_PARTNER_DASHBOARD,
+  CHANNEL_B2B,
   setPartnerOrgAdmin,
   listMembers,
   addMember,
   updateMemberRole,
   removeMember,
   isAssignablePartnerRole,
+  parsePortalProvisioningFields,
   ensureUserDashboardProfile,
   ensureUserDashboardProfileFromAuthUid,
 };

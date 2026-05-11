@@ -8,8 +8,14 @@
 
 const admin = require("../admin");
 
-/** Only this account may change platform supported countries via `setSupportedCountries`. */
-const SUPER_ADMIN_EMAIL = "calvinrumba8@gmail.com";
+/**
+ * Platform owner email (normalized). Override per deployment with env `MASTER_ADMIN_EMAIL`.
+ * Same identity is used for `isSuperAdminUid` (B2B portal platform routes without `admin` claim).
+ */
+const SUPER_ADMIN_EMAIL = (
+  process.env.MASTER_ADMIN_EMAIL || "calvinrumba8@gmail.com"
+).trim()
+    .toLowerCase();
 
 /**
  * Set admin claim for a user
@@ -80,7 +86,7 @@ async function isSuperAdminUid(uid) {
   try {
     const userRecord = await admin.auth().getUser(uid);
     const email = (userRecord.email || "").trim().toLowerCase();
-    return email === SUPER_ADMIN_EMAIL.toLowerCase();
+    return email === SUPER_ADMIN_EMAIL;
   } catch (error) {
     console.error(`Error checking super admin for ${uid}:`, error.message);
     return false;

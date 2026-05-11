@@ -26,6 +26,8 @@ function serializeConsumerUserSummary(doc) {
     fiatBalance: d.fiatBalance != null ? Number(d.fiatBalance) : null,
     cryptoBalance: d.cryptoBalance != null ? Number(d.cryptoBalance) : null,
     currency: d.currency ?? null,
+    institution: d.institution ?? null,
+    channel: d.channel ?? null,
     createdAt: d.createdAt?.toDate?.()?.toISOString() ?? null,
     updatedAt: d.updatedAt?.toDate?.()?.toISOString() ?? null,
   };
@@ -59,6 +61,8 @@ function serializeConsumerUserDetail(doc) {
     cryptoBalance: d.cryptoBalance != null ? Number(d.cryptoBalance) : null,
     currency: d.currency ?? null,
     role: d.role ?? null,
+    institution: d.institution ?? null,
+    channel: d.channel ?? null,
     createdAt: d.createdAt?.toDate?.()?.toISOString() ?? null,
     updatedAt: d.updatedAt?.toDate?.()?.toISOString() ?? null,
   };

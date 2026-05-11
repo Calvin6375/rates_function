@@ -14,11 +14,19 @@
   },
   "main": "index.js",
   "dependencies": {
-    "firebase-admin": "^12.6.0",
-    "firebase-functions": "^6.0.1"
+    "firebase-admin": "^13.8.0",
+    "firebase-functions": "^7.0.0"
+  },
+  "overrides": {
+    "uuid": "^14.0.0",
+    "retry-request": "^8.0.2",
+    "teeny-request": "^10.1.2",
+    "http-proxy-agent": "^7.0.2",
+    "https-proxy-agent": "^7.0.2",
+    "@tootallnate/once": "^3.0.0"
   },
   "devDependencies": {
-    "eslint": "^8.15.0",
+    "eslint": "^8.57.1",
     "eslint-config-google": "^0.14.0",
     "firebase-functions-test": "^3.1.0"
   },

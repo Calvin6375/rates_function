@@ -12,6 +12,7 @@ const ratesLib = require("../libs/rates");
 const p2pListingsLib = require("../libs/p2pListings");
 const { sanitizeRatesObject, maybeFixResolvedPair } = require("../utils/customerRatesSanitize");
 const supportedCountriesService = require("../services/supportedCountriesService");
+const customerSelfRegistrationService = require("../services/customerSelfRegistrationService");
 
 const db = admin.firestore();
 const app = express();
@@ -236,6 +237,39 @@ app.get("/countries", async (req, res) => {
       success: false,
       error: "Failed to get supported countries",
       message: error.message,
+    });
+  }
+});
+
+/**
+ * POST /register
+ * C2B self-registration (Flutter customer app). Creates Firebase Auth user +
+ * Firestore users/{uid} with Institution "Customer App" and Channel "C2B".
+ * Same App Check enforcement as the rest of this HTTP function.
+ */
+app.post("/register", async (req, res) => {
+  try {
+    const data = await customerSelfRegistrationService.registerC2bCustomer(
+        req.body || {},
+    );
+    res.status(201).json({
+      success: true,
+      data,
+      message:
+          "Account created. Sign in with the same email and password " +
+          "(do not register a second Firebase account for this email).",
+    });
+  } catch (err) {
+    const rawCode = err.statusCode;
+    const status =
+      typeof rawCode === "number" && rawCode >= 400 && rawCode < 600
+        ? rawCode
+        : 400;
+    console.error("POST /register:", status, err.message);
+    res.status(status).json({
+      success: false,
+      error: status === 409 ? "Already exists" : "Registration failed",
+      message: err.message || "Registration failed",
     });
   }
 });

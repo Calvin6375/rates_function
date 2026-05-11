@@ -1,22 +1,45 @@
 /**
- * @fileoverview B2B portal HTTP API — platform super-admin (Firebase admin claim) manages partners
- * and org admins; each partner org admin manages team members and roles via Bearer ID token.
+ * @fileoverview B2B portal HTTP API — platform super-admin (Firebase `admin` claim or master
+ * account per `isSuperAdminUid`) manages partners and org admins; partner org admins use Bearer ID token.
  * Base path: /b2bPortal (function name).
  */
 
 const { onRequest } = require("firebase-functions/v2/https");
 const express = require("express");
 const config = require("../config");
+const { isSuperAdminUid } = require("../utils/adminClaims");
 const { verifyFirebaseAuth } = require("../libs/auth");
 const partnerService = require("../services/partnerService");
 const b2bMemberService = require("../services/b2bMemberService");
 const b2bOnboardingService = require("../services/b2bOnboardingService");
 const platformConsumerService = require("../services/platformConsumerService");
+const dashboardUserDeletionService = require("../services/dashboardUserDeletionService");
 
 const { ALL_PARTNER_ROLES } = b2bMemberService;
 
+/** Must match `exports.<name>` in `functions/index.js` (URL path segment before routes). */
+const B2B_PORTAL_FUNCTION_SEGMENT = "b2bPortal";
+
 const app = express();
 app.use(express.json());
+
+/**
+ * Gen2 HTTP URLs are `.../b2bPortal/platform/...` but routes are `/platform/...`.
+ * Strip the function segment when present so DELETE and all paths match.
+ */
+app.use((req, res, next) => {
+  const raw = req.url || "/";
+  const qIdx = raw.indexOf("?");
+  const pathPart = qIdx === -1 ? raw : raw.slice(0, qIdx);
+  const query = qIdx === -1 ? "" : raw.slice(qIdx);
+  const prefix = `/${B2B_PORTAL_FUNCTION_SEGMENT}`;
+  if (pathPart === prefix || pathPart.startsWith(`${prefix}/`)) {
+    const rest =
+        pathPart === prefix ? "/" : pathPart.slice(prefix.length) || "/";
+    req.url = rest + query;
+  }
+  next();
+});
 
 app.use((req, res, next) => {
   res.set("Access-Control-Allow-Origin", "*");
@@ -45,12 +68,24 @@ async function loadFirebaseUser(req, res, next) {
   next();
 }
 
-function requirePlatformAdmin(req, res, next) {
-  if (req.decodedToken?.admin !== true) {
+/**
+ * Platform admin: Firebase custom claim `admin: true`, or master account (see `isSuperAdminUid`).
+ */
+async function requirePlatformAdmin(req, res, next) {
+  try {
+    if (req.decodedToken?.admin === true) {
+      next();
+      return;
+    }
+    if (await isSuperAdminUid(req.userId)) {
+      next();
+      return;
+    }
     res.status(403).json({ success: false, error: "Platform admin access required" });
-    return;
+  } catch (err) {
+    console.error("requirePlatformAdmin:", err.message);
+    res.status(500).json({ success: false, error: "Authorization check failed" });
   }
-  next();
 }
 
 function attachPartnerContext(req, res, next) {
@@ -77,7 +112,7 @@ function requirePartnerOrgAdmin(req, res, next) {
   next();
 }
 
-// --- Platform (super admin = Firebase custom claim admin: true) ---
+// --- Platform (super admin = claim admin: true OR master email in adminClaims.js) ---
 
 app.get("/platform/partners", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
   try {
@@ -256,7 +291,38 @@ app.get("/platform/consumer-users/:userId", loadFirebaseUser, requirePlatformAdm
 });
 
 /**
- * Session/bootstrap for platform super-admins (Firebase claim admin: true).
+ * DELETE /platform/users/:userId
+ * Platform master admin only (Firebase `admin` claim or super-admin email):
+ * deletes Firebase Auth user (if present), partner claims, and Firestore/RTDB data.
+ */
+app.delete("/platform/users/:userId", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+  try {
+    const actorIsSuperAdmin = await isSuperAdminUid(req.userId);
+    const data = await dashboardUserDeletionService.deleteUserAsPlatformAdmin(
+        req.userId,
+        req.params.userId,
+        { actorIsSuperAdmin },
+    );
+    res.status(200).json({ success: true, data });
+  } catch (err) {
+    const msg = err.message || "Delete failed";
+    console.error("b2bPortal DELETE /platform/users/:userId:", msg);
+    let status = 400;
+    if (msg.includes("not found") || msg.includes("Member not found")) {
+      status = 404;
+    } else if (
+      msg.includes("Cannot delete") ||
+      msg.includes("Only the platform owner") ||
+      msg.includes("administrator account")
+    ) {
+      status = 403;
+    }
+    res.status(status).json({ success: false, error: msg });
+  }
+});
+
+/**
+ * Session/bootstrap for platform super-admins (claim admin: true or master account).
  * Unlike GET /portal/me, does not require B2B partnerId / partnerRole claims.
  */
 app.get("/platform/me", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
@@ -282,7 +348,20 @@ app.get("/platform/me", loadFirebaseUser, requirePlatformAdmin, async (req, res)
  */
 app.post("/portal/ensure-dashboard-profile", loadFirebaseUser, async (req, res) => {
   try {
-    await b2bMemberService.ensureUserDashboardProfileFromAuthUid(req.userId);
+    let provisioning = {};
+    try {
+      const parsed = b2bMemberService.parsePortalProvisioningFields(req.body);
+      if (parsed) {
+        provisioning = parsed;
+      }
+    } catch (parseErr) {
+      res.status(400).json({ success: false, error: parseErr.message });
+      return;
+    }
+    await b2bMemberService.ensureUserDashboardProfileFromAuthUid(
+        req.userId,
+        provisioning,
+    );
     res.status(200).json({
       success: true,
       message: "Dashboard profile ensured",
@@ -386,7 +465,8 @@ app.post("/portal/onboarding/complete", loadFirebaseUser, async (req, res) => {
 app.get("/portal/me", loadFirebaseUser, async (req, res) => {
   try {
     const dt = req.decodedToken || {};
-    const isPlatformAdmin = dt.admin === true;
+    const isPlatformAdmin =
+      dt.admin === true || (await isSuperAdminUid(req.userId));
     const pid = dt.partnerId;
     const role = dt.partnerRole;
 
@@ -499,6 +579,36 @@ app.delete("/portal/members/:userId", loadFirebaseUser, attachPartnerContext, re
     console.error("b2bPortal DELETE /portal/members:", err.message);
     const status = err.message.includes("not found") ? 404 : 400;
     res.status(status).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * DELETE /portal/users/:userId
+ * Partner org admin: removes member from org, deletes Firebase Auth user (if any),
+ * and Firestore/RTDB user data. Cannot remove org_admin (use platform flow).
+ */
+app.delete("/portal/users/:userId", loadFirebaseUser, attachPartnerContext, requirePartnerOrgAdmin, async (req, res) => {
+  try {
+    const data = await dashboardUserDeletionService.deleteUserAsPartnerOrgAdmin(
+        req.userId,
+        req.partnerId,
+        req.params.userId,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (err) {
+    const msg = err.message || "Delete failed";
+    console.error("b2bPortal DELETE /portal/users/:userId:", msg);
+    let status = 400;
+    if (msg.includes("not found") || msg.includes("Member not found")) {
+      status = 404;
+    } else if (
+      msg.includes("Cannot delete") ||
+      msg.includes("platform owner") ||
+      msg.includes("org admin")
+    ) {
+      status = 403;
+    }
+    res.status(status).json({ success: false, error: msg });
   }
 });
 

@@ -5,6 +5,7 @@
 
 const admin = require("../admin");
 const config = require("../config");
+const { deleteUserDataAcrossStores } = require("./userAuthDataCleanup");
 const { updateBalanceWithTransaction, getUserBalance, userExists } = require("../utils/firestore");
 const { logAdminAction } = require("../utils/transactions");
 const { validateBalanceUpdate } = require("../utils/validation");
@@ -543,31 +544,121 @@ async function getIntaSendPaymentStatus(adminId, invoiceId) {
 }
 
 /**
- * Replace platform supported countries (super admin only — enforced here).
+ * Set platform supported countries (super admin only — enforced here).
+ * Default: merge with existing. Pass `replace: true` to persist the request list only (removals).
  * @param {string} adminId - Caller Firebase uid
  * @param {unknown} countries - ISO 3166-1 alpha-3 codes
+ * @param {{ replace?: boolean }} [options]
  * @returns {Promise<Object>}
  */
-async function setSupportedCountries(adminId, countries) {
+async function setSupportedCountries(adminId, countries, options = {}) {
   const ok = await isSuperAdminUid(adminId);
   if (!ok) {
     throw new Error("Super admin access required");
   }
 
-  const result = await supportedCountriesService.setSupportedCountries(adminId, countries);
+  const result = await supportedCountriesService.setSupportedCountries(adminId, countries, options);
 
   await logAdminAction(
     adminId,
     "system",
     "setSupportedCountries",
-    { countries: result.before },
-    { countries: result.countries, updatedBy: result.updatedBy },
+    { countries: result.before, replace: !!options.replace },
+    { countries: result.countries, updatedBy: result.updatedBy, merged: result.merged },
   );
 
   return {
     success: true,
     countries: result.countries,
     updatedAt: result.updatedAt,
+    merged: result.merged,
+  };
+}
+
+/**
+ * Firestore `users` docs whose document id has no Firebase Auth user (orphans).
+ * Paginated; call repeatedly with nextCursor until scanned is 0 or omit cursor.
+ *
+ * @param {string} adminId
+ * @param {{ limit?: number, startAfterUserId?: string|null }} [options]
+ * @returns {Promise<Object>}
+ */
+async function pruneOrphanFirestoreUsers(adminId, options = {}) {
+  const ok = await verifyAdmin(adminId);
+  if (!ok) {
+    throw new Error("Admin access required");
+  }
+
+  const lim = Math.min(
+    Math.max(parseInt(String(options.limit || 25), 10) || 25, 1),
+    100,
+  );
+  const startAfter =
+    options.startAfterUserId && typeof options.startAfterUserId === "string"
+      ? options.startAfterUserId
+      : null;
+
+  const usersCol = firestore.collection(config.collections.users);
+  const FieldPath = admin.firestore.FieldPath;
+  let q = usersCol.orderBy(FieldPath.documentId()).limit(lim);
+  if (startAfter) {
+    q = q.startAfter(startAfter);
+  }
+  const snap = await q.get();
+
+  const deletedUids = [];
+  const deleteFailures = [];
+  const authLookupFailures = [];
+
+  for (const doc of snap.docs) {
+    const uid = doc.id;
+    try {
+      await admin.auth().getUser(uid);
+    } catch (e) {
+      if (e.code !== "auth/user-not-found") {
+        authLookupFailures.push({
+          uid,
+          message: e.message || String(e),
+          code: e.code || null,
+        });
+        continue;
+      }
+      try {
+        await deleteUserDataAcrossStores(uid, { requireUsersDocRemoved: true });
+        deletedUids.push(uid);
+      } catch (delErr) {
+        deleteFailures.push({
+          uid,
+          message: delErr.message || String(delErr),
+        });
+      }
+    }
+  }
+
+  const nextCursor =
+    snap.docs.length === lim ? snap.docs[snap.docs.length - 1].id : null;
+
+  await logAdminAction(
+      adminId,
+      "batch",
+      "pruneOrphanFirestoreUsers",
+      { limit: lim, startAfter: startAfter || null },
+      {
+        scanned: snap.docs.length,
+        deletedCount: deletedUids.length,
+        deletedUids: deletedUids.slice(0, 100),
+        deleteFailures,
+        nextCursor,
+      },
+  );
+
+  return {
+    success: true,
+    scanned: snap.docs.length,
+    deletedUids,
+    deleteFailures,
+    authLookupFailures,
+    nextCursor,
   };
 }
 
@@ -583,5 +674,6 @@ module.exports = {
   getIntaSendPaymentStatus,
   getIntaSendKeys,
   setSupportedCountries,
+  pruneOrphanFirestoreUsers,
 };
 

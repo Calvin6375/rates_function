@@ -88,22 +88,45 @@ async function getSupportedCountries() {
 
 /**
  * Persist list (caller must enforce super-admin).
+ *
+ * By default, **merges** with the current stored list (union, de-duplicated) so partial saves
+ * (e.g. only newly added codes) do not wipe existing entries. Pass `replace: true` to set the
+ * list exactly to `countries` (for removals or a full authoritative reset).
+ *
  * @param {string} actorUid
  * @param {string[]} countries
- * @returns {Promise<{ success: boolean, countries: string[], updatedAt: string }>}
+ * @param {{ replace?: boolean }} [options]
+ * @returns {Promise<{ success: boolean, countries: string[], updatedAt: string, merged: boolean }>}
  */
-async function setSupportedCountries(actorUid, countries) {
-  const normalized = normalizeCountryCodes(countries);
+async function setSupportedCountries(actorUid, countries, options = {}) {
+  const replace = options.replace === true;
+  const incoming = normalizeCountryCodes(countries);
+  if (incoming.length === 0) {
+    throw new Error(
+        "countries must be a non-empty array of ISO 3166-1 alpha-3 codes (3 letters, e.g. ETH, KEN)",
+    );
+  }
+
+  const ref = docRef();
+  const beforeSnap = await ref.get();
+  const beforeData = beforeSnap.exists ? beforeSnap.data() : {};
+
+  const currentPayload = await getSupportedCountries();
+  const currentList = currentPayload.countries || [];
+
+  let normalized;
+  if (replace) {
+    normalized = incoming;
+  } else {
+    normalized = normalizeCountryCodes([...currentList, ...incoming]);
+  }
+
   if (normalized.length === 0) {
     throw new Error("countries must be a non-empty array of ISO 3166-1 alpha-3 codes (3 letters, e.g. ETH, KEN)");
   }
   if (normalized.length > 250) {
     throw new Error("Too many countries (max 250)");
   }
-
-  const ref = docRef();
-  const beforeSnap = await ref.get();
-  const beforeData = beforeSnap.exists ? beforeSnap.data() : {};
 
   const updatePayload = {
     countries: normalized,
@@ -122,6 +145,7 @@ async function setSupportedCountries(actorUid, countries) {
     updatedAt: afterData.updatedAt?.toDate?.()?.toISOString() || new Date().toISOString(),
     updatedBy: actorUid,
     before: beforeData.countries || null,
+    merged: !replace,
   };
 }
 

@@ -39,6 +39,12 @@ const config = {
     transfiWebhookSecret: "TRANSFI_WEBHOOK_SECRET",
   },
 
+  /**
+   * Firebase Web API key (Console → Project settings → General).
+   * Used by `requestPasswordReset` to call Identity Toolkit `sendOobCode` server-side.
+   */
+  firebaseWebApiKey: getEnv("FIREBASE_WEB_API_KEY") || null,
+
   // Feature flags
   features: {
     enableIdempotency: getEnv("ENABLE_IDEMPOTENCY", "true") === "true",

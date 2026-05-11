@@ -17,10 +17,12 @@ const updatePhoneNumbersHttp = require("./http/updatePhoneNumbersHttp");
 const transactionsHttp = require("./http/transactionsHttp");
 const notificationsHttp = require("./http/notificationsHttp");
 const b2bPortalHttp = require("./http/b2bPortalHttp");
+const customerAuthHttp = require("./http/customerAuthHttp");
 
 // Import triggers
 const usersTrigger = require("./triggers/usersTrigger");
 const userBootstrap = require("./triggers/userBootstrap");
+const authUserCleanup = require("./triggers/authUserCleanup");
 
 // Export rates functions
 exports.fetchBinanceRates = ratesHttp.fetchBinanceRates;
@@ -62,6 +64,10 @@ exports.notificationsApi = notificationsHttp.notificationsApi;
 // Export user triggers
 exports.onUserCreated = usersTrigger.onUserCreated;
 exports.userBootstrap = userBootstrap.userBootstrap;
+exports.onAuthUserDeleted = authUserCleanup.onAuthUserDeleted;
+
+// Customer app: password reset email (Identity Toolkit; requires FIREBASE_WEB_API_KEY)
+exports.requestPasswordReset = customerAuthHttp.requestPasswordReset;
 
 // Export migration functions
 exports.migrateExistingUsers = migrateUsersHttp.migrateExistingUsers;
@@ -82,6 +88,7 @@ exports.getCommissionConfig = adminHttp.getCommissionConfig;
 exports.updateCommissionConfig = adminHttp.updateCommissionConfig;
 exports.getIntaSendPaymentStatus = adminHttp.getIntaSendPaymentStatus;
 exports.setSupportedCountries = adminHttp.setSupportedCountries;
+exports.pruneOrphanFirestoreUsers = adminHttp.pruneOrphanFirestoreUsers;
 
 // Export admin claims management functions
 exports.setAdminClaim = adminClaimsHttp.setAdminClaim;

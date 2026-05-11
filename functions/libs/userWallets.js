@@ -73,6 +73,8 @@ function formatUserData(doc) {
     status: data.status || "Active",
     createdAt: data.createdAt?.toDate?.()?.toISOString() || null,
     updatedAt: data.updatedAt?.toDate?.()?.toISOString() || null,
+    institution: data.institution || null,
+    channel: data.channel || null,
   };
 }
 
