@@ -61,21 +61,86 @@ async function createPartner({
 }
 
 /**
- * Get partner by ID
- *
- * @param {string} partnerId
- * @returns {Promise<Object|null>} Partner document (without apiKey in response for security; include only in create/regenerate)
+ * @param {FirebaseFirestore.DocumentSnapshot} doc
+ * @param {{ includeApiKey?: boolean }} [options]
+ * @returns {Object}
  */
-async function getPartner(partnerId) {
-  const doc = await collection("partners").doc(partnerId).get();
-  if (!doc.exists) return null;
-  const d = doc.data();
+function serializePartnerDoc(doc, options = {}) {
+  const includeApiKey = options.includeApiKey === true;
+  const d = doc.data() || {};
   const { apiKey, ...safe } = d;
-  return {
+  /** @type {Record<string, unknown>} */
+  const out = {
     id: doc.id,
     ...safe,
     orgAdminUid: d.orgAdminUid ?? null,
-    apiKeyMasked: apiKey ? `${apiKey.slice(0, 8)}...` : null,
+    apiKeyMasked: apiKey ? `${String(apiKey).slice(0, 8)}...` : null,
+  };
+  if (includeApiKey && apiKey) {
+    out.apiKey = String(apiKey);
+  }
+  return out;
+}
+
+/**
+ * Get partner by ID
+ *
+ * @param {string} partnerId
+ * @param {{ includeApiKey?: boolean }} [options] - platform admin routes may set includeApiKey: true
+ * @returns {Promise<Object|null>}
+ */
+async function getPartner(partnerId, options = {}) {
+  const doc = await collection("partners").doc(partnerId).get();
+  if (!doc.exists) return null;
+  return serializePartnerDoc(doc, options);
+}
+
+/**
+ * Full API key for platform admin (partner integration secret).
+ *
+ * @param {string} partnerId
+ * @returns {Promise<{ partnerId: string, apiKey: string, apiKeyMasked: string }|null>}
+ */
+async function getPartnerApiKey(partnerId) {
+  const doc = await collection("partners").doc(partnerId).get();
+  if (!doc.exists) return null;
+  const apiKey = doc.data()?.apiKey;
+  if (!apiKey || typeof apiKey !== "string") {
+    return null;
+  }
+  return {
+    partnerId: doc.id,
+    apiKey: String(apiKey),
+    apiKeyMasked: `${String(apiKey).slice(0, 8)}...`,
+  };
+}
+
+/**
+ * Rotate a partner API key (invalidates the previous key immediately).
+ *
+ * @param {string} partnerId
+ * @param {string} actorUid - Platform admin uid (audit)
+ * @returns {Promise<{ partnerId: string, apiKey: string, apiKeyMasked: string, previousApiKeyMasked: string|null }>}
+ */
+async function rotatePartnerApiKey(partnerId, actorUid) {
+  const ref = collection("partners").doc(partnerId);
+  const doc = await ref.get();
+  if (!doc.exists) {
+    throw new Error("Partner not found");
+  }
+  const previousKey = doc.data()?.apiKey || null;
+  const newKey = generateApiKey();
+  await ref.update({
+    apiKey: newKey,
+    apiKeyRotatedAt: serverTimestamp(),
+    apiKeyRotatedBy: actorUid,
+    updatedAt: serverTimestamp(),
+  });
+  return {
+    partnerId,
+    apiKey: newKey,
+    apiKeyMasked: `${newKey.slice(0, 8)}...`,
+    previousApiKeyMasked: previousKey ? `${String(previousKey).slice(0, 8)}...` : null,
   };
 }
 
@@ -124,11 +189,7 @@ async function listPartners(limit = 50, startAfter = null) {
   let query = collection("partners").orderBy("createdAt", "desc").limit(limit);
   if (startAfter) query = query.startAfter(startAfter);
   const snapshot = await query.get();
-  const partners = snapshot.docs.map((doc) => {
-    const d = doc.data();
-    const { apiKey, ...safe } = d;
-    return { id: doc.id, ...safe, apiKeyMasked: apiKey ? `${apiKey.slice(0, 8)}...` : null };
-  });
+  const partners = snapshot.docs.map((doc) => serializePartnerDoc(doc));
   const lastDoc = snapshot.docs.length === limit ? snapshot.docs[snapshot.docs.length - 1] : null;
   return { partners, lastDoc };
 }
@@ -137,6 +198,9 @@ module.exports = {
   generateApiKey,
   createPartner,
   getPartner,
+  getPartnerApiKey,
+  rotatePartnerApiKey,
+  serializePartnerDoc,
   getPartnerByApiKey,
   updatePartner,
   listPartners,

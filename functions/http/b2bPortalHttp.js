@@ -14,6 +14,9 @@ const b2bMemberService = require("../services/b2bMemberService");
 const b2bOnboardingService = require("../services/b2bOnboardingService");
 const platformConsumerService = require("../services/platformConsumerService");
 const dashboardUserDeletionService = require("../services/dashboardUserDeletionService");
+const paymentLinkService = require("../services/paymentLinkService");
+const { renderCheckoutHtml, renderErrorHtml } = require("../utils/paymentLinkCheckoutPage");
+const { logAdminAction } = require("../utils/transactions");
 
 const { ALL_PARTNER_ROLES } = b2bMemberService;
 
@@ -112,6 +115,27 @@ function requirePartnerOrgAdmin(req, res, next) {
   next();
 }
 
+/**
+ * @param {Error} err
+ * @returns {number}
+ */
+function paymentLinkErrorStatus(err) {
+  const msg = err.message || "";
+  if (msg.includes("not found")) {
+    return 404;
+  }
+  if (
+    msg.includes("Invalid") ||
+    msg.includes("required") ||
+    msg.includes("Must be") ||
+    msg.includes("Cannot edit") ||
+    msg.includes("No valid fields")
+  ) {
+    return 400;
+  }
+  return 500;
+}
+
 // --- Platform (super admin = claim admin: true OR master email in adminClaims.js) ---
 
 app.get("/platform/partners", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
@@ -158,9 +182,58 @@ app.post("/platform/partners", loadFirebaseUser, requirePlatformAdmin, async (re
   }
 });
 
+app.get("/platform/partners/:partnerId/api-key", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+  try {
+    const keyPayload = await partnerService.getPartnerApiKey(req.params.partnerId);
+    if (!keyPayload) {
+      res.status(404).json({ success: false, error: "Partner not found" });
+      return;
+    }
+    res.status(200).json({ success: true, data: keyPayload });
+  } catch (err) {
+    console.error("b2bPortal GET /platform/partners/:id/api-key:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * Rotate partner API key (super admin). Previous key stops working immediately.
+ */
+app.put("/platform/partners/:partnerId/api-key", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+  try {
+    const result = await partnerService.rotatePartnerApiKey(
+        req.params.partnerId,
+        req.userId,
+    );
+    await logAdminAction(
+        req.userId,
+        req.params.partnerId,
+        "rotatePartnerApiKey",
+        { apiKeyMasked: result.previousApiKeyMasked },
+        { apiKeyMasked: result.apiKeyMasked },
+    );
+    res.status(200).json({
+      success: true,
+      data: {
+        partnerId: result.partnerId,
+        apiKey: result.apiKey,
+        apiKeyMasked: result.apiKeyMasked,
+        previousApiKeyMasked: result.previousApiKeyMasked,
+      },
+      message: "API key rotated. The previous key is invalid immediately.",
+    });
+  } catch (err) {
+    console.error("b2bPortal PUT /platform/partners/:id/api-key:", err.message);
+    const status = err.message.includes("not found") ? 404 : 500;
+    res.status(status).json({ success: false, error: err.message });
+  }
+});
+
 app.get("/platform/partners/:partnerId", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
   try {
-    const partner = await partnerService.getPartner(req.params.partnerId);
+    const partner = await partnerService.getPartner(req.params.partnerId, {
+      includeApiKey: true,
+    });
     if (!partner) {
       res.status(404).json({ success: false, error: "Partner not found" });
       return;
@@ -182,6 +255,118 @@ app.patch("/platform/partners/:partnerId", loadFirebaseUser, requirePlatformAdmi
     });
   } catch (err) {
     console.error("b2bPortal PATCH /platform/partners/:id:", err.message);
+    const status = err.message.includes("not found") ? 404 : 500;
+    res.status(status).json({ success: false, error: err.message });
+  }
+});
+
+// --- Platform payment links (super admin) ---
+
+app.post("/platform/partners/:partnerId/payment-links", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+  try {
+    const link = await paymentLinkService.createPaymentLink(
+        req.params.partnerId,
+        req.userId,
+        req.body || {},
+    );
+    res.status(201).json({ success: true, data: link });
+  } catch (err) {
+    console.error("b2bPortal POST /platform/partners/:id/payment-links:", err.message);
+    res.status(paymentLinkErrorStatus(err)).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/platform/partners/:partnerId/payment-links", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+  try {
+    const limit = parseInt(String(req.query.limit || "50"), 10) || 50;
+    const links = await paymentLinkService.listPaymentLinksForPartner(
+        req.params.partnerId,
+        limit,
+    );
+    res.status(200).json({ success: true, data: { paymentLinks: links } });
+  } catch (err) {
+    console.error("b2bPortal GET /platform/partners/:id/payment-links:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/** List all payment links across partners; filter with ?partnerId= */
+app.get("/platform/payment-links", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+  try {
+    const limit = parseInt(String(req.query.limit || "50"), 10) || 50;
+    const partnerId = req.query.partnerId ? String(req.query.partnerId) : null;
+    const links = await paymentLinkService.listPaymentLinks(limit, partnerId);
+    res.status(200).json({ success: true, data: { paymentLinks: links } });
+  } catch (err) {
+    console.error("b2bPortal GET /platform/payment-links:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/** Single payment link (any partner) — platform super admin */
+app.get("/platform/payment-links/:linkId", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+  try {
+    const link = await paymentLinkService.getPaymentLink(req.params.linkId);
+    if (!link) {
+      res.status(404).json({ success: false, error: "Payment link not found" });
+      return;
+    }
+    res.status(200).json({ success: true, data: link });
+  } catch (err) {
+    console.error("b2bPortal GET /platform/payment-links/:linkId:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/** Update any payment link — platform super admin */
+app.patch("/platform/payment-links/:linkId", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+  try {
+    const before = await paymentLinkService.getPaymentLink(req.params.linkId);
+    if (!before) {
+      res.status(404).json({ success: false, error: "Payment link not found" });
+      return;
+    }
+    const link = await paymentLinkService.updatePaymentLink(
+        req.params.linkId,
+        req.userId,
+        req.body || {},
+    );
+    await logAdminAction(
+        req.userId,
+        link.partnerId,
+        "updatePaymentLink",
+        before,
+        link,
+    );
+    res.status(200).json({
+      success: true,
+      data: link,
+      message: "Payment link updated",
+    });
+  } catch (err) {
+    console.error("b2bPortal PATCH /platform/payment-links/:linkId:", err.message);
+    res.status(paymentLinkErrorStatus(err)).json({ success: false, error: err.message });
+  }
+});
+
+/** Delete any payment link — platform super admin */
+app.delete("/platform/payment-links/:linkId", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+  try {
+    const deleted = await paymentLinkService.deletePaymentLink(req.params.linkId);
+    await logAdminAction(
+        req.userId,
+        deleted.partnerId,
+        "deletePaymentLink",
+        deleted,
+        { deleted: true, linkId: deleted.linkId },
+    );
+    res.status(200).json({
+      success: true,
+      data: deleted,
+      message: "Payment link deleted",
+    });
+  } catch (err) {
+    console.error("b2bPortal DELETE /platform/payment-links/:linkId:", err.message);
     const status = err.message.includes("not found") ? 404 : 500;
     res.status(status).json({ success: false, error: err.message });
   }
@@ -609,6 +794,131 @@ app.delete("/portal/users/:userId", loadFirebaseUser, attachPartnerContext, requ
       status = 403;
     }
     res.status(status).json({ success: false, error: msg });
+  }
+});
+
+// --- Partner portal payment links (org admin create; all partner members read) ---
+
+app.post("/portal/payment-links", loadFirebaseUser, attachPartnerContext, requirePartnerOrgAdmin, async (req, res) => {
+  try {
+    const link = await paymentLinkService.createPaymentLink(
+        req.partnerId,
+        req.userId,
+        req.body || {},
+    );
+    res.status(201).json({ success: true, data: link });
+  } catch (err) {
+    console.error("b2bPortal POST /portal/payment-links:", err.message);
+    res.status(paymentLinkErrorStatus(err)).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/portal/payment-links", loadFirebaseUser, attachPartnerContext, async (req, res) => {
+  try {
+    const limit = parseInt(String(req.query.limit || "50"), 10) || 50;
+    const links = await paymentLinkService.listPaymentLinksForPartner(
+        req.partnerId,
+        limit,
+    );
+    res.status(200).json({ success: true, data: { paymentLinks: links } });
+  } catch (err) {
+    console.error("b2bPortal GET /portal/payment-links:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/portal/payment-links/:linkId", loadFirebaseUser, attachPartnerContext, async (req, res) => {
+  try {
+    const link = await paymentLinkService.getPaymentLink(req.params.linkId);
+    if (!link || link.partnerId !== req.partnerId) {
+      res.status(404).json({ success: false, error: "Payment link not found" });
+      return;
+    }
+    res.status(200).json({ success: true, data: link });
+  } catch (err) {
+    console.error("b2bPortal GET /portal/payment-links/:linkId:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.patch("/portal/payment-links/:linkId", loadFirebaseUser, attachPartnerContext, requirePartnerOrgAdmin, async (req, res) => {
+  try {
+    const link = await paymentLinkService.updatePaymentLink(
+        req.params.linkId,
+        req.userId,
+        req.body || {},
+        { partnerId: req.partnerId },
+    );
+    res.status(200).json({
+      success: true,
+      data: link,
+      message: "Payment link updated",
+    });
+  } catch (err) {
+    console.error("b2bPortal PATCH /portal/payment-links/:linkId:", err.message);
+    const status = paymentLinkErrorStatus(err);
+    res.status(status).json({ success: false, error: err.message });
+  }
+});
+
+/** Hosted payer checkout page — works without pay.truepay.africa DNS */
+app.get("/l/:linkId", (req, res) => {
+  const partnerId = req.query.partner ? String(req.query.partner) : "";
+  if (!partnerId) {
+    res.status(400).send(renderErrorHtml(
+        "Invalid link",
+        "This payment link is missing the partner parameter.",
+    ));
+    return;
+  }
+  res.set("Content-Type", "text/html; charset=utf-8");
+  res.set("Cache-Control", "no-store");
+  res.send(renderCheckoutHtml(
+      req.params.linkId,
+      partnerId,
+      `/${B2B_PORTAL_FUNCTION_SEGMENT}`,
+  ));
+});
+
+/** Public payer read for hosted checkout — no auth */
+app.get("/public/payment-links/:linkId", async (req, res) => {
+  try {
+    const partnerId = req.query.partner ? String(req.query.partner) : "";
+    if (!partnerId) {
+      res.status(400).json({
+        success: false,
+        error: "Query parameter partner is required",
+      });
+      return;
+    }
+    const link = await paymentLinkService.getPublicPaymentLink(
+        req.params.linkId,
+        partnerId,
+    );
+    if (!link) {
+      res.status(404).json({ success: false, error: "Payment link not found" });
+      return;
+    }
+    if (link.status === "expired") {
+      res.status(410).json({
+        success: false,
+        error: "Payment link has expired",
+        data: link,
+      });
+      return;
+    }
+    if (link.status !== "active") {
+      res.status(409).json({
+        success: false,
+        error: `Payment link is ${link.status}`,
+        data: link,
+      });
+      return;
+    }
+    res.status(200).json({ success: true, data: link });
+  } catch (err) {
+    console.error("b2bPortal GET /public/payment-links/:linkId:", err.message);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

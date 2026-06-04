@@ -13,6 +13,7 @@ const p2pListingsLib = require("../libs/p2pListings");
 const { sanitizeRatesObject, maybeFixResolvedPair } = require("../utils/customerRatesSanitize");
 const supportedCountriesService = require("../services/supportedCountriesService");
 const customerSelfRegistrationService = require("../services/customerSelfRegistrationService");
+const { isSuperAdminUid } = require("../utils/adminClaims");
 
 const db = admin.firestore();
 const app = express();
@@ -89,7 +90,8 @@ app.use((req, res, next) => {
 });
 
 /**
- * Express middleware: valid Firebase ID token and custom claim admin === true
+ * Express middleware: valid Firebase ID token and platform admin access.
+ * Accepts custom claim admin === true or master account (isSuperAdminUid), same as b2bPortal /platform/*.
  */
 async function requireAdmin(req, res, next) {
   try {
@@ -116,9 +118,10 @@ async function requireAdmin(req, res, next) {
       return;
     }
 
+    req.adminId = decodedToken.uid;
+
     // Fast path: admin claim is already in the token (most common case after first login)
     if (decodedToken.admin === true) {
-      req.adminId = decodedToken.uid;
       next();
       return;
     }
@@ -130,12 +133,17 @@ async function requireAdmin(req, res, next) {
       const userRecord = await admin.auth().getUser(decodedToken.uid);
       if (userRecord.customClaims && userRecord.customClaims.admin === true) {
         console.log(`requireAdmin: stale token for ${decodedToken.uid} — live claim check passed`);
-        req.adminId = decodedToken.uid;
         next();
         return;
       }
     } catch (userLookupErr) {
       console.warn("requireAdmin: live claim lookup failed:", userLookupErr.message);
+    }
+
+    // Platform owner email (MASTER_ADMIN_EMAIL) — same gate as b2bPortal requirePlatformAdmin.
+    if (await isSuperAdminUid(decodedToken.uid)) {
+      next();
+      return;
     }
 
     res.status(403).json({

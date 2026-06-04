@@ -99,6 +99,12 @@ const config = {
     transactionRecords: "transactionRecords", // Unified transaction log for engine + ledger
     wallets: "wallets", // Partner wallets; user balances stay in users
     safariCoinWallets: "safariCoinWallets",
+    paymentLinks: "paymentLinks",
+  },
+
+  paymentLinks: {
+    /** Override payer link host via PAYMENT_LINK_BASE_URL env (e.g. https://pay.truepay.africa). */
+    baseUrl: getEnv("PAYMENT_LINK_BASE_URL", null),
   },
 };
 
