@@ -285,6 +285,49 @@ function checkoutThemeStyles() {
       font-size: 0.75rem;
       color: var(--text-muted);
     }
+    .field {
+      margin-top: 20px;
+    }
+    .field-label {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .field-hint {
+      margin: 0 0 8px;
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+    }
+    .field-input {
+      width: 100%;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      font-family: inherit;
+      font-size: 1rem;
+      color: var(--text);
+      background: var(--white);
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .field-input:focus {
+      outline: none;
+      border-color: var(--teal);
+      box-shadow: 0 0 0 3px var(--teal-ring);
+    }
+    .field-input::placeholder {
+      color: #94a3b8;
+    }
+    .field-error {
+      margin-top: 8px;
+      font-size: 0.8125rem;
+      color: #b91c1c;
+      display: none;
+    }
+    .field-error.visible {
+      display: block;
+    }
   `;
 }
 
@@ -363,8 +406,11 @@ function renderCheckoutHtml(linkId, partnerId, apiBasePath) {
       var checkoutInFlight = false;
       var checkoutWindowName = "truepay_intasend_checkout_" + linkId;
       var activeCheckoutUrl = null;
+      var activeCheckoutId = null;
+      var storageKey = "truepay_checkout_" + linkId;
 
       if (urlParams.get("paid") === "1") {
+        activeCheckoutId = sessionStorage.getItem(storageKey);
         renderPaidPending();
       } else {
         loadLink();
@@ -405,16 +451,25 @@ function renderCheckoutHtml(linkId, partnerId, apiBasePath) {
         pollStatus(0);
       }
 
+      function statusUrl() {
+        var url = apiBase + "/public/payment-links/" + encodeURIComponent(linkId) + "/status" +
+            "?partner=" + encodeURIComponent(partnerId);
+        if (activeCheckoutId) {
+          url += "&checkoutId=" + encodeURIComponent(activeCheckoutId);
+        }
+        return url;
+      }
+
       function pollStatus(attempt) {
         if (attempt > 20) {
           return;
         }
-        fetch(apiBase + "/public/payment-links/" + encodeURIComponent(linkId) + "/status" +
-            "?partner=" + encodeURIComponent(partnerId))
+        fetch(statusUrl())
           .then(function (res) { return res.json(); })
           .then(function (body) {
             if (body && body.success && body.data && body.data.status === "paid") {
-              render(body.data);
+              sessionStorage.removeItem(storageKey);
+              render(body.data, true);
             } else {
               setTimeout(function () { pollStatus(attempt + 1); }, 2000);
             }
@@ -430,12 +485,12 @@ function renderCheckoutHtml(linkId, partnerId, apiBasePath) {
         return d.innerHTML;
       }
 
-      function render(link) {
+      function render(link, isPaidSession) {
         var statusClass = link.status === "active" ? "active" :
           link.status === "paid" ? "active" :
           link.status === "expired" ? "expired" : "other";
-        var canPay = link.status === "active";
-        var isPaid = link.status === "paid";
+        var canPay = link.status === "active" && !isPaidSession;
+        var isPaid = isPaidSession || link.status === "paid";
         app.innerHTML =
           '<div class="card-head">' +
             '<div class="badge"><span class="badge-dot"></span>' +
@@ -443,7 +498,7 @@ function renderCheckoutHtml(linkId, partnerId, apiBasePath) {
             '</div>' +
             '<h1 class="merchant">' + esc(link.partnerName || "Merchant") + '</h1>' +
             '<p class="subtitle">' +
-              (isPaid ? "This payment has been received" : "Complete your payment securely") +
+              (isPaid ? "Your payment has been received" : "Enter your name, then continue to payment") +
             '</p>' +
           '</div>' +
           '<div class="card-body">' +
@@ -451,23 +506,38 @@ function renderCheckoutHtml(linkId, partnerId, apiBasePath) {
               (isPaid ? '<div class="success-icon">✓</div>' : "") +
               '<div class="amount-label">' + (isPaid ? "Amount paid" : "Amount due") + '</div>' +
               '<div class="amount">' + esc(formatAmount(link.amount)) + ' ' + esc(link.currency) + '</div>' +
-              '<span class="status ' + statusClass + '">' + esc(link.status) + '</span>' +
+              '<span class="status ' + statusClass + '">' + esc(isPaid ? "paid" : link.status) + '</span>' +
             '</div>' +
             '<div class="details">' +
-              row("Booking ref", link.bookingReference) +
-              (link.guestName ? row("Guest", link.guestName) : "") +
-              (link.description ? row("Description", link.description) : "") +
+              row("Product ref", link.bookingReference) +
+              (isPaid && link.payerName ? row("Paid by", link.payerName) : "") +
+              (link.description ? row("Product", link.description) : "") +
               (link.expiresAt && !isPaid ? row("Expires", formatDate(link.expiresAt)) : "") +
-              (link.paidAt ? row("Paid", formatDate(link.paidAt)) : "") +
+              (isPaid && link.paidAt ? row("Paid", formatDate(link.paidAt)) : "") +
             '</div>' +
             (canPay ?
+              '<div class="field">' +
+                '<label class="field-label" for="payerName">Your full name</label>' +
+                '<p class="field-hint">Required before payment. Each client using this link enters their own name.</p>' +
+                '<input class="field-input" id="payerName" name="payerName" type="text" ' +
+                  'autocomplete="name" placeholder="e.g. James Ndegwa" maxlength="120" required />' +
+                '<p class="field-error" id="nameError">Please enter your full name (at least 2 characters).</p>' +
+              '</div>' +
               '<button type="button" class="btn" id="payBtn">Continue to payment</button>' +
               '<p class="note" id="payNote"></p>' :
               "") +
           '</div>';
 
         if (canPay) {
-          document.getElementById("payBtn").addEventListener("click", startCheckout);
+          var nameInput = document.getElementById("payerName");
+          var payBtn = document.getElementById("payBtn");
+          if (nameInput && payBtn) {
+            nameInput.addEventListener("input", function () {
+              payBtn.disabled = String(nameInput.value || "").trim().length < 2;
+            });
+            payBtn.disabled = true;
+            payBtn.addEventListener("click", startCheckout);
+          }
         }
       }
 
@@ -491,6 +561,21 @@ function renderCheckoutHtml(linkId, partnerId, apiBasePath) {
           }
           return;
         }
+        var nameInput = document.getElementById("payerName");
+        var nameError = document.getElementById("nameError");
+        var payerName = nameInput ? String(nameInput.value || "").trim() : "";
+        if (payerName.length < 2) {
+          if (nameError) {
+            nameError.classList.add("visible");
+          }
+          if (nameInput) {
+            nameInput.focus();
+          }
+          return;
+        }
+        if (nameError) {
+          nameError.classList.remove("visible");
+        }
         checkoutInFlight = true;
         var btn = document.getElementById("payBtn");
         var note = document.getElementById("payNote");
@@ -508,7 +593,7 @@ function renderCheckoutHtml(linkId, partnerId, apiBasePath) {
             "?partner=" + encodeURIComponent(partnerId), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: "{}",
+          body: JSON.stringify({ payerName: payerName }),
         })
           .then(function (res) { return res.json().then(function (body) { return { res: res, body: body }; }); })
           .then(function (_ref) {
@@ -520,6 +605,10 @@ function renderCheckoutHtml(linkId, partnerId, apiBasePath) {
             if (body.data && body.data.checkoutUrl) {
               var checkoutUrl = body.data.checkoutUrl;
               activeCheckoutUrl = checkoutUrl;
+              activeCheckoutId = body.data.checkoutId || null;
+              if (activeCheckoutId) {
+                sessionStorage.setItem(storageKey, activeCheckoutId);
+              }
               if (!openCheckoutTab(checkoutUrl)) {
                 window.location.href = checkoutUrl;
                 return;
@@ -551,6 +640,8 @@ function renderCheckoutHtml(linkId, partnerId, apiBasePath) {
           .catch(function (err) {
             checkoutInFlight = false;
             activeCheckoutUrl = null;
+            activeCheckoutId = null;
+            sessionStorage.removeItem(storageKey);
             if (btn) {
               btn.disabled = false;
               btn.classList.remove("loading");
@@ -569,12 +660,12 @@ function renderCheckoutHtml(linkId, partnerId, apiBasePath) {
         if (attempt > 60) {
           return;
         }
-        fetch(apiBase + "/public/payment-links/" + encodeURIComponent(linkId) + "/status" +
-            "?partner=" + encodeURIComponent(partnerId))
+        fetch(statusUrl())
           .then(function (res) { return res.json(); })
           .then(function (body) {
             if (body && body.success && body.data && body.data.status === "paid") {
-              render(body.data);
+              sessionStorage.removeItem(storageKey);
+              render(body.data, true);
               return;
             }
             setTimeout(function () { pollUntilPaid(attempt + 1); }, 2000);
@@ -658,6 +749,16 @@ function renderSuccessHtml(linkId, apiBasePath) {
       var linkId = ${JSON.stringify(linkId)};
       var apiBase = ${JSON.stringify(apiBasePath.replace(/\/+$/, ""))};
       var app = document.getElementById("app");
+      var storageKey = "truepay_checkout_" + linkId;
+      var activeCheckoutId = sessionStorage.getItem(storageKey);
+
+      function statusUrl() {
+        var url = apiBase + "/public/payment-links/" + encodeURIComponent(linkId) + "/status";
+        if (activeCheckoutId) {
+          url += "?checkoutId=" + encodeURIComponent(activeCheckoutId);
+        }
+        return url;
+      }
 
       function esc(s) {
         var d = document.createElement("div");
@@ -716,18 +817,20 @@ function renderSuccessHtml(linkId, apiBasePath) {
               '<span class="status active">paid</span>' +
             '</div>' +
             '<div class="details">' +
-              (link.bookingReference ? row("Booking ref", link.bookingReference) : "") +
-              (link.guestName ? row("Guest", link.guestName) : "") +
+              (link.bookingReference ? row("Product ref", link.bookingReference) : "") +
+              (link.description ? row("Product", link.description) : "") +
+              (link.payerName ? row("Paid by", link.payerName) : "") +
               (link.paidAt ? row("Paid", formatDate(link.paidAt)) : "") +
             '</div>' +
           '</div>';
       }
 
       function poll(attempt) {
-        fetch(apiBase + "/public/payment-links/" + encodeURIComponent(linkId) + "/status")
+        fetch(statusUrl())
           .then(function (res) { return res.json(); })
           .then(function (body) {
             if (body && body.success && body.data && body.data.status === "paid") {
+              sessionStorage.removeItem(storageKey);
               renderPaid(body.data);
               return;
             }

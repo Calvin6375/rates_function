@@ -60,20 +60,25 @@ async function lookupB2bInvoiceMapping(paymentId) {
 }
 
 /**
+ * Record a successful payment against a reusable org link (does not deactivate the link).
+ *
  * @param {string} linkId
  * @param {Object} updates
  * @returns {Promise<void>}
  */
-async function markPaymentLinkPaid(linkId, updates) {
+async function recordPaymentOnLink(linkId, updates) {
   if (!linkId) {
     return;
   }
-  await firestore.collection(config.collections.paymentLinks).doc(linkId).update({
-    status: "paid",
-    paidAt: admin.firestore.FieldValue.serverTimestamp(),
+  /** @type {Record<string, unknown>} */
+  const patch = {
+    lastPaidAt: admin.firestore.FieldValue.serverTimestamp(),
+    paymentCount: admin.firestore.FieldValue.increment(1),
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    status: "active",
     ...updates,
-  });
+  };
+  await firestore.collection(config.collections.paymentLinks).doc(linkId).update(patch);
 }
 
 /**
@@ -131,6 +136,8 @@ async function processB2bPaymentWebhook(paymentData, payload, mapping) {
             status: transactionService.STATUSES.completed,
             metadata: {
               reference: mapping.bookingReference || null,
+              bookingReference: mapping.bookingReference || null,
+              payerName: mapping.payerName || null,
               linkId,
               orderId: mapping.orderId || null,
               invoiceId: paymentId,
@@ -146,11 +153,12 @@ async function processB2bPaymentWebhook(paymentData, payload, mapping) {
           });
 
           if (linkId) {
-            await markPaymentLinkPaid(linkId, {
-              transactionId,
-              invoiceId: paymentId,
-              paidAmount: creditAmount,
-              paidCurrency: creditCurrency,
+            await recordPaymentOnLink(linkId, {
+              lastTransactionId: transactionId,
+              lastInvoiceId: paymentId,
+              lastPaidAmount: creditAmount,
+              lastPaidCurrency: creditCurrency,
+              lastPayerName: mapping.payerName || null,
             });
           }
 
@@ -208,5 +216,5 @@ module.exports = {
   B2B_PURPOSE,
   lookupB2bInvoiceMapping,
   processB2bPaymentWebhook,
-  markPaymentLinkPaid,
+  recordPaymentOnLink,
 };

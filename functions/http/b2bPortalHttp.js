@@ -177,6 +177,64 @@ function paymentLinkErrorStatus(err) {
   return 500;
 }
 
+/**
+ * List transactions for portal or platform dashboard APIs.
+ *
+ * @param {import('express').Request} req
+ * @param {{ platformScope: boolean, partnerId?: string|null }} scope
+ * @returns {Promise<{ transactions: Object[], nextPageCursor: string|null, channel: string|null }>}
+ */
+async function fetchPortalTransactions(req, scope) {
+  const limit = Math.min(parseInt(String(req.query.limit || "50"), 10) || 50, 100);
+  const startAfter = req.query.startAfter ? String(req.query.startAfter) : null;
+  const channel = req.query.channel ? String(req.query.channel) : null;
+  const statusFilter = req.query.status ? String(req.query.status) : null;
+  const typeFilter = req.query.type ? String(req.query.type) : null;
+
+  /** @type {Record<string, unknown>} */
+  const listOpts = {
+    limit,
+    startAfterId: startAfter,
+    status: statusFilter || undefined,
+  };
+
+  if (scope.platformScope) {
+    const partnerFilter = req.query.partnerId ? String(req.query.partnerId) : null;
+    if (partnerFilter) {
+      listOpts.partnerId = partnerFilter;
+    }
+    if (typeFilter) {
+      listOpts.type = typeFilter;
+    } else {
+      const channelTypes = transactionService.resolveChannelTypes(channel || "b2b");
+      if (channelTypes && channelTypes.length === 1) {
+        listOpts.type = channelTypes[0];
+      } else if (channelTypes && channelTypes.length > 1) {
+        listOpts.types = channelTypes;
+      }
+    }
+  } else {
+    listOpts.partnerId = scope.partnerId;
+    if (typeFilter) {
+      listOpts.type = typeFilter;
+    } else if (channel) {
+      const channelTypes = transactionService.resolveChannelTypes(channel);
+      if (channelTypes && channelTypes.length === 1) {
+        listOpts.type = channelTypes[0];
+      } else if (channelTypes && channelTypes.length > 1) {
+        listOpts.types = channelTypes;
+      }
+    }
+  }
+
+  const { transactions, nextPageCursor } = await transactionService.listTransactionRecords(listOpts);
+  return {
+    transactions: transactions.map(transactionService.serializePortalTransaction),
+    nextPageCursor,
+    channel: channel || (scope.platformScope ? "b2b" : null),
+  };
+}
+
 // --- Platform (super admin = claim admin: true OR master email in adminClaims.js) ---
 
 app.get("/platform/partners", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
@@ -320,11 +378,16 @@ app.post("/platform/partners/:partnerId/payment-links", loadFirebaseUser, requir
 app.get("/platform/partners/:partnerId/payment-links", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
   try {
     const limit = parseInt(String(req.query.limit || "50"), 10) || 50;
-    const links = await paymentLinkService.listPaymentLinksForPartner(
+    const startAfter = req.query.startAfter ? String(req.query.startAfter) : null;
+    const { paymentLinks, nextPageCursor } = await paymentLinkService.listPaymentLinksForPartner(
         req.params.partnerId,
         limit,
+        startAfter,
     );
-    res.status(200).json({ success: true, data: { paymentLinks: links } });
+    res.status(200).json({
+      success: true,
+      data: { paymentLinks, nextPageCursor },
+    });
   } catch (err) {
     console.error("b2bPortal GET /platform/partners/:id/payment-links:", err.message);
     res.status(500).json({ success: false, error: err.message });
@@ -336,8 +399,16 @@ app.get("/platform/payment-links", loadFirebaseUser, requirePlatformAdmin, async
   try {
     const limit = parseInt(String(req.query.limit || "50"), 10) || 50;
     const partnerId = req.query.partnerId ? String(req.query.partnerId) : null;
-    const links = await paymentLinkService.listPaymentLinks(limit, partnerId);
-    res.status(200).json({ success: true, data: { paymentLinks: links } });
+    const startAfter = req.query.startAfter ? String(req.query.startAfter) : null;
+    const { paymentLinks, nextPageCursor } = await paymentLinkService.listPaymentLinks(
+        limit,
+        partnerId,
+        startAfter,
+    );
+    res.status(200).json({
+      success: true,
+      data: { paymentLinks, nextPageCursor },
+    });
   } catch (err) {
     console.error("b2bPortal GET /platform/payment-links:", err.message);
     res.status(500).json({ success: false, error: err.message });
@@ -857,11 +928,16 @@ app.post("/portal/payment-links", loadFirebaseUser, attachPartnerContext, requir
 app.get("/portal/payment-links", loadFirebaseUser, attachPartnerContext, async (req, res) => {
   try {
     const limit = parseInt(String(req.query.limit || "50"), 10) || 50;
-    const links = await paymentLinkService.listPaymentLinksForPartner(
+    const startAfter = req.query.startAfter ? String(req.query.startAfter) : null;
+    const { paymentLinks, nextPageCursor } = await paymentLinkService.listPaymentLinksForPartner(
         req.partnerId,
         limit,
+        startAfter,
     );
-    res.status(200).json({ success: true, data: { paymentLinks: links } });
+    res.status(200).json({
+      success: true,
+      data: { paymentLinks, nextPageCursor },
+    });
   } catch (err) {
     console.error("b2bPortal GET /portal/payment-links:", err.message);
     res.status(500).json({ success: false, error: err.message });
@@ -902,6 +978,25 @@ app.patch("/portal/payment-links/:linkId", loadFirebaseUser, attachPartnerContex
   }
 });
 
+/** Partner org admin hard-delete (optional — UI may use PATCH cancel instead). */
+app.delete("/portal/payment-links/:linkId", loadFirebaseUser, attachPartnerContext, requirePartnerOrgAdmin, async (req, res) => {
+  try {
+    const deleted = await paymentLinkService.deletePaymentLink(
+        req.params.linkId,
+        { partnerId: req.partnerId },
+    );
+    res.status(200).json({
+      success: true,
+      data: deleted,
+      message: "Payment link deleted",
+    });
+  } catch (err) {
+    console.error("b2bPortal DELETE /portal/payment-links/:linkId:", err.message);
+    const status = err.message.includes("not found") ? 404 : 500;
+    res.status(status).json({ success: false, error: err.message });
+  }
+});
+
 /** Partner wallet balances (Firebase Bearer; no API key in browser). */
 app.get("/portal/wallet", loadFirebaseUser, attachPartnerContext, async (req, res) => {
   try {
@@ -919,33 +1014,14 @@ app.get("/portal/wallet", loadFirebaseUser, attachPartnerContext, async (req, re
 /** Partner transaction history (Firebase Bearer). Platform super admin: all B2B payments. */
 app.get("/portal/transactions", loadFirebaseUser, attachPartnerContextOrPlatformAdmin, async (req, res) => {
   try {
-    const limit = Math.min(parseInt(String(req.query.limit || "50"), 10) || 50, 100);
-    const typeFilter = req.query.type ? String(req.query.type) : null;
-    const statusFilter = req.query.status ? String(req.query.status) : null;
-    /** @type {{ partnerId?: string, type?: string, status?: string, limit: number }} */
-    const listOpts = { limit };
-
-    if (req.platformTransactionScope) {
-      const partnerFilter = req.query.partnerId ? String(req.query.partnerId) : null;
-      if (partnerFilter) {
-        listOpts.partnerId = partnerFilter;
-      }
-      listOpts.type = typeFilter || transactionService.TRANSACTION_TYPES.b2b_payment;
-    } else {
-      listOpts.partnerId = req.partnerId;
-      if (typeFilter) {
-        listOpts.type = typeFilter;
-      }
-    }
-    if (statusFilter) {
-      listOpts.status = statusFilter;
-    }
-
-    const { transactions } = await transactionService.listTransactionRecords(listOpts);
+    const data = await fetchPortalTransactions(req, {
+      platformScope: Boolean(req.platformTransactionScope),
+      partnerId: req.partnerId || null,
+    });
     res.status(200).json({
       success: true,
       data: {
-        transactions,
+        ...data,
         scope: req.platformTransactionScope ? "platform" : "partner",
       },
     });
@@ -955,24 +1031,16 @@ app.get("/portal/transactions", loadFirebaseUser, attachPartnerContextOrPlatform
   }
 });
 
-/** Platform-wide B2B transaction list (alias for super-admin dashboards). */
+/** Platform-wide transactions for super-admin dashboard (preferred for Overview / Partners tabs). */
 app.get("/platform/transactions", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
   try {
-    const limit = Math.min(parseInt(String(req.query.limit || "50"), 10) || 50, 100);
-    const partnerFilter = req.query.partnerId ? String(req.query.partnerId) : null;
-    const typeFilter = req.query.type ?
-      String(req.query.type) :
-      transactionService.TRANSACTION_TYPES.b2b_payment;
-    const statusFilter = req.query.status ? String(req.query.status) : null;
-    const { transactions } = await transactionService.listTransactionRecords({
-      partnerId: partnerFilter || undefined,
-      type: typeFilter,
-      status: statusFilter || undefined,
-      limit,
-    });
+    const data = await fetchPortalTransactions(req, { platformScope: true });
     res.status(200).json({
       success: true,
-      data: { transactions, scope: "platform" },
+      data: {
+        ...data,
+        scope: "platform",
+      },
     });
   } catch (err) {
     console.error("b2bPortal GET /platform/transactions:", err.message);
@@ -1067,6 +1135,7 @@ app.post("/public/payment-links/:linkId/checkout", async (req, res) => {
         req.params.linkId,
         partnerId,
         {
+          payerName: body.payerName || body.payer_name || body.name || null,
           email: body.email || null,
           phoneNumber: body.phoneNumber || body.phone || null,
           firstName: body.firstName || null,
@@ -1094,9 +1163,11 @@ app.post("/public/payment-links/:linkId/checkout", async (req, res) => {
     let status = 500;
     if (msg.includes("not found")) {
       status = 404;
-    } else if (msg.includes("expired") || msg.includes("already paid") || msg.includes("is cancelled")) {
+    } else if (msg.includes("expired") || msg.includes("is cancelled")) {
       status = 409;
     } else if (
+      msg.includes("Payer name is required") ||
+      msg.includes("already paid") ||
       intaSend?.httpStatus === 400 ||
       intaSend?.httpStatus === 422 ||
       msg.includes("Invalid") ||
@@ -1119,9 +1190,11 @@ app.post("/public/payment-links/:linkId/checkout", async (req, res) => {
 app.get("/public/payment-links/:linkId/status", async (req, res) => {
   try {
     const partnerId = req.query.partner ? String(req.query.partner) : null;
+    const checkoutId = req.query.checkoutId ? String(req.query.checkoutId) : null;
     const status = await b2bPaymentLinkCheckoutService.getPublicLinkStatus(
         req.params.linkId,
         partnerId,
+        checkoutId,
     );
     if (!status) {
       res.status(404).json({ success: false, error: "Payment link not found" });

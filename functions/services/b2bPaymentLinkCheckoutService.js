@@ -1,5 +1,6 @@
 /**
  * @fileoverview Start B2B hosted payment-link checkout sessions and track payer status.
+ * Links are org-wide and reusable; each payer supplies their name at checkout.
  */
 
 const admin = require("../admin");
@@ -10,6 +11,37 @@ const paymentRailService = require("./paymentRailService");
 
 const firestore = admin.firestore();
 const B2B_PURPOSE = "b2b_payment_link";
+
+/**
+ * @param {Object} payer
+ * @param {string} [payer.payerName]
+ * @param {string} [payer.firstName]
+ * @param {string} [payer.lastName]
+ * @returns {{ payerName: string, firstName: string, lastName: string }}
+ */
+function parsePayerIdentity(payer = {}) {
+  let fullName = "";
+  if (payer.payerName && String(payer.payerName).trim()) {
+    fullName = String(payer.payerName).trim();
+  } else if (payer.firstName || payer.lastName) {
+    fullName = [payer.firstName, payer.lastName]
+        .filter(Boolean)
+        .map((part) => String(part).trim())
+        .join(" ")
+        .trim();
+  }
+  if (!fullName || fullName.length < 2) {
+    throw new Error("Payer name is required (minimum 2 characters)");
+  }
+  const nameParts = fullName.split(/\s+/).filter(Boolean);
+  return {
+    payerName: fullName,
+    firstName: payer.firstName ? String(payer.firstName).trim() : nameParts[0],
+    lastName: payer.lastName ?
+      String(payer.lastName).trim() :
+      (nameParts.length > 1 ? nameParts.slice(1).join(" ") : "Customer"),
+  };
+}
 
 /**
  * @param {string} linkId
@@ -24,19 +56,54 @@ async function loadActiveLink(linkId, partnerId) {
   if (link.status === "expired") {
     throw new Error("Payment link has expired");
   }
-  if (link.status === "paid") {
-    throw new Error("Payment link is already paid");
+  if (link.status === "cancelled") {
+    throw new Error("Payment link is cancelled");
   }
-  if (link.status !== "active") {
+  if (link.status !== "active" && link.status !== "paid") {
     throw new Error(`Payment link is ${link.status}`);
   }
   return link;
 }
 
 /**
+ * @param {string} checkoutId
+ * @returns {Promise<(Object & { mappingDocId: string })|null>}
+ */
+async function lookupCheckoutMapping(checkoutId) {
+  if (!checkoutId) {
+    return null;
+  }
+  const mappingsCol = firestore.collection(config.collections.invoiceMappings);
+  const direct = await mappingsCol.doc(checkoutId).get();
+  if (direct.exists) {
+    const data = direct.data() || {};
+    if (data.purpose === B2B_PURPOSE) {
+      if (data.aliasOf) {
+        const primary = await mappingsCol.doc(data.aliasOf).get();
+        if (primary.exists) {
+          return { mappingDocId: primary.id, ...primary.data() };
+        }
+      }
+      return { mappingDocId: direct.id, ...data };
+    }
+  }
+  const byCheckout = await mappingsCol
+      .where("purpose", "==", B2B_PURPOSE)
+      .where("checkoutId", "==", checkoutId)
+      .limit(1)
+      .get();
+  if (!byCheckout.empty) {
+    const doc = byCheckout.docs[0];
+    return { mappingDocId: doc.id, ...doc.data() };
+  }
+  return null;
+}
+
+/**
  * @param {string} linkId
  * @param {string} partnerId
  * @param {Object} [payer]
+ * @param {string} [payer.payerName]
  * @param {string} [payer.email]
  * @param {string} [payer.phoneNumber]
  * @param {string} [payer.firstName]
@@ -48,6 +115,7 @@ async function loadActiveLink(linkId, partnerId) {
 async function startCheckout(linkId, partnerId, payer = {}, rail) {
   const link = await loadActiveLink(linkId, partnerId);
   const selectedRail = String(rail || paymentRailService.defaultRail()).toLowerCase();
+  const identity = parsePayerIdentity(payer);
 
   const redirectUrl = paymentLinkService.buildHostedSuccessUrl(linkId);
 
@@ -55,14 +123,13 @@ async function startCheckout(linkId, partnerId, payer = {}, rail) {
       link.bookingReference || linkId.replace(/^pl_/, "").slice(0, 24),
       linkId,
   );
-  const guestName = link.guestName ? String(link.guestName).trim() : "";
-  const nameParts = guestName.split(/\s+/).filter(Boolean);
-  const firstName = payer.firstName || nameParts[0] || "Guest";
-  const lastName = payer.lastName || (nameParts.length > 1 ? nameParts.slice(1).join(" ") : "Customer");
 
   const commentParts = [];
   if (link.bookingReference) {
     commentParts.push(String(link.bookingReference));
+  }
+  if (identity.payerName) {
+    commentParts.push(identity.payerName);
   }
   if (link.description) {
     commentParts.push(String(link.description));
@@ -76,8 +143,8 @@ async function startCheckout(linkId, partnerId, payer = {}, rail) {
     redirectUrl,
     email: payer.email || null,
     phoneNumber: payer.phoneNumber || null,
-    firstName,
-    lastName,
+    firstName: identity.firstName,
+    lastName: identity.lastName,
     country: payer.country || null,
     comment: commentParts.length ? commentParts.join(" — ") : null,
   });
@@ -88,6 +155,7 @@ async function startCheckout(linkId, partnerId, payer = {}, rail) {
       partnerId,
       rail: session.rail,
       checkoutUrl: null,
+      payerName: identity.payerName,
       message: session.message,
     };
   }
@@ -109,6 +177,7 @@ async function startCheckout(linkId, partnerId, payer = {}, rail) {
     checkoutUrl: session.checkoutUrl,
     rail: session.rail,
     bookingReference: link.bookingReference || null,
+    payerName: identity.payerName,
     metadata: {
       purpose: B2B_PURPOSE,
       partnerId,
@@ -119,7 +188,7 @@ async function startCheckout(linkId, partnerId, payer = {}, rail) {
       checkoutUrl: session.checkoutUrl,
       rail: session.rail,
       bookingReference: link.bookingReference || null,
-      guestName: link.guestName || null,
+      payerName: identity.payerName,
       apiRef,
       createdAt: new Date().toISOString(),
     },
@@ -142,6 +211,7 @@ async function startCheckout(linkId, partnerId, payer = {}, rail) {
     rail: session.rail,
     status: "pending",
     bookingReference: link.bookingReference || null,
+    payerName: identity.payerName,
     createdAt: serverTimestamp(),
   };
 
@@ -156,6 +226,7 @@ async function startCheckout(linkId, partnerId, payer = {}, rail) {
     lastCheckoutRail: session.rail,
     lastCheckoutId: checkoutId,
     updatedAt: serverTimestamp(),
+    ...(link.status === "paid" ? { status: "active" } : {}),
   });
 
   return {
@@ -167,15 +238,17 @@ async function startCheckout(linkId, partnerId, payer = {}, rail) {
     checkoutId,
     invoiceId,
     redirectUrl,
+    payerName: identity.payerName,
   };
 }
 
 /**
  * @param {string} linkId
  * @param {string|null} [partnerId] - when omitted, resolves from stored link (public status by linkId)
+ * @param {string|null} [checkoutId] - when set, returns status for a specific checkout session
  * @returns {Promise<Object|null>}
  */
-async function getPublicLinkStatus(linkId, partnerId = null) {
+async function getPublicLinkStatus(linkId, partnerId = null, checkoutId = null) {
   const doc = await collection("paymentLinks").doc(linkId).get();
   if (!doc.exists) {
     return null;
@@ -184,25 +257,51 @@ async function getPublicLinkStatus(linkId, partnerId = null) {
   if (partnerId && d.partnerId !== partnerId) {
     return null;
   }
+
+  if (checkoutId) {
+    const mapping = await lookupCheckoutMapping(checkoutId);
+    if (!mapping || mapping.linkId !== linkId) {
+      return null;
+    }
+    const sessionPaid = mapping.status === "completed";
+    return {
+      linkId: doc.id,
+      partnerId: d.partnerId,
+      partnerName: d.partnerName ?? null,
+      checkoutId,
+      status: sessionPaid ? "paid" : "pending",
+      amount: Number(mapping.amount ?? d.amount),
+      currency: mapping.currency ?? d.currency,
+      bookingReference: mapping.bookingReference ?? d.bookingReference ?? null,
+      payerName: mapping.payerName ?? null,
+      paidAt: mapping.completedAt?.toDate?.()?.toISOString?.() ?? null,
+      transactionId: mapping.transactionId ?? null,
+      invoiceId: mapping.invoiceId ?? mapping.checkoutId ?? checkoutId,
+    };
+  }
+
   const status = paymentLinkService.effectiveStatus(d);
+  const normalizedStatus = status === "paid" ? "active" : status;
   return {
     linkId: doc.id,
     partnerId: d.partnerId,
     partnerName: d.partnerName ?? null,
-    status,
+    status: normalizedStatus,
     amount: Number(d.amount),
     currency: d.currency,
     bookingReference: d.bookingReference ?? null,
-    guestName: d.guestName ?? null,
-    paidAt: d.paidAt?.toDate?.()?.toISOString?.() ?? null,
-    transactionId: d.transactionId ?? null,
-    invoiceId: d.invoiceId ?? null,
+    paymentCount: Number(d.paymentCount || 0),
+    lastPaidAt: d.lastPaidAt?.toDate?.()?.toISOString?.() ?? null,
+    lastPayerName: d.lastPayerName ?? null,
+    expiresAt: d.expiresAt?.toDate?.()?.toISOString() ?? null,
   };
 }
 
 module.exports = {
   B2B_PURPOSE,
+  parsePayerIdentity,
   startCheckout,
   getPublicLinkStatus,
   loadActiveLink,
+  lookupCheckoutMapping,
 };

@@ -175,33 +175,131 @@ function isFirestoreIndexUnavailable(err) {
   return code === 9 || msg.includes("FAILED_PRECONDITION") || msg.includes("requires an index");
 }
 
+/** Transaction types grouped for platform dashboard channel filter */
+const CHANNEL_TYPES = Object.freeze({
+  b2b: ["b2b_payment"],
+  c2b: ["topup", "withdrawal", "crypto_onramp", "crypto_offramp"],
+});
+
+/**
+ * @param {string} [channel]
+ * @returns {string[]|null} Firestore type filter; null = all types
+ */
+function resolveChannelTypes(channel) {
+  const key = String(channel || "b2b").toLowerCase();
+  if (key === "all") {
+    return null;
+  }
+  return CHANNEL_TYPES[key] || CHANNEL_TYPES.b2b;
+}
+
+/**
+ * @param {string} cursorId
+ * @returns {Promise<FirebaseFirestore.DocumentSnapshot|null>}
+ */
+async function resolveTransactionCursor(cursorId) {
+  if (!cursorId) {
+    return null;
+  }
+  const doc = await collection("transactionRecords").doc(String(cursorId)).get();
+  return doc.exists ? doc : null;
+}
+
+/**
+ * Normalize a transaction row for portal / platform API consumers.
+ *
+ * @param {Object} row
+ * @returns {Object}
+ */
+function serializePortalTransaction(row) {
+  const metadata = row.metadata && typeof row.metadata === "object" ? { ...row.metadata } : {};
+  const bookingReference =
+    metadata.bookingReference ||
+    metadata.reference ||
+    metadata.productReference ||
+    null;
+  const payerName =
+    metadata.payerName ||
+    row.payerName ||
+    metadata.guestName ||
+    null;
+  if (payerName) {
+    metadata.payerName = payerName;
+  }
+  if (bookingReference) {
+    metadata.bookingReference = bookingReference;
+  }
+  return {
+    transactionId: row.id,
+    id: row.id,
+    type: row.type,
+    partnerId: row.partnerId ?? null,
+    userId: row.userId ?? null,
+    amount: row.amount,
+    currency: row.currency,
+    status: row.status,
+    createdAt: row.createdAt ?? null,
+    updatedAt: row.updatedAt ?? null,
+    payerName,
+    metadata,
+  };
+}
+
 /**
  * List transaction records (e.g. for a partner or user)
  *
  * @param {Object} options
  * @param {string} [options.userId] - Filter by userId
  * @param {string} [options.partnerId] - Filter by partnerId
- * @param {string} [options.type] - Filter by type
+ * @param {string} [options.type] - Filter by type (single)
+ * @param {string[]} [options.types] - Filter by type (`in` query, max 10)
  * @param {string} [options.status] - Filter by status
  * @param {number} [options.limit=50]
  * @param {admin.firestore.DocumentSnapshot} [options.startAfter]
- * @returns {Promise<{ transactions: Array<Object>, lastDoc: admin.firestore.DocumentSnapshot|null }>}
+ * @param {string} [options.startAfterId] - Document id cursor
+ * @returns {Promise<{ transactions: Array<Object>, lastDoc: admin.firestore.DocumentSnapshot|null, nextPageCursor: string|null }>}
  */
-async function listTransactionRecords({ userId, partnerId, type, status, limit = 50, startAfter = null }) {
+async function listTransactionRecords({
+  userId,
+  partnerId,
+  type,
+  types,
+  status,
+  limit = 50,
+  startAfter = null,
+  startAfterId = null,
+}) {
+  let cursor = startAfter;
+  if (!cursor && startAfterId) {
+    cursor = await resolveTransactionCursor(startAfterId);
+  }
+
+  const typeList = Array.isArray(types) && types.length ?
+    types.slice(0, 10) :
+    (type ? [type] : null);
+
   let query = collection("transactionRecords").orderBy("createdAt", "desc").limit(limit);
   if (userId) query = query.where("userId", "==", userId);
   if (partnerId) query = query.where("partnerId", "==", partnerId);
-  if (type) query = query.where("type", "==", type);
+  if (typeList && typeList.length === 1) {
+    query = query.where("type", "==", typeList[0]);
+  } else if (typeList && typeList.length > 1) {
+    query = query.where("type", "in", typeList);
+  }
   if (status) query = query.where("status", "==", status);
-  if (startAfter) query = query.startAfter(startAfter);
+  if (cursor) query = query.startAfter(cursor);
 
   try {
     const snapshot = await query.get();
     const transactions = mapTransactionSnapshot(snapshot);
     const lastDoc = snapshot.docs.length === limit ? snapshot.docs[snapshot.docs.length - 1] : null;
-    return { transactions, lastDoc };
+    return {
+      transactions,
+      lastDoc,
+      nextPageCursor: lastDoc ? lastDoc.id : null,
+    };
   } catch (err) {
-    if (!isFirestoreIndexUnavailable(err) || startAfter) {
+    if (!isFirestoreIndexUnavailable(err) || cursor) {
       throw err;
     }
     // Index building or not deployed yet: scan recent rows and filter in memory.
@@ -213,19 +311,35 @@ async function listTransactionRecords({ userId, partnerId, type, status, limit =
     let transactions = mapTransactionSnapshot(fallbackSnap);
     if (userId) transactions = transactions.filter((row) => row.userId === userId);
     if (partnerId) transactions = transactions.filter((row) => row.partnerId === partnerId);
-    if (type) transactions = transactions.filter((row) => row.type === type);
+    if (typeList && typeList.length) {
+      transactions = transactions.filter((row) => typeList.includes(row.type));
+    }
     if (status) transactions = transactions.filter((row) => row.status === status);
+    if (startAfterId) {
+      const idx = transactions.findIndex((row) => row.id === startAfterId);
+      if (idx >= 0) {
+        transactions = transactions.slice(idx + 1);
+      }
+    }
     transactions = transactions.slice(0, limit);
-    return { transactions, lastDoc: null };
+    const lastRow = transactions.length === limit ? transactions[transactions.length - 1] : null;
+    return {
+      transactions,
+      lastDoc: null,
+      nextPageCursor: lastRow ? lastRow.id : null,
+    };
   }
 }
 
 module.exports = {
   TRANSACTION_TYPES,
   STATUSES,
+  CHANNEL_TYPES,
   createTransactionRecord,
   updateTransactionStatus,
   getTransactionRecord,
   listTransactionRecords,
+  serializePortalTransaction,
+  resolveChannelTypes,
   generateTransactionRecordId,
 };

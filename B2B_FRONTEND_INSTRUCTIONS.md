@@ -1,6 +1,6 @@
 # B2B payment links & portal — frontend integration guide
 
-Backend now supports **IntaSend checkout** on hosted payment links, **partner wallet credits** on webhook settlement, and **portal wallet/transaction reads** without exposing the Partner API key in the browser.
+Backend supports **IntaSend checkout** on hosted payment links, **partner wallet credits** on webhook settlement, and **portal wallet/transaction reads** without exposing the Partner API key in the browser.
 
 Base URL pattern:
 
@@ -12,26 +12,97 @@ TruePay example: `https://us-central1-truepay-72060.cloudfunctions.net/b2bPortal
 
 ---
 
-## 1. What changed (backend)
+## 1. Org-wide product payment links (June 2026)
+
+Payment links are **one per product/room** (`bookingReference` = product ref, `description` = product name), shared with **all clients**. Payer identity is collected **at checkout**, not when the link is created.
+
+| Before | After |
+|--------|--------|
+| Admin enters **Guest name** when creating the link | **Remove** Guest name from create/edit forms |
+| One guest per link; link status → `paid` after first payment | Link stays **`active`** until expiry/cancel; **reusable** |
+| Checkout without payer info | Payer enters **full name** on pay page, then IntaSend |
+
+### Dashboard changes (frontend team)
+
+1. **Create product payment link form** — remove Guest name; map UI labels to API fields:
+   - **Product reference** → `bookingReference` (required)
+   - **Product name** → `description` (optional)
+   - **Link expiry** → `expiryHours` (24, 48, 168) or omit for **no expiry**
+
+2. **Payment links table** — remove Guest column; show `paymentCount`, `lastPaidAt`, `lastPayerName`; legacy `paid` status → display as **active**.
+
+3. **Transactions tab (super admin blocker fix)** — call **`GET /platform/transactions`** (preferred) instead of `/portal/transactions` for platform super-admin views.
+
+---
+
+## 1b. Platform transactions API (super admin)
+
+```http
+GET /b2bPortal/platform/transactions?channel=b2b&limit=50&startAfter={cursor}
+Authorization: Bearer <Firebase ID token>
+```
+
+| Query | Default | Notes |
+|-------|---------|-------|
+| `channel` | `b2b` | `b2b` \| `c2b` \| `all` |
+| `partnerId` | — | Optional B2B partner filter |
+| `limit` | `50` | Max 100 |
+| `startAfter` | — | Pagination cursor (= last row `transactionId`) |
+| `status` | — | Optional status filter |
+
+**Response**
+
+```json
+{
+  "success": true,
+  "data": {
+    "transactions": [{
+      "transactionId": "txr_…",
+      "type": "b2b_payment",
+      "amount": 4500,
+      "currency": "USD",
+      "status": "completed",
+      "createdAt": "2026-06-05T12:00:00.000Z",
+      "payerName": "Jane Doe",
+      "metadata": {
+        "linkId": "pl_…",
+        "bookingReference": "DELUXE-TENT-A",
+        "payerName": "Jane Doe"
+      }
+    }],
+    "nextPageCursor": "txr_…",
+    "channel": "b2b",
+    "scope": "platform"
+  }
+}
+```
+
+**Fallback:** `GET /portal/transactions` also works for super admins (same shape + `scope`).
+
+C2B for super admin remains on `GET /transactionsApi/admin/transactions` — no change.
+
+---
+
+## 2. What changed (backend)
 
 | Area | Detail |
 |------|--------|
-| Hosted pay page | `GET /b2bPortal/l/:linkId?partner=` — **Continue to payment** starts IntaSend and redirects |
-| Checkout API | `POST /b2bPortal/public/payment-links/:linkId/checkout?partner=` |
-| Payment status | `GET /b2bPortal/public/payment-links/:linkId/status?partner=` |
+| Hosted pay page | `GET /b2bPortal/l/:linkId?partner=` — payer enters name, then **Continue to payment** |
+| Checkout API | `POST …/checkout?partner=` — **`payerName` required** |
+| Session status | `GET …/status?partner=&checkoutId=` — poll **per checkout**, not link-level `paid` |
 | Partner wallet | `GET /b2bPortal/portal/wallet` (Firebase Bearer) |
 | Partner transactions | `GET /b2bPortal/portal/transactions` (Firebase Bearer) |
-| Link statuses | `active`, `expired`, `cancelled`, **`paid`** |
+| Link statuses | `active`, `expired`, `cancelled` (+ legacy `paid` on old rows) |
 
 Consumer app InstaSend top-up (`createPayment` callable + user wallet webhook) is **unchanged**.
 
 ---
 
-## 2. B2B dashboard — partner portal (Firebase Auth)
+## 3. B2B dashboard — partner portal (Firebase Auth)
 
 Auth: `Authorization: Bearer <Firebase ID token>` with claims `partnerId` + `partnerRole`.
 
-### 2.1 Wallet balances
+### 3.1 Wallet balances
 
 ```http
 GET /b2bPortal/portal/wallet
@@ -52,7 +123,7 @@ Authorization: Bearer …
 
 Use this instead of calling `GET /partner/wallet` with `X-API-KEY` from the browser.
 
-### 2.2 Transaction history
+### 3.2 Transaction history
 
 ```http
 GET /b2bPortal/portal/transactions?limit=50
@@ -76,6 +147,7 @@ Authorization: Bearer …
         "metadata": {
           "linkId": "pl_…",
           "bookingReference": "…",
+          "payerName": "James Ndegwa",
           "invoiceId": "…",
           "rail": "intasend"
         },
@@ -86,9 +158,9 @@ Authorization: Bearer …
 }
 ```
 
-Filter or badge **`type === "b2b_payment"`** for payment-link collections. Metadata includes `linkId`, `bookingReference`, `invoiceId`, `rail`.
+Filter or badge **`type === "b2b_payment"`** for payment-link collections. Use **`metadata.payerName`** for the guest/payer column in transaction tables.
 
-### 2.3 Payment links (existing)
+### 3.3 Payment links
 
 | Action | Method | Path |
 |--------|--------|------|
@@ -97,30 +169,55 @@ Filter or badge **`type === "b2b_payment"`** for payment-link collections. Metad
 | Detail | `GET` | `/portal/payment-links/:linkId` |
 | Update | `PATCH` | `/portal/payment-links/:linkId` (org_admin) |
 
+Platform super-admin equivalents under `/platform/partners/:partnerId/payment-links` and `/platform/payment-links`.
+
+**Create body (example — no `guestName`)**
+
+```json
+{
+  "amount": 4500,
+  "currency": "USD",
+  "bookingReference": "BK-2026-0042",
+  "description": "Safari deposit",
+  "expiryHours": 24
+}
+```
+
+**List/detail fields (new / changed)**
+
+| Field | Meaning |
+|-------|---------|
+| `paymentCount` | Number of completed payments via this link |
+| `lastPaidAt` | ISO timestamp of most recent payment |
+| `lastPayerName` | Name entered by last payer (summary only) |
+| `lastTransactionId` | Latest settlement id |
+
 **UI updates**
 
-- Show status **`paid`** (green) alongside `active`, `expired`, `cancelled`.
-- Display optional fields when present: `paidAt`, `transactionId`, `invoiceId`.
-- Disable edit for **`paid`** links (backend rejects PATCH).
+- Remove **Guest name** from forms and tables.
+- Show **`paymentCount`** / **`lastPaidAt`** instead of link-level **Paid**.
+- Disable edit only for **`cancelled`** or **`expired`** links.
 - Share URL from `data.url` on create/list responses.
 
-### 2.4 Token refresh
+### 3.4 Token refresh
 
 After org-admin or member role changes, force **ID token refresh** (sign out/in or `getIdToken(true)`) before portal calls.
 
 ---
 
-## 3. Hosted payment link page (payer-facing)
+## 4. Hosted payment link page (payer-facing)
 
-You do **not** need a separate frontend app for the default flow — the backend serves HTML at:
+Default flow — backend serves HTML at:
 
 ```text
 GET /b2bPortal/l/:linkId?partner={partnerId}
 ```
 
+The hosted page already includes a **Your full name** field and sends `payerName` to checkout. **No dashboard work required** for the default payer experience unless you build a custom pay UI.
+
 Optional custom domain: set env `PAYMENT_LINK_BASE_URL` (e.g. `https://pay.truepay.africa`).
 
-### 3.1 If you build your own payer UI
+### 4.1 Custom payer UI (if not using hosted HTML)
 
 **Load link**
 
@@ -128,7 +225,7 @@ Optional custom domain: set env `PAYMENT_LINK_BASE_URL` (e.g. `https://pay.truep
 GET /b2bPortal/public/payment-links/:linkId?partner={partnerId}
 ```
 
-- `200` — `active` or **`paid`**
+- `200` — `active` (reusable; may include `paymentCount`, `lastPaidAt`)
 - `410` — expired
 - `409` — cancelled
 - `404` — not found / wrong partner
@@ -140,15 +237,18 @@ POST /b2bPortal/public/payment-links/:linkId/checkout?partner={partnerId}
 Content-Type: application/json
 
 {
-  "email": "guest@example.com",
+  "payerName": "James Ndegwa",
+  "email": "client@example.com",
   "phoneNumber": "2547…",
-  "firstName": "Jane",
-  "lastName": "Guest",
   "rail": "intasend"
 }
 ```
 
-All body fields are optional except `partner` query param. Default rail: `intasend` (override with env `B2B_DEFAULT_PAYMENT_RAIL` on backend).
+| Field | Required | Notes |
+|-------|----------|-------|
+| `payerName` | **Yes** | Full name (min 2 chars). Alternative: `firstName` + `lastName`. |
+| `email`, `phoneNumber` | No | Passed to IntaSend when provided |
+| `rail` | No | Default `intasend` |
 
 **Success `201`**
 
@@ -163,41 +263,41 @@ All body fields are optional except `partner` query param. Default rail: `intase
     "checkoutUrl": "https://payment.intasend.com/checkout/…/express/",
     "checkoutId": "…",
     "invoiceId": "…",
-    "redirectUrl": "https://…/b2bPortal/l/pl_…?partner=…&paid=1"
+    "payerName": "James Ndegwa",
+    "redirectUrl": "https://…/b2bPortal/l/pl_…/success"
   }
 }
 ```
 
-**Action:** redirect the payer to `data.checkoutUrl` (same tab or new tab).
+**Action:** open `data.checkoutUrl` (new tab recommended). Store `data.checkoutId` in `sessionStorage` keyed by `linkId` for post-redirect polling.
 
-**Poll after return**
-
-IntaSend redirects to `redirectUrl` with `?paid=1`. Poll until settled:
+**Poll after payment (per session)**
 
 ```http
-GET /b2bPortal/public/payment-links/:linkId/status?partner={partnerId}
+GET /b2bPortal/public/payment-links/:linkId/status?partner={partnerId}&checkoutId={checkoutId}
 ```
 
-When `data.status === "paid"`, show confirmation.
+When `data.status === "paid"`, show confirmation with `data.payerName`.
 
-Suggested poll: every 2s, max ~40s (hosted page already does this).
+Do **not** poll link-level status alone for confirmation — the link stays `active` after payment.
 
-### 3.2 Currency notes
+Suggested poll: every 2s, max ~60s.
+
+### 4.2 Currency notes
 
 Payment links allow `USD`, `KES`, `USDT`, `NGN`, `GHS`. **IntaSend checkout** currently supports **`KES`, `USD`, `GBP`, `EUR`, `NGN`, `GHS`** — not `USDT`. Links in USDT will return `400` from checkout until a crypto rail is added.
 
 ---
 
-## 4. Platform super-admin UI
+## 5. Platform super-admin UI
 
-No new routes required beyond existing payment-link management. Optional improvements:
-
-- Show **`paid`** status and `paidAt` in platform payment-link lists.
-- Link **`transactionId`** to partner transaction views.
+- Remove **Guest name** from create form and list columns (same as partner portal).
+- Show **`paymentCount`**, **`lastPaidAt`**, **`lastPayerName`** on link rows.
+- Transaction tables: column **Guest / Payer** from **`metadata.payerName`**, not from the link.
 
 ---
 
-## 5. Server-side / PMS integrations (unchanged)
+## 6. Server-side / PMS integrations (unchanged)
 
 Machine integrations still use **`partner`** with **`X-API-KEY`**:
 
@@ -209,7 +309,7 @@ Hosted link checkout is for **guest payers**; partner API remains for backends.
 
 ---
 
-## 6. Environment / DevOps (coordinate with backend)
+## 7. Environment / DevOps (coordinate with backend)
 
 Ensure these Firebase secrets are set for production checkout:
 
@@ -230,24 +330,27 @@ Deploy **`b2bPortal`**, **`handleTopUpWebhook`**, and **Firestore indexes** (`fi
 
 ---
 
-## 7. Consumer Flutter app
+## 8. Consumer Flutter app
 
 **No changes required** for B2B payment links. Do not call `createPayment` for hosted B2B links — that path credits **consumer** wallets.
 
 ---
 
-## 8. QA checklist
+## 9. QA checklist
 
-- [ ] Create payment link in portal → open `data.url` → **Continue to payment** → IntaSend → complete test payment.
-- [ ] Partner **`GET /portal/wallet`** balance increases.
-- [ ] **`GET /portal/transactions`** shows `b2b_payment` with `metadata.linkId`.
-- [ ] Link status becomes **`paid`**; PATCH rejected.
-- [ ] Re-open paid link → payer sees paid state (no pay button).
+- [ ] Create payment link **without** guest name → open `data.url`.
+- [ ] Enter payer name on hosted page → **Continue to payment** → IntaSend → complete test payment.
+- [ ] Confirmation shows **Paid by** with entered name.
+- [ ] Re-open same link → still **active**; another payer can pay with a different name.
+- [ ] Partner **`GET /portal/wallet`** balance increases per payment.
+- [ ] **`GET /portal/transactions`** shows `b2b_payment` with `metadata.payerName` and `metadata.linkId`.
+- [ ] Dashboard link list shows **`paymentCount`** ≥ 1, not link-level **Paid**.
+- [ ] Sending `guestName` on create returns **400**.
 - [ ] Consumer app top-up still credits **user** wallet (regression).
 
 ---
 
-## 9. Related code
+## 10. Related code
 
 | File | Role |
 |------|------|
