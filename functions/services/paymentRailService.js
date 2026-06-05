@@ -302,6 +302,92 @@ function extractCheckoutIdFromUrl(checkoutUrl) {
 }
 
 /**
+ * Collect all IntaSend identifiers from a checkout create response.
+ *
+ * @param {Object} data
+ * @param {string|null} checkoutUrl
+ * @returns {string[]}
+ */
+function collectCheckoutIdentifierIds(data, checkoutUrl) {
+  const ids = new Set();
+  const d = data && typeof data === "object" ? data : {};
+  for (const key of ["id", "invoice_id", "checkout_id", "reference", "api_ref"]) {
+    if (d[key]) {
+      ids.add(String(d[key]));
+    }
+  }
+  const fromUrl = extractCheckoutIdFromUrl(checkoutUrl);
+  if (fromUrl) {
+    ids.add(fromUrl);
+  }
+  return [...ids];
+}
+
+/**
+ * @param {boolean} [sandboxOverride]
+ * @returns {{ secretKey: string|null, apiHost: string, isSandbox: boolean }}
+ */
+function getIntaSendSecretConfig(sandboxOverride = null) {
+  const secretKey =
+    process.env.INTASEND_SECRET_KEY ||
+    process.env.INTASEND_API_SECRET ||
+    null;
+  const publishableKey = process.env.INTASEND_PUBLISHABLE_KEY || "";
+  const isSandbox = sandboxOverride != null ?
+    sandboxOverride :
+    isIntaSendSandbox(publishableKey);
+  const apiHost = isSandbox ?
+    "https://sandbox.intasend.com" :
+    "https://payment.intasend.com";
+  return { secretKey, apiHost, isSandbox };
+}
+
+/**
+ * Fetch IntaSend collection/checkout status by invoice or checkout id.
+ *
+ * @param {string} identifier
+ * @returns {Promise<Object|null>}
+ */
+async function fetchIntaSendPaymentStatus(identifier) {
+  if (!identifier) {
+    return null;
+  }
+  const { secretKey, apiHost } = getIntaSendSecretConfig();
+  if (!secretKey) {
+    console.warn("fetchIntaSendPaymentStatus: INTASEND_SECRET_KEY not configured");
+    return null;
+  }
+  const axios = require("axios");
+  const id = String(identifier).trim();
+  const headers = {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${secretKey}`,
+  };
+  const urls = [
+    `${apiHost}/api/v1/payment/collections/${encodeURIComponent(id)}/status/`,
+    `${apiHost}/api/v1/checkout/${encodeURIComponent(id)}/`,
+  ];
+  for (const url of urls) {
+    try {
+      const response = await axios.get(url, {
+        headers,
+        timeout: 12000,
+      });
+      const body = response.data || {};
+      const merged = body.invoice ? { ...body.invoice, ...body } : body;
+      if (merged.state || merged.invoice_id || merged.id) {
+        return merged;
+      }
+    } catch (err) {
+      if (err.response?.status !== 404) {
+        console.warn("fetchIntaSendPaymentStatus:", url, err.message);
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * @param {Object} params
  * @param {number} params.amount
  * @param {string} params.currency
@@ -465,6 +551,9 @@ module.exports = {
   sanitizeIntaSendApiRef,
   intaSendMerchantOrigin,
   extractCheckoutIdFromUrl,
+  collectCheckoutIdentifierIds,
+  fetchIntaSendPaymentStatus,
+  getIntaSendSecretConfig,
   createIntaSendCheckoutSession,
   createSession,
 };

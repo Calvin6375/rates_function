@@ -289,6 +289,68 @@ async function completeOnboarding(uid, attestation) {
   return {onboardingStatus: "submitted", partnerId};
 }
 
+/**
+ * Whether the onboarding "Go live" checklist step is complete.
+ * True when progress.goLiveDone is set or the linked partner status is active.
+ *
+ * @param {string} uid
+ * @param {string|null|undefined} partnerIdFromToken
+ * @return {Promise<boolean>}
+ */
+async function resolveGoLiveDone(uid, partnerIdFromToken) {
+  const snap = await onboardingRef(uid).get();
+  const ob = snap.exists ? snap.data() : null;
+  if (ob?.progress?.goLiveDone === true) {
+    return true;
+  }
+
+  let partnerId =
+    partnerIdFromToken && String(partnerIdFromToken).trim() ?
+      String(partnerIdFromToken).trim() :
+      null;
+  if (!partnerId && ob?.registeredPartnerId) {
+    partnerId = String(ob.registeredPartnerId);
+  }
+  if (!partnerId) {
+    return false;
+  }
+
+  const partner = await partnerService.getPartner(partnerId);
+  return partner != null && String(partner.status).toLowerCase() === "active";
+}
+
+/**
+ * Persist goLiveDone on the org admin onboarding doc when platform activates a partner.
+ *
+ * @param {string} partnerId
+ * @return {Promise<void>}
+ */
+async function markGoLiveDoneForPartner(partnerId) {
+  const partner = await partnerService.getPartner(partnerId);
+  if (!partner) {
+    return;
+  }
+  const uid = partner.orgAdminUid;
+  if (!uid || typeof uid !== "string") {
+    return;
+  }
+
+  const ref = onboardingRef(uid);
+  const snap = await ref.get();
+  const raw = snap.exists ? snap.data() : {};
+  await ref.set(
+      {
+        progress: {
+          ...(raw.progress || {}),
+          goLiveDone: true,
+          goLiveAt: serverTimestamp(),
+        },
+        updatedAt: serverTimestamp(),
+      },
+      {merge: true},
+  );
+}
+
 module.exports = {
   ONBOARDING_COL,
   PATCHABLE_KEYS,
@@ -296,5 +358,7 @@ module.exports = {
   patchOnboarding,
   registerSelfServePartner,
   completeOnboarding,
+  resolveGoLiveDone,
+  markGoLiveDoneForPartner,
   serializeOnboardingDoc,
 };

@@ -13,6 +13,7 @@ const { verifyFirebaseAuth } = require("../libs/auth");
 const partnerService = require("../services/partnerService");
 const b2bMemberService = require("../services/b2bMemberService");
 const b2bOnboardingService = require("../services/b2bOnboardingService");
+const b2bPortalSandboxService = require("../services/b2bPortalSandboxService");
 const platformConsumerService = require("../services/platformConsumerService");
 const dashboardUserDeletionService = require("../services/dashboardUserDeletionService");
 const paymentLinkService = require("../services/paymentLinkService");
@@ -24,6 +25,7 @@ const { renderCheckoutHtml, renderErrorHtml, renderSuccessHtml } = require("../u
 const { logAdminAction } = require("../utils/transactions");
 
 const intaSendPublishableKey = defineSecret(config.secrets.intaSendPublishableKey);
+const intaSendSecretKey = defineSecret(config.secrets.intaSendSecretKey);
 
 const { ALL_PARTNER_ROLES } = b2bMemberService;
 
@@ -235,6 +237,39 @@ async function fetchPortalTransactions(req, scope) {
   };
 }
 
+/**
+ * Attempt IntaSend reconciliation for links that have a pending checkout session.
+ *
+ * @param {Object[]} links
+ * @returns {Promise<Object[]>}
+ */
+async function reconcilePendingPaymentLinks(links) {
+  if (!Array.isArray(links) || links.length === 0) {
+    return links;
+  }
+  const reconcile = require("../services/b2bCheckoutReconcileService");
+  const out = [...links];
+  for (let i = 0; i < out.length; i++) {
+    const link = out[i];
+    const checkoutId = link.lastCheckoutId ? String(link.lastCheckoutId) : "";
+    if (!checkoutId || Number(link.paymentCount || 0) > 0) {
+      continue;
+    }
+    try {
+      const result = await reconcile.tryReconcileCheckoutSession(checkoutId);
+      if (result.reconciled) {
+        const updated = await paymentLinkService.getPaymentLink(link.linkId || link.id);
+        if (updated) {
+          out[i] = updated;
+        }
+      }
+    } catch (err) {
+      console.warn("reconcilePendingPaymentLinks:", checkoutId, err.message);
+    }
+  }
+  return out;
+}
+
 // --- Platform (super admin = claim admin: true OR master email in adminClaims.js) ---
 
 app.get("/platform/partners", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
@@ -347,6 +382,16 @@ app.get("/platform/partners/:partnerId", loadFirebaseUser, requirePlatformAdmin,
 app.patch("/platform/partners/:partnerId", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
   try {
     const updated = await partnerService.updatePartner(req.params.partnerId, req.body || {});
+    if (String(updated.status || "").toLowerCase() === "active") {
+      try {
+        await b2bOnboardingService.markGoLiveDoneForPartner(req.params.partnerId);
+      } catch (goLiveErr) {
+        console.error(
+            "b2bPortal PATCH /platform/partners goLiveDone:",
+            goLiveErr.message,
+        );
+      }
+    }
     const { apiKey, ...safe } = updated;
     res.status(200).json({
       success: true,
@@ -384,9 +429,10 @@ app.get("/platform/partners/:partnerId/payment-links", loadFirebaseUser, require
         limit,
         startAfter,
     );
+    const reconciled = await reconcilePendingPaymentLinks(paymentLinks);
     res.status(200).json({
       success: true,
-      data: { paymentLinks, nextPageCursor },
+      data: { paymentLinks: reconciled, nextPageCursor },
     });
   } catch (err) {
     console.error("b2bPortal GET /platform/partners/:id/payment-links:", err.message);
@@ -405,9 +451,10 @@ app.get("/platform/payment-links", loadFirebaseUser, requirePlatformAdmin, async
         partnerId,
         startAfter,
     );
+    const reconciled = await reconcilePendingPaymentLinks(paymentLinks);
     res.status(200).json({
       success: true,
-      data: { paymentLinks, nextPageCursor },
+      data: { paymentLinks: reconciled, nextPageCursor },
     });
   } catch (err) {
     console.error("b2bPortal GET /platform/payment-links:", err.message);
@@ -675,17 +722,46 @@ app.get("/portal/onboarding", loadFirebaseUser, async (req, res) => {
   try {
     const dt = req.decodedToken || {};
     const onboarding = await b2bOnboardingService.getOnboarding(req.userId);
+    const sandboxExtras =
+      await b2bPortalSandboxService.getSandboxOnboardingExtras(req.userId);
+    const goLiveDone = await b2bOnboardingService.resolveGoLiveDone(
+        req.userId,
+        dt.partnerId,
+    );
+    const projectId = process.env.GCLOUD_PROJECT || "truepay-72060";
+    const partnerSandboxBaseUrl =
+      `https://${config.region}-${projectId}.cloudfunctions.net/partnerSandbox`;
+    const mergedOnboarding = onboarding ?
+      {
+        ...onboarding,
+        progress: {
+          ...(onboarding.progress || {}),
+          testTransactionDone: sandboxExtras.testTransactionDone,
+          goLiveDone,
+        },
+      } :
+      {
+        progress: {
+          testTransactionDone: sandboxExtras.testTransactionDone,
+          goLiveDone,
+        },
+      };
     res.status(200).json({
       success: true,
       data: {
-        onboarding,
+        onboarding: mergedOnboarding,
         emailVerified: dt.email_verified === true,
         sandbox: {
           publicApiKey: config.b2bSandbox.apiKey,
           virtualPartnerId: config.b2bSandbox.partnerId,
+          linkToken: sandboxExtras.linkToken,
+          testTransactionDone: sandboxExtras.testTransactionDone,
+          goLiveDone,
+          partnerSandboxBaseUrl,
           hint:
-            "Use the partnerSandbox HTTP function base URL with header X-API-KEY: publicApiKey " +
-            "(see B2B_SANDBOX.md). Machine Partner API is blocked until platform sets partner status active.",
+            "Use partnerSandbox with X-API-KEY: publicApiKey. Pass linkToken in " +
+            "X-Sandbox-Link-Token (or metadata.linkToken) on POST /payments so the " +
+            "dashboard checklist and Transactions tab update automatically.",
         },
       },
     });
@@ -734,6 +810,51 @@ app.post("/portal/onboarding/register-partner", loadFirebaseUser, async (req, re
   } catch (err) {
     console.error("b2bPortal POST /portal/onboarding/register-partner:", err.message);
     res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+/** Sandbox test transactions for onboarding checklist (Firebase Bearer; no partner claims). */
+app.get("/portal/sandbox/transactions", loadFirebaseUser, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(String(req.query.limit || "50"), 10) || 50, 100);
+    const data = await b2bPortalSandboxService.listPortalSandboxTransactions(
+        req.userId,
+        limit,
+    );
+    res.status(200).json({
+      success: true,
+      data: {
+        ...data,
+        sandbox: true,
+      },
+    });
+  } catch (err) {
+    console.error("b2bPortal GET /portal/sandbox/transactions:", err.message);
+    res.status(500).json({success: false, error: err.message});
+  }
+});
+
+/**
+ * Run a sandbox payment from the dashboard (same fixture logic as partnerSandbox).
+ * Sets progress.testTransactionDone and appends to GET /portal/sandbox/transactions.
+ */
+app.post("/portal/sandbox/payments", loadFirebaseUser, async (req, res) => {
+  try {
+    const {amount, currency = "KES", reference, metadata = {}} = req.body || {};
+    if (!amount || Number(amount) <= 0) {
+      res.status(400).json({success: false, error: "Invalid amount"});
+      return;
+    }
+    const data = await b2bPortalSandboxService.runPortalSandboxPayment(req.userId, {
+      amount: Number(amount),
+      currency,
+      reference: reference != null ? String(reference) : "sandbox-test-001",
+      metadata,
+    });
+    res.status(201).json({success: true, sandbox: true, data});
+  } catch (err) {
+    console.error("b2bPortal POST /portal/sandbox/payments:", err.message);
+    res.status(500).json({success: false, error: err.message});
   }
 });
 
@@ -934,9 +1055,10 @@ app.get("/portal/payment-links", loadFirebaseUser, attachPartnerContext, async (
         limit,
         startAfter,
     );
+    const reconciled = await reconcilePendingPaymentLinks(paymentLinks);
     res.status(200).json({
       success: true,
-      data: { paymentLinks, nextPageCursor },
+      data: { paymentLinks: reconciled, nextPageCursor },
     });
   } catch (err) {
     console.error("b2bPortal GET /portal/payment-links:", err.message);
@@ -1216,7 +1338,7 @@ exports.b2bPortal = onRequest(
     region: config.region,
     cpu: config.resources.cpu,
     memory: config.resources.memory,
-    secrets: [intaSendPublishableKey],
+    secrets: [intaSendPublishableKey, intaSendSecretKey],
   },
   app,
 );

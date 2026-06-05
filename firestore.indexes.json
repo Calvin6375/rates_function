@@ -108,6 +108,14 @@
       ]
     },
     {
+      "collectionGroup": "invoiceMappings",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "purpose", "order": "ASCENDING"},
+        {"fieldPath": "apiRef", "order": "ASCENDING"}
+      ]
+    },
+    {
       "collectionGroup": "transactionRecords",
       "queryScope": "COLLECTION",
       "fields": [

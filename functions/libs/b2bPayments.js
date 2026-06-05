@@ -13,16 +13,17 @@ const firestore = admin.firestore();
 const B2B_PURPOSE = "b2b_payment_link";
 
 /**
- * @param {string} paymentId
+ * Resolve a B2B mapping document by primary or alias doc id.
+ *
+ * @param {string} docId
  * @returns {Promise<(Object & { mappingDocId: string })|null>}
  */
-async function lookupB2bInvoiceMapping(paymentId) {
-  if (!paymentId) {
+async function resolveB2bMappingDoc(docId) {
+  if (!docId) {
     return null;
   }
-
   const mappingsCol = firestore.collection(config.collections.invoiceMappings);
-  const direct = await mappingsCol.doc(paymentId).get();
+  const direct = await mappingsCol.doc(docId).get();
   if (direct.exists) {
     const data = direct.data() || {};
     if (data.purpose === B2B_PURPOSE && data.partnerId) {
@@ -34,6 +35,25 @@ async function lookupB2bInvoiceMapping(paymentId) {
       }
       return { mappingDocId: direct.id, ...data };
     }
+  }
+  return null;
+}
+
+/**
+ * @param {string} paymentId
+ * @param {{ apiRef?: string|null }} [hints]
+ * @returns {Promise<(Object & { mappingDocId: string })|null>}
+ */
+async function lookupB2bInvoiceMapping(paymentId, hints = {}) {
+  if (!paymentId) {
+    return null;
+  }
+
+  const mappingsCol = firestore.collection(config.collections.invoiceMappings);
+
+  let found = await resolveB2bMappingDoc(paymentId);
+  if (found) {
+    return found;
   }
 
   const byCheckout = await mappingsCol
@@ -54,6 +74,44 @@ async function lookupB2bInvoiceMapping(paymentId) {
   if (!byInvoice.empty) {
     const doc = byInvoice.docs[0];
     return { mappingDocId: doc.id, ...doc.data() };
+  }
+
+  const apiRef = hints.apiRef ? String(hints.apiRef).trim() : "";
+  if (apiRef) {
+    try {
+      const byApiRef = await mappingsCol
+          .where("purpose", "==", B2B_PURPOSE)
+          .where("apiRef", "==", apiRef)
+          .limit(1)
+          .get();
+      if (!byApiRef.empty) {
+        const doc = byApiRef.docs[0];
+        return { mappingDocId: doc.id, ...doc.data() };
+      }
+    } catch (err) {
+      console.warn("lookupB2bInvoiceMapping apiRef query:", err.message);
+    }
+  }
+
+  const ordersCol = firestore.collection(config.collections.orders);
+  const orderQueries = await Promise.all([
+    ordersCol.where("checkoutId", "==", paymentId).limit(5).get(),
+    ordersCol.where("invoiceId", "==", paymentId).limit(5).get(),
+  ]);
+  for (const snap of orderQueries) {
+    for (const doc of snap.docs) {
+      const order = doc.data() || {};
+      if (order.orderType !== B2B_PURPOSE) {
+        continue;
+      }
+      const checkoutId = order.checkoutId || order.metadata?.checkoutId;
+      if (checkoutId && checkoutId !== paymentId) {
+        found = await resolveB2bMappingDoc(String(checkoutId));
+        if (found) {
+          return found;
+        }
+      }
+    }
   }
 
   return null;

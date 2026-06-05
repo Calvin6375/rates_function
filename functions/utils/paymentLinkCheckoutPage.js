@@ -404,6 +404,7 @@ function renderCheckoutHtml(linkId, partnerId, apiBasePath) {
       var app = document.getElementById("app");
       var urlParams = new URLSearchParams(window.location.search);
       var checkoutInFlight = false;
+      var checkoutTabOpened = false;
       var checkoutWindowName = "truepay_intasend_checkout_" + linkId;
       var activeCheckoutUrl = null;
       var activeCheckoutId = null;
@@ -516,55 +517,65 @@ function renderCheckoutHtml(linkId, partnerId, apiBasePath) {
               (isPaid && link.paidAt ? row("Paid", formatDate(link.paidAt)) : "") +
             '</div>' +
             (canPay ?
-              '<div class="field">' +
-                '<label class="field-label" for="payerName">Your full name</label>' +
-                '<p class="field-hint">Required before payment. Each client using this link enters their own name.</p>' +
-                '<input class="field-input" id="payerName" name="payerName" type="text" ' +
-                  'autocomplete="name" placeholder="e.g. James Ndegwa" maxlength="120" required />' +
-                '<p class="field-error" id="nameError">Please enter your full name (at least 2 characters).</p>' +
-              '</div>' +
-              '<button type="button" class="btn" id="payBtn">Continue to payment</button>' +
+              '<form id="checkoutForm" class="checkout-form" novalidate>' +
+                '<div class="field">' +
+                  '<label class="field-label" for="payerName">Your full name</label>' +
+                  '<p class="field-hint">Required before payment. Each client using this link enters their own name.</p>' +
+                  '<input class="field-input" id="payerName" name="payerName" type="text" ' +
+                    'autocomplete="name" placeholder="e.g. James Ndegwa" maxlength="120" required />' +
+                  '<p class="field-error" id="nameError">Please enter your full name (at least 2 characters).</p>' +
+                '</div>' +
+                '<button type="submit" class="btn" id="payBtn">Continue to payment</button>' +
+              '</form>' +
               '<p class="note" id="payNote"></p>' :
               "") +
           '</div>';
 
         if (canPay) {
+          var checkoutForm = document.getElementById("checkoutForm");
           var nameInput = document.getElementById("payerName");
           var payBtn = document.getElementById("payBtn");
-          if (nameInput && payBtn) {
+          if (checkoutForm && nameInput && payBtn) {
             nameInput.addEventListener("input", function () {
               payBtn.disabled = String(nameInput.value || "").trim().length < 2;
             });
             payBtn.disabled = true;
-            payBtn.addEventListener("click", startCheckout);
+            checkoutForm.addEventListener("submit", function (ev) {
+              ev.preventDefault();
+              startCheckout();
+            }, { once: false });
           }
         }
       }
 
       function openCheckoutTab(checkoutUrl) {
-        var popup = window.open(checkoutUrl, checkoutWindowName, "noopener,noreferrer");
-        if (popup) {
-          try {
-            popup.focus();
-          } catch (e) {
-            // ignore cross-window focus errors
-          }
-          return true;
+        // Named target reuses one tab; do not pass noopener here or the name is ignored.
+        var popup = window.open(checkoutUrl, checkoutWindowName);
+        if (!popup) {
+          return false;
         }
-        return false;
+        try {
+          popup.opener = null;
+          popup.focus();
+        } catch (e) {
+          // ignore cross-window errors
+        }
+        return true;
       }
 
       function startCheckout() {
         if (checkoutInFlight) {
-          if (activeCheckoutUrl) {
+          if (activeCheckoutUrl && checkoutTabOpened) {
             openCheckoutTab(activeCheckoutUrl);
           }
           return;
         }
+        checkoutInFlight = true;
         var nameInput = document.getElementById("payerName");
         var nameError = document.getElementById("nameError");
         var payerName = nameInput ? String(nameInput.value || "").trim() : "";
         if (payerName.length < 2) {
+          checkoutInFlight = false;
           if (nameError) {
             nameError.classList.add("visible");
           }
@@ -576,7 +587,6 @@ function renderCheckoutHtml(linkId, partnerId, apiBasePath) {
         if (nameError) {
           nameError.classList.remove("visible");
         }
-        checkoutInFlight = true;
         var btn = document.getElementById("payBtn");
         var note = document.getElementById("payNote");
         if (btn) {
@@ -609,9 +619,12 @@ function renderCheckoutHtml(linkId, partnerId, apiBasePath) {
               if (activeCheckoutId) {
                 sessionStorage.setItem(storageKey, activeCheckoutId);
               }
-              if (!openCheckoutTab(checkoutUrl)) {
-                window.location.href = checkoutUrl;
-                return;
+              if (!checkoutTabOpened) {
+                checkoutTabOpened = true;
+                if (!openCheckoutTab(checkoutUrl)) {
+                  window.location.href = checkoutUrl;
+                  return;
+                }
               }
               if (btn) {
                 btn.classList.remove("loading");
@@ -639,6 +652,7 @@ function renderCheckoutHtml(linkId, partnerId, apiBasePath) {
           })
           .catch(function (err) {
             checkoutInFlight = false;
+            checkoutTabOpened = false;
             activeCheckoutUrl = null;
             activeCheckoutId = null;
             sessionStorage.removeItem(storageKey);

@@ -212,13 +212,24 @@ async function startCheckout(linkId, partnerId, payer = {}, rail) {
     status: "pending",
     bookingReference: link.bookingReference || null,
     payerName: identity.payerName,
+    apiRef,
     createdAt: serverTimestamp(),
   };
 
   const mappingsCol = firestore.collection(config.collections.invoiceMappings);
   await mappingsCol.doc(checkoutId).set(mappingData);
-  if (invoiceId !== checkoutId) {
-    await mappingsCol.doc(invoiceId).set({ ...mappingData, aliasOf: checkoutId });
+  const aliasIds = paymentRailService.collectCheckoutIdentifierIds(
+      session.raw || {},
+      session.checkoutUrl,
+  );
+  for (const aliasId of aliasIds) {
+    if (!aliasId || aliasId === checkoutId) {
+      continue;
+    }
+    await mappingsCol.doc(String(aliasId)).set({
+      ...mappingData,
+      aliasOf: checkoutId,
+    });
   }
 
   await collection("paymentLinks").doc(linkId).update({
@@ -259,6 +270,12 @@ async function getPublicLinkStatus(linkId, partnerId = null, checkoutId = null) 
   }
 
   if (checkoutId) {
+    try {
+      const reconcile = require("./b2bCheckoutReconcileService");
+      await reconcile.tryReconcileCheckoutSession(checkoutId);
+    } catch (err) {
+      console.warn("getPublicLinkStatus reconcile:", err.message);
+    }
     const mapping = await lookupCheckoutMapping(checkoutId);
     if (!mapping || mapping.linkId !== linkId) {
       return null;

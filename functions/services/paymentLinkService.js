@@ -163,6 +163,7 @@ function serializePaymentLink(doc, opts = {}) {
     lastPaidAt: d.lastPaidAt?.toDate?.()?.toISOString() ?? null,
     lastPayerName: d.lastPayerName ?? null,
     lastTransactionId: d.lastTransactionId ?? null,
+    lastCheckoutId: d.lastCheckoutId ?? null,
     invoiceId: d.invoiceId ?? null,
     lastCheckoutRail: d.lastCheckoutRail ?? null,
   };

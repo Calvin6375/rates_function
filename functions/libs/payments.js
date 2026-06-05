@@ -265,7 +265,9 @@ async function processPaymentWebhook(paymentData, payload) {
   }
 
   // B2B hosted payment links — partner wallet settlement (consumer path unchanged below).
-  const b2bMapping = await b2bPayments.lookupB2bInvoiceMapping(paymentId);
+  const b2bMapping = await b2bPayments.lookupB2bInvoiceMapping(paymentId, {
+    apiRef: payload.api_ref || payload.apiRef || null,
+  });
   if (b2bMapping) {
     return b2bPayments.processB2bPaymentWebhook(paymentData, payload, b2bMapping);
   }

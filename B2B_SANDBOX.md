@@ -139,6 +139,20 @@ curl -sS "https://us-central1-truepay-72060.cloudfunctions.net/partnerSandbox/tr
 
 Then `GET .../wallet` and `GET .../transactions` reflect the same in-memory run.
 
+**Dashboard attribution (checklist + portal transactions)**
+
+Signed-in users get a per-user `linkToken` from `GET /b2bPortal/portal/onboarding`. Pass it when recording a sandbox payment so Firestore stores the test for that user and sets `progress.testTransactionDone`:
+
+```bash
+curl -sS -X POST "https://us-central1-truepay-72060.cloudfunctions.net/partnerSandbox/payments" \
+  -H "Content-Type: application/json" \
+  -H "X-API-KEY: KalvoB2B-Sandbox-public-test-key-2026" \
+  -H "X-Sandbox-Link-Token: sbxlnk_FROM_PORTAL_ONBOARDING" \
+  -d '{"amount":100,"currency":"KES","reference":"sandbox-test-001"}'
+```
+
+Portal routes (Firebase Bearer): `GET /portal/sandbox/transactions`, `POST /portal/sandbox/payments`. See [`B2B_SANDBOX_DASHBOARD_FRONTEND.md`](./B2B_SANDBOX_DASHBOARD_FRONTEND.md).
+
 ---
 
 ## Differences from live `partner`

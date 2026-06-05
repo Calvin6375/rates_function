@@ -43,12 +43,20 @@ A signed-in Firebase user can create their own partner row, become **`org_admin`
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET` | `/b2bPortal/portal/onboarding` | Read `onboarding/{uid}`, `emailVerified` from token, sandbox helper metadata |
+| `GET` | `/b2bPortal/portal/onboarding` | Read `onboarding/{uid}`, `emailVerified`, sandbox key, **`linkToken`**, **`testTransactionDone`**, **`goLiveDone`** |
+| `GET` | `/b2bPortal/portal/sandbox/transactions` | Sandbox test payments for dashboard Transactions tab (Firebase Bearer) |
+| `POST` | `/b2bPortal/portal/sandbox/payments` | Run sandbox test from dashboard; sets **`progress.testTransactionDone`** |
 | `PATCH` | `/b2bPortal/portal/onboarding` | Merge allowed keys: `business`, `owner`, `payments`, `kyc`, `useCases`, `terms`, `progress`, `sandbox` |
 | `POST` | `/b2bPortal/portal/onboarding/register-partner` | Body: `{ "name", "settlementCurrency?", "webhookUrl?" }` — creates partner, assigns caller as org admin, returns **`apiKey` once** (idempotent retries omit it) |
 | `POST` | `/b2bPortal/portal/onboarding/complete` | Body: `{ "termsAccepted": true, "amlAccepted": true }` — sets onboarding submitted; does **not** activate live API |
 
 After **`register-partner`**, the user should **refresh their ID token** before calling **`GET /b2bPortal/portal/me`**.
+
+**Go live checklist**
+
+- **`progress.goLiveDone`** on `GET /portal/onboarding` is `true` when the linked partner’s Firestore **`status`** is **`active`**, or when platform activation persisted the flag.
+- Super admin **`PATCH /platform/partners/{partnerId}`** with `{ "status": "active" }` sets **`goLiveDone`** on the org admin’s `onboarding/{uid}` document automatically.
+- Partners already active before deploy still see **`goLiveDone: true`** on the next `GET /portal/onboarding` (derived from partner status).
 
 ---
 

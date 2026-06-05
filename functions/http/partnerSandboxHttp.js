@@ -8,6 +8,7 @@ const express = require("express");
 const QRCode = require("qrcode");
 const config = require("../config");
 const b2bSandboxPartnerService = require("../services/b2bSandboxPartnerService");
+const b2bPortalSandboxService = require("../services/b2bPortalSandboxService");
 const supportedCountriesService = require("../services/supportedCountriesService");
 
 const app = express();
@@ -16,7 +17,7 @@ app.use(express.json());
 app.use((req, res, next) => {
   res.set("Access-Control-Allow-Origin", "*");
   res.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.set("Access-Control-Allow-Headers", "Content-Type, X-API-KEY");
+  res.set("Access-Control-Allow-Headers", "Content-Type, X-API-KEY, X-Sandbox-Link-Token");
   if (req.method === "OPTIONS") {
     res.status(204).send("");
     return;
@@ -189,13 +190,17 @@ app.get("/countries", requireSandboxKey, async (req, res) => {
   }
 });
 
-app.post("/payments", requireSandboxKey, (req, res) => {
+app.post("/payments", requireSandboxKey, async (req, res) => {
   try {
     const { amount, currency = "KES", reference, metadata = {} } = req.body || {};
     if (!amount || Number(amount) <= 0) {
       res.status(400).json({ success: false, error: "Invalid amount" });
       return;
     }
+    const linkToken =
+      (metadata && metadata.linkToken) ||
+      req.headers["x-sandbox-link-token"] ||
+      req.headers["X-Sandbox-Link-Token"];
     const data = b2bSandboxPartnerService.recordSandboxPayment(
       req.partnerId,
       Number(amount),
@@ -203,6 +208,19 @@ app.post("/payments", requireSandboxKey, (req, res) => {
       reference,
       metadata
     );
+    if (linkToken) {
+      try {
+        await b2bPortalSandboxService.recordTestFromPartnerSandbox(String(linkToken).trim(), {
+          transactionId: data.transactionId,
+          amount: data.amount,
+          currency: data.currency,
+          reference: data.reference,
+          metadata,
+        });
+      } catch (persistErr) {
+        console.error("partnerSandbox POST /payments linkToken persist:", persistErr.message);
+      }
+    }
     res.status(201).json({ success: true, sandbox: true, data });
   } catch (err) {
     console.error("partnerSandbox POST /payments:", err.message);
