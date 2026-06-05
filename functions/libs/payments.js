@@ -8,6 +8,7 @@ const crypto = require("crypto");
 const config = require("../config");
 const {updateBalanceWithTransaction} = require("../utils/firestore");
 const {executeWithIdempotency} = require("./idempotency");
+const b2bPayments = require("./b2bPayments");
 const {
   createNotification,
   NOTIFICATION_TYPES,
@@ -261,6 +262,12 @@ async function processPaymentWebhook(paymentData, payload) {
       success: false,
       error: "Missing payment identifier (invoice_id or payment_id)",
     };
+  }
+
+  // B2B hosted payment links — partner wallet settlement (consumer path unchanged below).
+  const b2bMapping = await b2bPayments.lookupB2bInvoiceMapping(paymentId);
+  if (b2bMapping) {
+    return b2bPayments.processB2bPaymentWebhook(paymentData, payload, b2bMapping);
   }
 
   // Resolve wallet ID

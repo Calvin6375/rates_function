@@ -82,6 +82,55 @@
         {"fieldPath": "transaction_id", "order": "ASCENDING"},
         {"fieldPath": "createdAt", "order": "DESCENDING"}
       ]
+    },
+    {
+      "collectionGroup": "paymentLinks",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "partnerId", "order": "ASCENDING"},
+        {"fieldPath": "createdAt", "order": "DESCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "invoiceMappings",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "purpose", "order": "ASCENDING"},
+        {"fieldPath": "checkoutId", "order": "ASCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "invoiceMappings",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "purpose", "order": "ASCENDING"},
+        {"fieldPath": "invoiceId", "order": "ASCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "transactionRecords",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "type", "order": "ASCENDING"},
+        {"fieldPath": "createdAt", "order": "DESCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "transactionRecords",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "partnerId", "order": "ASCENDING"},
+        {"fieldPath": "createdAt", "order": "DESCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "transactionRecords",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "partnerId", "order": "ASCENDING"},
+        {"fieldPath": "type", "order": "ASCENDING"},
+        {"fieldPath": "createdAt", "order": "DESCENDING"}
+      ]
     }
   ],
   "fieldOverrides": []

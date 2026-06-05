@@ -5,6 +5,7 @@
  */
 
 const { onRequest } = require("firebase-functions/v2/https");
+const { defineSecret } = require("firebase-functions/params");
 const express = require("express");
 const config = require("../config");
 const { isSuperAdminUid } = require("../utils/adminClaims");
@@ -15,8 +16,14 @@ const b2bOnboardingService = require("../services/b2bOnboardingService");
 const platformConsumerService = require("../services/platformConsumerService");
 const dashboardUserDeletionService = require("../services/dashboardUserDeletionService");
 const paymentLinkService = require("../services/paymentLinkService");
-const { renderCheckoutHtml, renderErrorHtml } = require("../utils/paymentLinkCheckoutPage");
+const b2bPaymentLinkCheckoutService = require("../services/b2bPaymentLinkCheckoutService");
+const paymentRailService = require("../services/paymentRailService");
+const walletService = require("../services/walletService");
+const transactionService = require("../services/transactionService");
+const { renderCheckoutHtml, renderErrorHtml, renderSuccessHtml } = require("../utils/paymentLinkCheckoutPage");
 const { logAdminAction } = require("../utils/transactions");
+
+const intaSendPublishableKey = defineSecret(config.secrets.intaSendPublishableKey);
 
 const { ALL_PARTNER_ROLES } = b2bMemberService;
 
@@ -105,6 +112,40 @@ function attachPartnerContext(req, res, next) {
   req.partnerId = pid;
   req.partnerRole = role;
   next();
+}
+
+/**
+ * Partner portal routes that super admins reuse from the dashboard (e.g. GET /portal/transactions).
+ * Partner users: require partnerId + partnerRole claims.
+ * Platform super admin: allow without partner claims (admin: true or master email).
+ */
+async function attachPartnerContextOrPlatformAdmin(req, res, next) {
+  const pid = req.decodedToken?.partnerId;
+  const role = req.decodedToken?.partnerRole;
+  if (pid && typeof pid === "string" && role && ALL_PARTNER_ROLES.includes(role)) {
+    req.partnerId = pid;
+    req.partnerRole = role;
+    req.platformTransactionScope = false;
+    next();
+    return;
+  }
+  try {
+    if (req.decodedToken?.admin === true) {
+      req.platformTransactionScope = true;
+      next();
+      return;
+    }
+    if (await isSuperAdminUid(req.userId)) {
+      req.platformTransactionScope = true;
+      next();
+      return;
+    }
+  } catch (err) {
+    console.error("attachPartnerContextOrPlatformAdmin:", err.message);
+    res.status(500).json({ success: false, error: "Authorization check failed" });
+    return;
+  }
+  res.status(403).json({ success: false, error: "Not a B2B partner user (missing partnerId claim)" });
 }
 
 function requirePartnerOrgAdmin(req, res, next) {
@@ -861,6 +902,94 @@ app.patch("/portal/payment-links/:linkId", loadFirebaseUser, attachPartnerContex
   }
 });
 
+/** Partner wallet balances (Firebase Bearer; no API key in browser). */
+app.get("/portal/wallet", loadFirebaseUser, attachPartnerContext, async (req, res) => {
+  try {
+    let wallet = await walletService.getPartnerWallet(req.partnerId);
+    if (!wallet) {
+      wallet = await walletService.getOrCreatePartnerWallet(req.partnerId);
+    }
+    res.status(200).json({ success: true, data: wallet });
+  } catch (err) {
+    console.error("b2bPortal GET /portal/wallet:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/** Partner transaction history (Firebase Bearer). Platform super admin: all B2B payments. */
+app.get("/portal/transactions", loadFirebaseUser, attachPartnerContextOrPlatformAdmin, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(String(req.query.limit || "50"), 10) || 50, 100);
+    const typeFilter = req.query.type ? String(req.query.type) : null;
+    const statusFilter = req.query.status ? String(req.query.status) : null;
+    /** @type {{ partnerId?: string, type?: string, status?: string, limit: number }} */
+    const listOpts = { limit };
+
+    if (req.platformTransactionScope) {
+      const partnerFilter = req.query.partnerId ? String(req.query.partnerId) : null;
+      if (partnerFilter) {
+        listOpts.partnerId = partnerFilter;
+      }
+      listOpts.type = typeFilter || transactionService.TRANSACTION_TYPES.b2b_payment;
+    } else {
+      listOpts.partnerId = req.partnerId;
+      if (typeFilter) {
+        listOpts.type = typeFilter;
+      }
+    }
+    if (statusFilter) {
+      listOpts.status = statusFilter;
+    }
+
+    const { transactions } = await transactionService.listTransactionRecords(listOpts);
+    res.status(200).json({
+      success: true,
+      data: {
+        transactions,
+        scope: req.platformTransactionScope ? "platform" : "partner",
+      },
+    });
+  } catch (err) {
+    console.error("b2bPortal GET /portal/transactions:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/** Platform-wide B2B transaction list (alias for super-admin dashboards). */
+app.get("/platform/transactions", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(String(req.query.limit || "50"), 10) || 50, 100);
+    const partnerFilter = req.query.partnerId ? String(req.query.partnerId) : null;
+    const typeFilter = req.query.type ?
+      String(req.query.type) :
+      transactionService.TRANSACTION_TYPES.b2b_payment;
+    const statusFilter = req.query.status ? String(req.query.status) : null;
+    const { transactions } = await transactionService.listTransactionRecords({
+      partnerId: partnerFilter || undefined,
+      type: typeFilter,
+      status: statusFilter || undefined,
+      limit,
+    });
+    res.status(200).json({
+      success: true,
+      data: { transactions, scope: "platform" },
+    });
+  } catch (err) {
+    console.error("b2bPortal GET /platform/transactions:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/** IntaSend post-payment landing (path-only redirect_url — no query string). */
+app.get("/l/:linkId/success", (req, res) => {
+  res.set("Content-Type", "text/html; charset=utf-8");
+  res.set("Cache-Control", "no-store");
+  res.send(renderSuccessHtml(
+      req.params.linkId,
+      `/${B2B_PORTAL_FUNCTION_SEGMENT}`,
+  ));
+});
+
 /** Hosted payer checkout page — works without pay.truepay.africa DNS */
 app.get("/l/:linkId", (req, res) => {
   const partnerId = req.query.partner ? String(req.query.partner) : "";
@@ -907,7 +1036,7 @@ app.get("/public/payment-links/:linkId", async (req, res) => {
       });
       return;
     }
-    if (link.status !== "active") {
+    if (link.status === "cancelled") {
       res.status(409).json({
         success: false,
         error: `Payment link is ${link.status}`,
@@ -922,6 +1051,89 @@ app.get("/public/payment-links/:linkId", async (req, res) => {
   }
 });
 
+/** Start IntaSend (or configured rail) checkout for a hosted payment link — no auth */
+app.post("/public/payment-links/:linkId/checkout", async (req, res) => {
+  try {
+    const partnerId = req.query.partner ? String(req.query.partner) : "";
+    if (!partnerId) {
+      res.status(400).json({
+        success: false,
+        error: "Query parameter partner is required",
+      });
+      return;
+    }
+    const body = req.body && typeof req.body === "object" ? req.body : {};
+    const data = await b2bPaymentLinkCheckoutService.startCheckout(
+        req.params.linkId,
+        partnerId,
+        {
+          email: body.email || null,
+          phoneNumber: body.phoneNumber || body.phone || null,
+          firstName: body.firstName || null,
+          lastName: body.lastName || null,
+          country: body.country || null,
+        },
+        body.rail || null,
+    );
+    if (!data.checkoutUrl) {
+      res.status(200).json({
+        success: true,
+        data,
+        message: data.message || "Manual settlement required.",
+      });
+      return;
+    }
+    res.status(201).json({ success: true, data });
+  } catch (err) {
+    const intaSend = paymentRailService.getIntaSendErrorDetails(err);
+    const msg = intaSend?.message || err.message || "Checkout failed";
+    console.error("b2bPortal POST /public/payment-links/:linkId/checkout:", msg, {
+      intaSend: intaSend?.body,
+      httpStatus: intaSend?.httpStatus,
+    });
+    let status = 500;
+    if (msg.includes("not found")) {
+      status = 404;
+    } else if (msg.includes("expired") || msg.includes("already paid") || msg.includes("is cancelled")) {
+      status = 409;
+    } else if (
+      intaSend?.httpStatus === 400 ||
+      intaSend?.httpStatus === 422 ||
+      msg.includes("Invalid") ||
+      msg.includes("not supported") ||
+      msg.includes("not configured") ||
+      msg.includes("IntaSend checkout failed")
+    ) {
+      status = 400;
+    }
+    /** @type {Record<string, unknown>} */
+    const body = { success: false, error: msg };
+    if (intaSend?.body != null) {
+      body.intaSend = intaSend.body;
+    }
+    res.status(status).json(body);
+  }
+});
+
+/** Public payment link settlement status — no auth */
+app.get("/public/payment-links/:linkId/status", async (req, res) => {
+  try {
+    const partnerId = req.query.partner ? String(req.query.partner) : null;
+    const status = await b2bPaymentLinkCheckoutService.getPublicLinkStatus(
+        req.params.linkId,
+        partnerId,
+    );
+    if (!status) {
+      res.status(404).json({ success: false, error: "Payment link not found" });
+      return;
+    }
+    res.status(200).json({ success: true, data: status });
+  } catch (err) {
+    console.error("b2bPortal GET /public/payment-links/:linkId/status:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.use((req, res) => {
   res.status(404).json({ success: false, error: "Not found" });
 });
@@ -931,6 +1143,7 @@ exports.b2bPortal = onRequest(
     region: config.region,
     cpu: config.resources.cpu,
     memory: config.resources.memory,
+    secrets: [intaSendPublishableKey],
   },
   app,
 );

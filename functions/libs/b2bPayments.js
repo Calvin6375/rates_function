@@ -1,0 +1,212 @@
+/**
+ * @fileoverview B2B payment settlement via IntaSend webhooks (partner wallets).
+ * Consumer top-up flow in payments.js is unchanged; this module runs first when a B2B mapping exists.
+ */
+
+const admin = require("../admin");
+const config = require("../config");
+const walletService = require("../services/walletService");
+const transactionService = require("../services/transactionService");
+const { executeWithIdempotency } = require("./idempotency");
+
+const firestore = admin.firestore();
+const B2B_PURPOSE = "b2b_payment_link";
+
+/**
+ * @param {string} paymentId
+ * @returns {Promise<(Object & { mappingDocId: string })|null>}
+ */
+async function lookupB2bInvoiceMapping(paymentId) {
+  if (!paymentId) {
+    return null;
+  }
+
+  const mappingsCol = firestore.collection(config.collections.invoiceMappings);
+  const direct = await mappingsCol.doc(paymentId).get();
+  if (direct.exists) {
+    const data = direct.data() || {};
+    if (data.purpose === B2B_PURPOSE && data.partnerId) {
+      if (data.aliasOf) {
+        const primary = await mappingsCol.doc(data.aliasOf).get();
+        if (primary.exists) {
+          return { mappingDocId: primary.id, ...primary.data() };
+        }
+      }
+      return { mappingDocId: direct.id, ...data };
+    }
+  }
+
+  const byCheckout = await mappingsCol
+      .where("purpose", "==", B2B_PURPOSE)
+      .where("checkoutId", "==", paymentId)
+      .limit(1)
+      .get();
+  if (!byCheckout.empty) {
+    const doc = byCheckout.docs[0];
+    return { mappingDocId: doc.id, ...doc.data() };
+  }
+
+  const byInvoice = await mappingsCol
+      .where("purpose", "==", B2B_PURPOSE)
+      .where("invoiceId", "==", paymentId)
+      .limit(1)
+      .get();
+  if (!byInvoice.empty) {
+    const doc = byInvoice.docs[0];
+    return { mappingDocId: doc.id, ...doc.data() };
+  }
+
+  return null;
+}
+
+/**
+ * @param {string} linkId
+ * @param {Object} updates
+ * @returns {Promise<void>}
+ */
+async function markPaymentLinkPaid(linkId, updates) {
+  if (!linkId) {
+    return;
+  }
+  await firestore.collection(config.collections.paymentLinks).doc(linkId).update({
+    status: "paid",
+    paidAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    ...updates,
+  });
+}
+
+/**
+ * @param {Object} paymentData
+ * @param {Object} payload
+ * @param {Object} mapping
+ * @returns {Promise<{ success: boolean, duplicate?: boolean, partnerId?: string, error?: string }>}
+ */
+async function processB2bPaymentWebhook(paymentData, payload, mapping) {
+  const { paymentId, amount, currency, completedAt, account } = paymentData;
+  const partnerId = mapping.partnerId;
+  const linkId = mapping.linkId || null;
+
+  if (!partnerId) {
+    return { success: false, error: "B2B mapping missing partnerId" };
+  }
+
+  const paymentRecordRef = firestore.collection("payments").doc(paymentId);
+  const existingPayment = await paymentRecordRef.get();
+  if (existingPayment.exists) {
+    const existingData = existingPayment.data() || {};
+    if (existingData.partner_id === partnerId && existingData.processed_at) {
+      return { success: true, duplicate: true, partnerId };
+    }
+  }
+
+  const creditAmount = Number(amount) > 0 ? Number(amount) : Number(mapping.amount || 0);
+  const creditCurrency = String(currency || mapping.currency || "KES").toUpperCase();
+
+  await paymentRecordRef.set({
+    ...payload,
+    partner_id: partnerId,
+    link_id: linkId,
+    purpose: B2B_PURPOSE,
+    processed_at: admin.firestore.FieldValue.serverTimestamp(),
+    status: "processing",
+  }, { merge: true });
+
+  try {
+    const result = await executeWithIdempotency(
+        `processB2bPayment:${paymentId}`,
+        async () => {
+          await walletService.getOrCreatePartnerWallet(partnerId);
+          const { previousBalance, newBalance } = await walletService.updatePartnerWalletBalance(
+              partnerId,
+              creditCurrency,
+              creditAmount,
+          );
+
+          const { transactionId } = await transactionService.createTransactionRecord({
+            type: transactionService.TRANSACTION_TYPES.b2b_payment,
+            partnerId,
+            amount: creditAmount,
+            currency: creditCurrency,
+            status: transactionService.STATUSES.completed,
+            metadata: {
+              reference: mapping.bookingReference || null,
+              linkId,
+              orderId: mapping.orderId || null,
+              invoiceId: paymentId,
+              checkoutId: mapping.checkoutId || paymentId,
+              rail: mapping.rail || "intasend",
+              account: account || null,
+              previousBalance,
+              newBalance,
+              source: "intasend",
+              completedAt,
+            },
+            logLegacy: false,
+          });
+
+          if (linkId) {
+            await markPaymentLinkPaid(linkId, {
+              transactionId,
+              invoiceId: paymentId,
+              paidAmount: creditAmount,
+              paidCurrency: creditCurrency,
+            });
+          }
+
+          if (mapping.orderId) {
+            await firestore.collection(config.collections.orders).doc(mapping.orderId).update({
+              status: "completed",
+              completedAt: admin.firestore.FieldValue.serverTimestamp(),
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              "metadata.transactionId": transactionId,
+            });
+          }
+
+          await firestore.collection(config.collections.invoiceMappings)
+              .doc(mapping.mappingDocId || paymentId)
+              .set({
+                status: "completed",
+                transactionId,
+                completedAt: admin.firestore.FieldValue.serverTimestamp(),
+              }, { merge: true });
+
+          await paymentRecordRef.update({
+            status: "completed",
+            balance_updated: true,
+            transaction_id: transactionId,
+            new_balance: newBalance,
+          });
+
+          return { transactionId, previousBalance, newBalance };
+        },
+    );
+
+    console.log("✅ B2B payment settled", {
+      paymentId,
+      partnerId,
+      linkId,
+      transactionId: result.transactionId,
+    });
+
+    return { success: true, partnerId };
+  } catch (err) {
+    console.error("❌ B2B payment settlement failed", {
+      paymentId,
+      partnerId,
+      error: err.message,
+    });
+    await paymentRecordRef.update({
+      status: "failed",
+      error: err.message,
+    });
+    return { success: false, error: err.message, partnerId };
+  }
+}
+
+module.exports = {
+  B2B_PURPOSE,
+  lookupB2bInvoiceMapping,
+  processB2bPaymentWebhook,
+  markPaymentLinkPaid,
+};

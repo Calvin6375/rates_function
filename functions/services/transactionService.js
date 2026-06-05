@@ -153,6 +153,29 @@ async function getTransactionRecord(transactionId) {
 }
 
 /**
+ * @param {FirebaseFirestore.QuerySnapshot} snapshot
+ * @returns {Array<Object>}
+ */
+function mapTransactionSnapshot(snapshot) {
+  return snapshot.docs.map((doc) => {
+    const d = doc.data();
+    return {
+      id: doc.id,
+      ...d,
+      createdAt: d.createdAt?.toDate?.()?.toISOString?.() ?? null,
+      updatedAt: d.updatedAt?.toDate?.()?.toISOString?.() ?? null,
+    };
+  });
+}
+
+/** Firestore composite index missing or still building (code 9). */
+function isFirestoreIndexUnavailable(err) {
+  const code = err?.code;
+  const msg = String(err?.message || "");
+  return code === 9 || msg.includes("FAILED_PRECONDITION") || msg.includes("requires an index");
+}
+
+/**
  * List transaction records (e.g. for a partner or user)
  *
  * @param {Object} options
@@ -172,18 +195,29 @@ async function listTransactionRecords({ userId, partnerId, type, status, limit =
   if (status) query = query.where("status", "==", status);
   if (startAfter) query = query.startAfter(startAfter);
 
-  const snapshot = await query.get();
-  const transactions = snapshot.docs.map((doc) => {
-    const d = doc.data();
-    return {
-      id: doc.id,
-      ...d,
-      createdAt: d.createdAt?.toDate?.()?.toISOString?.() ?? null,
-      updatedAt: d.updatedAt?.toDate?.()?.toISOString?.() ?? null,
-    };
-  });
-  const lastDoc = snapshot.docs.length === limit ? snapshot.docs[snapshot.docs.length - 1] : null;
-  return { transactions, lastDoc };
+  try {
+    const snapshot = await query.get();
+    const transactions = mapTransactionSnapshot(snapshot);
+    const lastDoc = snapshot.docs.length === limit ? snapshot.docs[snapshot.docs.length - 1] : null;
+    return { transactions, lastDoc };
+  } catch (err) {
+    if (!isFirestoreIndexUnavailable(err) || startAfter) {
+      throw err;
+    }
+    // Index building or not deployed yet: scan recent rows and filter in memory.
+    const scanLimit = Math.min(Math.max(limit * 10, 200), 1000);
+    const fallbackSnap = await collection("transactionRecords")
+        .orderBy("createdAt", "desc")
+        .limit(scanLimit)
+        .get();
+    let transactions = mapTransactionSnapshot(fallbackSnap);
+    if (userId) transactions = transactions.filter((row) => row.userId === userId);
+    if (partnerId) transactions = transactions.filter((row) => row.partnerId === partnerId);
+    if (type) transactions = transactions.filter((row) => row.type === type);
+    if (status) transactions = transactions.filter((row) => row.status === status);
+    transactions = transactions.slice(0, limit);
+    return { transactions, lastDoc: null };
+  }
 }
 
 module.exports = {

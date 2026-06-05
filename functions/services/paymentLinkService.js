@@ -10,7 +10,7 @@ const { collection, serverTimestamp } = require("../libs/firestore");
 const partnerService = require("./partnerService");
 
 const VALID_CURRENCIES = ["USD", "KES", "USDT", "NGN", "GHS"];
-const VALID_STATUSES = ["active", "cancelled"];
+const VALID_STATUSES = ["active", "cancelled", "paid"];
 const MAX_LIST = 100;
 
 /**
@@ -85,11 +85,31 @@ function buildHostedUrl(linkId, partnerId) {
 }
 
 /**
+ * Path-only post-payment URL for IntaSend redirect_url (no query string — IntaSend rejects & and ?).
+ *
+ * @param {string} linkId
+ * @returns {string}
+ */
+function buildHostedSuccessUrl(linkId) {
+  const explicit = process.env.B2B_CHECKOUT_REDIRECT_URL;
+  if (explicit && String(explicit).trim()) {
+    return String(explicit).trim()
+        .replace(/\{linkId\}/g, linkId)
+        .replace(/\/$/, "");
+  }
+  const base = paymentLinkBaseUrl();
+  return `${base}/l/${linkId}/success`;
+}
+
+/**
  * @param {Object} data
  * @returns {string}
  */
 function effectiveStatus(data) {
   const status = data.status || "active";
+  if (status === "paid" || status === "cancelled") {
+    return status;
+  }
   if (status !== "active") {
     return status;
   }
@@ -127,7 +147,10 @@ function serializePaymentLink(doc, opts = {}) {
     createdAt: d.createdAt?.toDate?.()?.toISOString() ?? null,
     createdByUid: d.createdByUid ?? null,
     updatedAt: d.updatedAt?.toDate?.()?.toISOString() ?? null,
-    updatedByUid: d.updatedByUid ?? null,
+    paidAt: d.paidAt?.toDate?.()?.toISOString() ?? null,
+    transactionId: d.transactionId ?? null,
+    invoiceId: d.invoiceId ?? null,
+    lastCheckoutRail: d.lastCheckoutRail ?? null,
   };
   if (opts.includeUrl !== false && partnerId && linkId) {
     out.url = buildHostedUrl(linkId, partnerId);
@@ -417,6 +440,7 @@ async function getPublicPaymentLink(linkId, partnerId) {
     description: d.description ?? null,
     status,
     expiresAt: d.expiresAt?.toDate?.()?.toISOString() ?? null,
+    paidAt: d.paidAt?.toDate?.()?.toISOString() ?? null,
   };
 }
 
@@ -429,7 +453,9 @@ module.exports = {
   deletePaymentLink,
   getPublicPaymentLink,
   buildHostedUrl,
+  buildHostedSuccessUrl,
   paymentLinkBaseUrl,
+  effectiveStatus,
   VALID_CURRENCIES,
   VALID_STATUSES,
 };
