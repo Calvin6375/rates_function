@@ -65,5 +65,12 @@ node_modules/
 # dotenv environment variables file
 .env
 
+# Circle entity secret recovery files (never commit)
+functions/recovery/
+recovery/
+
+# Local Firebase service account keys
+serviceAccountKey.json
+
 # dataconnect generated files
 .dataconnect
