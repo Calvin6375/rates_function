@@ -10,6 +10,9 @@ const { collection, serverTimestamp } = require("../libs/firestore");
 const { ref } = require("../libs/realtime");
 const { syncBalanceToRealtimeDatabase } = require("../utils/firestore");
 
+const ledgerService = require("./ledger/ledgerService");
+const circleRailAdapter = require("./circle/circleRailAdapter");
+
 const OWNER_TYPES = Object.freeze({ user: "user", partner: "partner" });
 const DEFAULT_BALANCES = { USD: 0, KES: 0, USDT: 0 };
 
@@ -143,9 +146,41 @@ async function cacheRatesInRealtime(rates) {
   await r.set(rates);
 }
 
+/**
+ * Get Circle USDC balance for a user.
+ *
+ * @param {string} userId
+ * @returns {Promise<number>}
+ */
+async function getCryptoBalance(userId) {
+  const wallet = await circleRailAdapter.getWallet(userId);
+  if (!wallet) return 0;
+  return ledgerService.getAvailableBalance(userId, "USDC");
+}
+
+/**
+ * Aggregate fiat + crypto balances for a user.
+ *
+ * @param {string} userId
+ * @returns {Promise<{ fiat: { USD: number, KES: number, USDT: number }, crypto: { USDC: number } }|null>}
+ */
+async function getBalances(userId) {
+  const fiat = await getUserWalletBalances(userId);
+  if (!fiat) return null;
+  const usdc = await getCryptoBalance(userId);
+  return {
+    fiat,
+    crypto: {
+      USDC: usdc,
+    },
+  };
+}
+
 module.exports = {
   OWNER_TYPES,
   getUserWalletBalances,
+  getCryptoBalance,
+  getBalances,
   getOrCreatePartnerWallet,
   getPartnerWallet,
   updatePartnerWalletBalance,

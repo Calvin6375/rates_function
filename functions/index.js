@@ -13,11 +13,13 @@ const partnerSandboxHttp = require("./http/partnerSandboxHttp");
 const customerWalletsHttp = require("./http/customerWalletsHttp");
 const adminHttp = require("./http/adminHttp");
 const migrateUsersHttp = require("./http/migrateUsersHttp");
-const updatePhoneNumbersHttp = require("./http/updatePhoneNumbersHttp");
 const transactionsHttp = require("./http/transactionsHttp");
 const notificationsHttp = require("./http/notificationsHttp");
 const b2bPortalHttp = require("./http/b2bPortalHttp");
 const customerAuthHttp = require("./http/customerAuthHttp");
+const cryptoApi = require("./http/cryptoApi");
+const circleWebhookHttp = require("./http/circleWebhookHttp");
+const reconcileCircleLedgerJob = require("./jobs/reconcileCircleLedger");
 
 // Import triggers
 const usersTrigger = require("./triggers/usersTrigger");
@@ -36,6 +38,8 @@ exports.getArbitrageRates = arbitrageHttp.getArbitrageRates;
 // Export payment functions (callables: paymentsHttp; webhooks: webhookApi)
 exports.handleTopUpWebhook = webhookApi.handleTopUpWebhook;
 exports.handleTransFiTopUpWebhook = webhookApi.handleTransFiTopUpWebhook;
+exports.handleCircleWebhook = circleWebhookHttp.handleCircleWebhook;
+exports.reconcileCircleLedger = reconcileCircleLedgerJob.reconcileCircleLedger;
 exports.createPayment = paymentsHttp.createPayment;
 exports.createDirectTopup = paymentsHttp.createDirectTopup;
 exports.createDirectPayout = paymentsHttp.createDirectPayout;
@@ -45,6 +49,7 @@ exports.createSendMoneyOrder = paymentsHttp.createSendMoneyOrder;
 
 // Export customer wallets REST API
 exports.api = customerWalletsHttp.api;
+exports.cryptoApi = cryptoApi.cryptoApi;
 
 // Export B2B Partner API (X-API-KEY auth)
 exports.partner = partnerApi.partner;
@@ -72,8 +77,6 @@ exports.requestPasswordReset = customerAuthHttp.requestPasswordReset;
 // Export migration functions
 exports.migrateExistingUsers = migrateUsersHttp.migrateExistingUsers;
 exports.migrateUsersHttp = migrateUsersHttp.migrateUsersHttp;
-exports.updatePhoneNumbers = updatePhoneNumbersHttp.updatePhoneNumbers;
-exports.updatePhoneNumbersHttp = updatePhoneNumbersHttp.updatePhoneNumbersHttp;
 
 // Import admin claims handlers
 const adminClaimsHttp = require("./http/adminClaimsHttp");

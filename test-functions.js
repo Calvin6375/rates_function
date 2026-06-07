@@ -148,17 +148,6 @@ async function runTests() {
   results.tests.push({ name: 'migrateUsersHttp', ...result });
   if (result.success) results.passed++; else results.failed++;
 
-  // 7. Update Phone Numbers Endpoint
-  result = await testHTTPEndpoint(
-    'updatePhoneNumbersHttp',
-    'POST',
-    '/updatePhoneNumbersHttp/updatePhoneNumbers',
-    {},
-    { 'Content-Type': 'application/json' }
-  );
-  results.tests.push({ name: 'updatePhoneNumbersHttp', ...result });
-  if (result.success) results.passed++; else results.failed++;
-
   // Summary
   logSection('Test Summary');
   log(`Total Tests: ${results.tests.length}`, 'blue');

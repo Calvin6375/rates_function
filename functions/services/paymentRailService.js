@@ -6,9 +6,12 @@ const axios = require("axios");
 const config = require("../config");
 
 /** @type {Readonly<Record<string, string>>} */
+const circleRailAdapter = require("./circle/circleRailAdapter");
+
 const SUPPORTED_RAILS = Object.freeze({
   intasend: "intasend",
   manual: "manual",
+  circle: "circle",
 });
 
 /** Fiat currencies IntaSend checkout supports today. */
@@ -537,6 +540,39 @@ async function createSession(params) {
   throw new Error(`Unsupported payment rail: ${rail}`);
 }
 
+/**
+ * Process a Circle crypto deposit notification (webhook payload or manual replay).
+ *
+ * @param {Object} params
+ * @param {Object} params.payload - Circle webhook notification body
+ * @param {string} [params.rawBody] - Original JSON string for dedup hashing
+ * @returns {Promise<{ success: boolean, duplicate?: boolean, rail: string, error?: string }>}
+ */
+async function processDeposit(params) {
+  const rail = String(params.rail || "").toLowerCase();
+  if (rail === SUPPORTED_RAILS.circle) {
+    return processCircleDeposit(params);
+  }
+  if (rail === SUPPORTED_RAILS.intasend) {
+    throw new Error("IntaSend deposits are processed via handleTopUpWebhook, not processDeposit");
+  }
+  throw new Error(`Unsupported payment rail for deposit: ${rail}`);
+}
+
+/**
+ * @param {Object} params
+ * @returns {Promise<{ success: boolean, duplicate?: boolean, rail: string, error?: string }>}
+ */
+async function processCircleDeposit(params) {
+  const payload = params.payload || params;
+  const rawBody = params.rawBody || JSON.stringify(payload);
+  const result = await circleRailAdapter.handleWebhookEvent(payload, rawBody);
+  return {
+    rail: SUPPORTED_RAILS.circle,
+    ...result,
+  };
+}
+
 module.exports = {
   SUPPORTED_RAILS,
   INTASEND_CHECKOUT_CURRENCIES,
@@ -556,4 +592,6 @@ module.exports = {
   getIntaSendSecretConfig,
   createIntaSendCheckoutSession,
   createSession,
+  processDeposit,
+  processCircleDeposit,
 };

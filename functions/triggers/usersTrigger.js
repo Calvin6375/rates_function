@@ -4,8 +4,14 @@
  */
 
 const {onDocumentCreated} = require("firebase-functions/v2/firestore");
+const {defineSecret} = require("firebase-functions/params");
 const admin = require("../admin");
 const config = require("../config");
+const circleService = require("../services/circle/circleService");
+const circleRailAdapter = require("../services/circle/circleRailAdapter");
+
+const circleApiKey = defineSecret(config.secrets.circleApiKey);
+const circleEntitySecret = defineSecret(config.secrets.circleEntitySecret);
 
 const db = admin.firestore();
 
@@ -19,6 +25,7 @@ const db = admin.firestore();
 exports.onUserCreated = onDocumentCreated(
     {
       document: `${config.collections.users}/{userId}`,
+      secrets: [circleApiKey, circleEntitySecret],
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
@@ -64,20 +71,29 @@ exports.onUserCreated = onDocumentCreated(
           console.log(`✅ Successfully initialized default fields for user ${userId}`, {
             addedFields: Object.keys(updates),
           });
-
-          return {
-            success: true,
-            userId,
-            addedFields: Object.keys(updates),
-          };
         } else {
           console.log(`ℹ️ User ${userId} already has all required fields, no update needed`);
-          return {
-            success: true,
-            userId,
-            message: "All fields already present",
-          };
         }
+
+        if (circleService.isCircleConfigured()) {
+          try {
+            const cryptoWallet = await circleRailAdapter.createWallet(userId);
+            console.log(`✅ Circle wallet provisioned for user ${userId}`, {
+              walletId: cryptoWallet.walletId,
+              address: cryptoWallet.address,
+            });
+          } catch (circleErr) {
+            console.error(`⚠️ Circle wallet creation failed for user ${userId} (non-blocking)`, {
+              error: circleErr.message,
+            });
+          }
+        }
+
+        return {
+          success: true,
+          userId,
+          addedFields: Object.keys(updates),
+        };
       } catch (error) {
         console.error(`❌ Error initializing default fields for user:`, {
           userId: event.params.userId,

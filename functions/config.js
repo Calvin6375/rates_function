@@ -37,6 +37,8 @@ const config = {
     intaSendSecretKey: "INTASEND_SECRET_KEY",
     intaSendPublishableKey: "INTASEND_PUBLISHABLE_KEY",
     transfiWebhookSecret: "TRANSFI_WEBHOOK_SECRET",
+    circleApiKey: "CIRCLE_API_KEY",
+    circleEntitySecret: "CIRCLE_ENTITY_SECRET",
   },
 
   /**
@@ -47,8 +49,6 @@ const config = {
 
   // Feature flags
   features: {
-    enableIdempotency: getEnv("ENABLE_IDEMPOTENCY", "true") === "true",
-    enableOutbox: getEnv("ENABLE_OUTBOX", "true") === "true",
     enableDetailedLogging: getEnv("ENABLE_DETAILED_LOGGING", "true") === "true",
   },
 
@@ -87,7 +87,6 @@ const config = {
     config: "config",
     adminLogs: "adminLogs",
     customerWallets: "customerWallets",
-    outbox: "outbox",
     // Firestore paths for migrated data (previously in RTDB)
     invoiceMappings: "invoiceMappings", // For payment webhook lookups
     // B2B and ledger (new architecture)
@@ -100,11 +99,28 @@ const config = {
     wallets: "wallets", // Partner wallets; user balances stay in users
     safariCoinWallets: "safariCoinWallets",
     paymentLinks: "paymentLinks",
+    cryptoWallets: "cryptoWallets",
+    cryptoTransactions: "cryptoTransactions",
+    cryptoLedger: "cryptoLedger",
+    walletAggregates: "walletAggregates",
+    webhookEvents: "webhookEvents",
+    sendIdempotencyKeys: "sendIdempotencyKeys",
+    pendingReservations: "pendingReservations",
   },
 
   paymentLinks: {
     /** Override payer link host via PAYMENT_LINK_BASE_URL env (e.g. https://pay.truepay.africa). */
     baseUrl: getEnv("PAYMENT_LINK_BASE_URL", null),
+  },
+
+  circle: {
+    apiKey: getEnv("CIRCLE_API_KEY", null),
+    entitySecret: getEnv("CIRCLE_ENTITY_SECRET", null),
+    env: getEnv("CIRCLE_ENV", "sandbox"),
+    baseUrl: getEnv("CIRCLE_API_BASE_URL", "https://api.circle.com"),
+    walletSetId: getEnv("CIRCLE_WALLET_SET_ID", null),
+    blockchain: getEnv("CIRCLE_BLOCKCHAIN", null),
+    usdcTokenId: getEnv("CIRCLE_USDC_TOKEN_ID", null),
   },
 };
 

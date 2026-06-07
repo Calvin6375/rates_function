@@ -7,6 +7,7 @@ const {onRequest} = require("firebase-functions/v2/https");
 const admin = require("../admin");
 const express = require("express");
 const config = require("../config");
+const {verifyFirebaseAuth} = require("../libs/auth");
 
 const firestore = admin.firestore();
 const rtdb = admin.database();
@@ -192,28 +193,6 @@ app.use((req, res, next) => {
   }
   next();
 });
-
-/**
- * Helper: Verify Firebase Auth token and get user ID
- * @param {Object} req - Express request object
- * @returns {Promise<{success: boolean, userId: string|null, error: string|null, decodedToken?: Object}>}
- */
-async function verifyAuthToken(req) {
-  try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return {success: false, userId: null, error: "Missing authorization header"};
-    }
-
-    const token = authHeader.split("Bearer ")[1];
-    const decodedToken = await admin.auth().verifyIdToken(token);
-
-    return {success: true, userId: decodedToken.uid, decodedToken, error: null};
-  } catch (error) {
-    console.error("Error verifying auth token:", error.message);
-    return {success: false, userId: null, error: "Invalid or expired token"};
-  }
-}
 
 /**
  * Query transactions from Firestore
@@ -414,7 +393,7 @@ async function getTransactionsFromRealtimeDatabase(userId, options = {}) {
 app.get("/transactions", async (req, res) => {
   try {
     // Verify authentication
-    const authResult = await verifyAuthToken(req);
+    const authResult = await verifyFirebaseAuth(req);
     if (!authResult.success) {
       res.status(401).json({
         success: false,
@@ -535,7 +514,7 @@ app.get("/transactions", async (req, res) => {
 app.get("/transactions/:transactionId", async (req, res) => {
   try {
     // Verify authentication
-    const authResult = await verifyAuthToken(req);
+    const authResult = await verifyFirebaseAuth(req);
     if (!authResult.success) {
       res.status(401).json({
         success: false,

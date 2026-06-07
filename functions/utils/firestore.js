@@ -1,5 +1,6 @@
 const admin = require("../admin");
 const {logTransaction} = require("./transactions");
+const rtdbSyncService = require("../services/sync/rtdbSyncService");
 
 const firestore = admin.firestore();
 const rtdb = admin.database();
@@ -258,12 +259,25 @@ async function syncBalanceToRealtimeDatabase(userId, currency = "USD") {
     const usdtBalance = Number(userData.usdtBalance || userData.USDT || userData.cryptoBalance || 0);
     await walletRef.child("crypto/USDT").set(usdtBalance);
 
+    // Circle USDC balance from Firestore walletAggregates (ledger-derived cache)
+    let usdcBalance = 0;
+    try {
+      const aggDoc = await firestore.collection("walletAggregates").doc(userId).get();
+      if (aggDoc.exists) {
+        usdcBalance = Number(aggDoc.data().USDC || 0);
+      }
+    } catch (usdcErr) {
+      console.warn("USDC RTDB sync skipped", { userId, error: usdcErr.message });
+    }
+    await rtdbSyncService.syncToRTDB(userId, "USDC", usdcBalance);
+
     console.log(`✅ Synced balances to Realtime DB for user ${userId}`, {
       USD: usdBalance,
       KES: kesBalance,
       TZS: tzsBalance,
       ETB: etbBalance,
       USDT: usdtBalance,
+      USDC: usdcBalance,
     });
   } catch (error) {
     console.error("❌ Error syncing balance to Realtime DB:", {

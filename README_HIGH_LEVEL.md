@@ -1,302 +1,310 @@
-# TruePay Backend - High Level Overview
+# TruePay Backend — High Level Overview
 
 ## What is TruePay?
 
-TruePay is a cryptocurrency exchange platform backend that enables users to exchange USD for African fiat currencies (KES, NGN, GHS) through USDT using Binance P2P marketplace rates. The platform provides real-time exchange rates, wallet management, and payment processing for African markets.
+TruePay is a Firebase-based backend for a cryptocurrency exchange and payments platform serving African markets. It powers:
+
+- **Consumer app (C2B)** — users exchange USD for local fiat (KES, NGN, GHS) via USDT using Binance P2P rates, top up wallets through IntaSend, and run swap / send-money flows.
+- **B2B partners** — hotels, lodges, fintechs, and similar businesses integrate via API key, manage teams in a portal, collect payments through hosted payment links, and settle to bank accounts.
+- **Platform operations** — TruePay staff use admin callables and the B2B super-admin portal to manage users, partners, and compliance.
+
+Firebase project ID in this repo: **`truepay-72060`**. Default region: **`us-central1`**.
+
+---
 
 ## Core Functionality
 
-### 1. **Exchange Rate Services**
-- Fetches real-time USDT exchange rates from Binance P2P marketplace for African currencies (KES, NGN, GHS)
-- Calculates customer prices with configurable service fees
-- Provides arbitrage rate calculations for USD → USDT → Local Fiat conversion paths
-- Rates are cached and updated daily via scheduled functions
+### 1. Exchange rate services
 
-### 2. **Payment Processing**
-- Integrates with IntaSend payment gateway for mobile money payments (M-PESA, etc.)
-- `createPayment` callable function creates order records after IntaSend checkout
-- `handleTopUpWebhook` processes webhook callbacks to automatically credit user wallets upon payment completion
-- Supports multiple payment resolution strategies (phone number lookup, order matching, metadata user_id)
-- Secure webhook signature verification (HMAC SHA-256 or challenge token)
-- Idempotency prevents duplicate payment processing
+- Fetches USDT P2P rates from Binance for KES, NGN, GHS
+- Applies configurable service fees (default 1.5% from Firestore `config/fees`)
+- Arbitrage paths for USD → USDT → local fiat
+- Scheduled rate jobs and Firestore / Realtime Database caching (5–10 minute validity)
 
-### 3. **Wallet Management**
-- Dual-database architecture:
-  - **Firestore**: Master source of truth for user balances and transactions
-  - **Realtime Database**: Fast, real-time cache at `wallet/{userId}/fiat/{currency}`
-- Automatic balance synchronization via `syncBalance` Firestore trigger
-- Transaction logging and audit trails
-- Support for multiple currencies (USD, KES, NGN, GHS)
+### 2. Consumer payment processing
 
-### 4. **User Management**
-- Firebase Authentication integration
-- User profile management (name, email, phone, country)
-- KYC (Know Your Customer) status tracking
-- `userBootstrap` callable function initializes new user documents and wallets (called by client after signup)
+- **IntaSend** — mobile money checkout, webhooks, wallet top-ups
+- **TransFi** — additional top-up webhook path
+- Callables: `createPayment`, `createDirectTopup`, `createDirectPayout`, `createSwapOrder`, `createSendMoneyOrder`
+- Webhooks: `handleTopUpWebhook`, `handleTransFiTopUpWebhook`, `handlePaymentWebhook`
+- Idempotent processing; HMAC / challenge verification on webhooks
 
-### 5. **Admin Dashboard**
-- Admin-only functions for user management
-- Balance adjustments (credit/debit via `updateUserBalance`)
-- KYC verification and status updates
-- Commission/fee configuration management
-- Payment status tracking via `getIntaSendPaymentStatus` (IntaSend API)
-- User migration (`migrateExistingUsers`) and phone number format updates (`updatePhoneNumbers`)
+### 3. Wallet management
+
+- **Firestore** — master balances and transaction history
+- **Realtime Database** — fast cache at `wallet/{userId}/fiat/{currency}` (clients should read here)
+- **Partner wallets** — separate `wallets` collection with `ownerType: 'partner'`
+- Balance writes sync to RTDB via shared helpers (not a separate exported trigger)
+
+### 4. User management
+
+- Firebase Authentication
+- `userBootstrap` callable and `onUserCreated` trigger initialize profiles and wallets
+- KYC status tracking; supported countries config
+- `onAuthUserDeleted` cleans up Firestore / RTDB user data
+
+### 5. Admin dashboard (consumer)
+
+- Admin callables in `adminHttp.js` (balance adjust, KYC, commission config, IntaSend status, orphan pruning)
+- Custom claim helpers: `setAdminClaim`, `removeAdminClaim`
+- Sensitive REST routes on `api` require Firebase custom claim **`admin: true`**
+
+### 6. B2B platform
+
+Three HTTP surfaces (see [`B2B_docs.md`](./B2B_docs.md)):
+
+| Function | Auth | Purpose |
+|----------|------|---------|
+| **`partner`** | `X-API-KEY` | Live machine API — rates, payments, wallet, settlements, SafariCoin balance |
+| **`partnerSandbox`** | Static public `X-API-KEY` | Integration testing — in-memory mocks, no real funds ([`B2B_SANDBOX.md`](./B2B_SANDBOX.md)) |
+| **`b2bPortal`** | Firebase Bearer | Partner dashboard + platform super-admin |
+
+**Partner portal highlights**
+
+- Self-serve onboarding wizard (`onboarding/{uid}`): KYC fields, partner registration, checklist progress
+- **Checklist flags** (from `GET /portal/onboarding`):
+  - `progress.testTransactionDone` — set when a sandbox test payment is recorded ([`B2B_SANDBOX_DASHBOARD_FRONTEND.md`](./B2B_SANDBOX_DASHBOARD_FRONTEND.md))
+  - `progress.goLiveDone` — set when partner `status` is **`active`** (super admin `PATCH /platform/partners/{id}`)
+- Portal sandbox routes: `GET/POST /portal/sandbox/transactions|payments` (Firestore-backed test history)
+- **Payment links** — hosted IntaSend checkout at `b2bPortal/l/{linkId}`; org-wide reusable product links
+- Org admin manages members and roles via custom claims (`partnerId`, `partnerRole`)
+
+**Platform super-admin** (`/platform/*`): partners CRUD, org-admin assignment, payment links, transactions overview, consumer user management.
+
+---
 
 ## Architecture
 
-Sketch of how the **customer app**, **B2B** (API key + portal), **SafariCoin**, and **admin** surfaces map to Cloud Functions and storage. Exports live in `functions/index.js`.
+Exports live in `functions/index.js`. Business logic sits in **`services/`**; HTTP handlers in **`http/`** are thin controllers.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
 │                     Firebase Cloud Functions (v2)                              │
-│  Scheduled (rate jobs) · Callable · HTTP · Webhooks · Firestore / Auth triggers │
+│  Scheduled · Callable · HTTP · Webhooks · Firestore / Auth triggers           │
 └─────────────────────────────────────────────────────────────────────────────────┘
 
-   CUSTOMER APP                    B2B (integrations)              B2B (portal)
-   Firebase Auth                    X-API-KEY                       Bearer + claims
-   ID token                         (partners.apiKey)               (admin / partnerId)
-        │                                  │                                │
-        ▼                                  ▼                                ▼
- ┌──────────────────┐              ┌──────────────────┐              ┌──────────────────┐
- │ api              │              │ partner          │              │ b2bPortal        │
- │ customerWallets  │              │ partnerApi       │              │ b2bPortalHttp    │
- ├──────────────────┤              ├──────────────────┤              ├──────────────────┤
- │ Public / app:    │              │ /rates           │              │ /platform/…      │
- │  GET /rates,     │              │ /payments        │              │  partners CRUD   │
- │  /customer-rates │              │  → partner       │              │  assign org      │
- │  /binance/rates  │              │  wallets + tx    │              │  admin (claim)   │
- │  POST /p2p/      │              │ /transactions    │              │ /portal/…        │
- │   listings       │              │ /settlements     │              │  members, roles  │
- │ Auth (user):     │              │ /wallet (fiat)   │              │  org_admin only  │
- │  transactionsApi │              │                  │              └────────┬─────────┘
- │  notificationsApi│            │ SafariCoin       │                       │
- │ Admin routes *:   │              │ GET /safaricoin/ │                       │
- │  customer-       │              │     balance      │                       │
- │  wallets,        │              │  → safariCoin    │                       │
- │  PUT /config/fees│              │     Service **   │                       │
- ├──────────────────┤              │  (mock; doc id   │                       │
- │ Callables:       │              │   = partnerId)   │                       │
- │ createPayment,   │              └────────┬─────────┘                       │
- │ userBootstrap,   │                       │                               │
- │ getBinanceRates, │                       └───────────────┬─────────────────┘
- │ …                │                                       │
- └────────┬─────────┘                                       │
-          │                                                 │
-          │         ADMIN DASHBOARD (TruePay staff)           │
-          │         admin claim + App Check on callables     │
-          │                      │                           │
-          └──────────────────────┼───────────────────────────┘
-                                 ▼
+   CONSUMER APP                 B2B INTEGRATIONS              B2B PORTAL
+   Firebase Auth                X-API-KEY                     Bearer + claims
+        │                       (partners.apiKey)             (admin / partnerId)
+        ▼                              │                                │
+ ┌──────────────┐              ┌──────────────┐              ┌──────────────┐
+ │ api          │              │ partner      │              │ b2bPortal    │
+ │ transactions │              │ partnerSandbox│             │              │
+ │ notifications│              │              │              │ /platform/*  │
+ │ callables    │              │ rates        │              │ /portal/*    │
+ │ webhooks     │              │ payments     │              │ onboarding   │
+ └──────┬───────┘              │ checkout     │              │ payment links│
+        │                      │ wallet, tx   │              │ sandbox tests│
+        │                      └──────┬───────┘              └──────┬───────┘
+        │                             │                             │
+        └─────────────────────────────┼─────────────────────────────┘
+                                      ▼
  ┌──────────────────────────────────────────────────────────────────────────────┐
- │ Shared libs / services                                                        │
- │ rateService · userWallets · walletService · transactionService ·               │
- │ settlementService · safariCoinService ** · payments · …                      │
+ │ services/ · libs/                                                             │
+ │ walletService · transactionService · partnerService · paymentLinkService ·    │
+ │ b2bOnboardingService · b2bPortalSandboxService · paymentRailService · …       │
  └──────────────────────────────────────────────────────────────────────────────┘
-                                 │
-         ┌───────────────────────┼───────────────────────┐
-         ▼                       ▼                       ▼
- ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐
- │ Firestore       │   │ Realtime DB     │   │ External APIs   │
- ├─────────────────┤   ├─────────────────┤   ├─────────────────┤
- │ Customer:       │   │ wallet/{uid}/   │   │ Binance P2P     │
- │  users, orders, │   │   fiat, rates,  │   │ IntaSend, etc.  │
- │  customerWallets│   │   pending…      │   │                 │
- │ B2B:            │   │                 │   │                 │
- │  partners +     │   │                 │   │                 │
- │   members ***,  │   │                 │   │                 │
- │  wallets,       │   │                 │   │                 │
- │  settlements,   │   │                 │   │                 │
- │  transaction    │   │                 │   │                 │
- │  Records (B2B)  │   │                 │   │                 │
- │  safariCoin     │   │                 │   │                 │
- │  Wallets        │   │                 │   │                 │
- │ Shared:         │   │                 │   │                 │
- │  p2pRates,      │   │                 │   │                 │
- │  config, …      │   │                 │   │                 │
- └─────────────────┘   └─────────────────┘   └─────────────────┘
-
- Triggers: syncBalance · onUserCreated · userBootstrap (auth onCreate)
-
- *  On api, sensitive REST paths require Firebase custom claim admin: true.
- ** safariCoinService is a mock placeholder; balances in safariCoinWallets.
- *** partners/{partnerId}/members — managed via b2bPortal, not X-API-KEY.
+                                      │
+         ┌────────────────────────────┼────────────────────────────┐
+         ▼                            ▼                            ▼
+ ┌───────────────┐           ┌───────────────┐           ┌───────────────┐
+ │ Firestore     │           │ Realtime DB   │           │ External APIs │
+ │ users, orders │           │ wallet cache  │           │ Binance P2P   │
+ │ partners      │           │ rates         │           │ IntaSend      │
+ │ wallets       │           │               │           │ TransFi       │
+ │ onboarding    │           │               │           │               │
+ │ paymentLinks  │           │               │           │               │
+ │ transaction   │           │               │           │               │
+ │ Records       │           │               │           │               │
+ └───────────────┘           └───────────────┘           └───────────────┘
 ```
 
 **How to read this**
 
-- **Customer app** talks mainly to **`api`**, **`transactionsApi`**, **`notificationsApi`**, and **callables** (payments, bootstrap, rates). Data lives in **`users`**, **`customerWallets`**, orders, RTDB wallet cache, etc.
-- **B2B integrations** use the **`partner`** HTTP function with **`X-API-KEY`** (from `partners` in Firestore): rates, recording payments into **partner `wallets`**, settlements, **transaction records**, and **SafariCoin** balance via **`GET …/safaricoin/balance`** (backed by **`safariCoinService`** / **`safariCoinWallets`** — currently mock).
-- **B2B portal** uses **`b2bPortal`**: platform **`admin`** users manage all partners and assign each partner’s single **org admin**; that org admin manages **`partners/{id}/members`** and **`partnerId` / `partnerRole`** custom claims (separate from the API-key integration path).
+- **Consumer app** → `api`, `transactionsApi`, `notificationsApi`, payment callables, webhooks. Data in `users`, `customerWallets`, orders, RTDB wallet paths.
+- **B2B integrations** → `partner` with per-partner API key; use `partnerSandbox` for pre-live testing without Firestore partner activation.
+- **B2B portal** → `b2bPortal` for humans: platform admins manage partners; org admins manage members, payment links, and onboarding. Live Partner API stays blocked until partner `status` is **`active`**.
 
-### Architecture Improvements (December 2025 Refactor)
+### Design patterns
 
-- **Separation of Concerns**: Business logic in `libs/` (testable), thin HTTP handlers in `http/`, triggers in `triggers/`
-- **Idempotency Pattern**: Prevents duplicate operations (especially payment processing)
-- **Outbox Pattern**: Reliable async processing with retry mechanism
-- **Structured Logging & Monitoring**: JSON-formatted logs, performance metrics, health checks
-- **Centralized Configuration**: `config.js` for feature flags, collection paths, API settings
-- **Backward Compatible**: All public APIs remain unchanged
+- **Service layer** — business logic in `services/`, not in HTTP handlers
+- **Idempotency** — duplicate-safe payment and webhook handling
+- **Outbox** — reliable async processing with retries
+- **Centralized config** — `config.js` (region, collections, feature flags, sandbox keys)
+- **Backward compatibility** — consumer app APIs preserved across refactors
 
-## Key Technologies
+See [`functions/BACKEND_ARCHITECTURE.md`](./functions/BACKEND_ARCHITECTURE.md) for service-level detail.
 
-- **Firebase Cloud Functions v2** - Serverless compute platform
-- **Firestore** - NoSQL database (master data store)
-- **Firebase Realtime Database** - Real-time data cache
-- **Firebase Authentication** - User authentication
-- **Node.js 22** - Runtime environment
-- **IntaSend API** - Payment gateway integration
-- **Binance P2P API** - Exchange rate data source
+---
 
-## Main Components
+## Key technologies
 
-### Exchange Rates
-- Fetches USDT rates for KES, NGN, GHS from Binance P2P
-- Applies configurable service fees (default: 1.5%) from `config/fees`
-- Caches rates in Firestore (`/p2pRates/binance`) and Realtime Database (`/wallet/rates/binance`)
-- Validates rate freshness (5-10 minute validity windows)
+- **Firebase Cloud Functions v2** — serverless compute
+- **Firestore** — primary data store
+- **Firebase Realtime Database** — balance / rate cache for mobile clients
+- **Firebase Authentication** — user auth and custom claims
+- **Node.js 22**
+- **Express** — HTTP routing for REST functions
+- **IntaSend** — consumer and B2B payment links
+- **Binance P2P API** — exchange rate source
 
-### Arbitrage Engine
-- Calculates USD → USDT → Local Fiat conversion paths
-- Computes profit margins and customer payouts
-- Applies arbitrage fees (default: 1.5%)
-- Provides conversion rate transparency
+---
 
-### Payment System
-- `createPayment` creates order records and mappings (`/orders`, `/wallet/pendingTopups`, `/wallet/phoneToInvoice`)
-- Receives IntaSend webhook callbacks at `handleTopUpWebhook`
-- Resolves user accounts via: phone number lookup (primary) → order lookup → RTDB mapping → metadata user_id
-- Credits user wallets automatically with transaction safety
-- Prevents duplicate processing (idempotency)
+## Main components
 
-### Balance Management
-- Firestore transactions ensure atomic balance updates
-- `syncBalance` trigger syncs to Realtime Database at `wallet/{userId}/fiat/{currency}`
-- **Client apps should read from**: `wallet/{userId}/fiat/USD` (old `wallet/{userId}/balance` path deprecated)
-- Transaction history and admin audit logs
+### Exchange rates
 
-## Data Flow
+- Binance P2P fetch for KES, NGN, GHS vs USDT
+- Fee from `config/fees`; cache in `p2pRates` and RTDB
+- Scheduled updates via `jobs/rateUpdater.js` and `ratesHttp` exports
 
-### Payment Flow
-1. User initiates payment via IntaSend checkout
-2. Client calls `createPayment` to create order record and mappings
-3. User completes payment on IntaSend
-4. IntaSend sends webhook to `handleTopUpWebhook`
-5. Webhook verifies signature/challenge and resolves user account
-6. User balance updated in Firestore (transaction-safe)
-7. `syncBalance` trigger syncs to Realtime Database
-8. Transaction logged for audit trail
+### Payment system (consumer)
 
-### Rate Update Flow
-1. Scheduled functions run daily (midnight UTC)
-2. Fetches latest rates from Binance P2P API
-3. Applies service fees from `config/fees`
-4. Writes to Firestore (`/p2pRates/binance`) and Realtime Database (`/wallet/rates/binance`)
-5. Rates cached for 5-10 minutes validity
+1. Client creates order via callable or REST
+2. User pays on IntaSend / TransFi
+3. Webhook verifies signature and resolves user (phone, order, metadata)
+4. Firestore balance update (transaction-safe) → RTDB sync → audit log
 
-## Security Features
+### B2B payment links
 
-- **Webhook Signature Verification** - HMAC SHA-256 or challenge token (INTASEND_SECRET or INTASEND_CHALLENGE)
-- **Firebase Authentication** - All callable functions require auth
-- **Admin Role Verification** - Admin functions check `role: 'admin'` in user document
-- **Transaction Safety** - Firestore transactions prevent race conditions
-- **Input Validation** - All inputs validated before processing
-- **Idempotency** - Prevents duplicate payment processing
+- Org-wide product links (`paymentLinks` collection) with hosted checkout HTML
+- IntaSend settlement credits partner wallet via `b2bPaymentLinkCheckoutService` / webhooks
+- Payer name collected at checkout; links stay reusable until expiry/cancel
 
-## Supported Currencies
+### B2B onboarding checklist
 
-- **Fiat**: KES (Kenyan Shilling), NGN (Nigerian Naira), GHS (Ghanaian Cedi)
-- **Crypto**: USDT (Tether)
-- **Base**: USD (US Dollar)
+| Step | Backend signal |
+|------|----------------|
+| Run test transaction | `progress.testTransactionDone` — sandbox payment via portal or `partnerSandbox` + `linkToken` |
+| Go live | `progress.goLiveDone` — partner `status: active` (platform admin PATCH) |
 
-## Key Features
+---
 
-✅ Real-time exchange rate fetching and caching  
-✅ Automatic payment processing via webhooks  
-✅ `createPayment` order creation for reliable user resolution  
-✅ Dual-database architecture for performance  
-✅ Transaction-safe balance management  
-✅ Admin dashboard for user management  
-✅ KYC status tracking  
-✅ Configurable commission/fee system  
-✅ Comprehensive audit logging  
-✅ Multi-currency support  
-✅ Phone number-based payment resolution  
-✅ Idempotency and outbox patterns for reliability  
-✅ Structured logging and monitoring  
+## Security features
 
-## Project Structure
+- **Webhook verification** — IntaSend HMAC / challenge; TransFi secret
+- **Firebase Auth** — required on callables and portal routes
+- **Admin access** — custom claim `admin: true` (or master UID allowlist for super-admin)
+- **Partner API** — `X-API-KEY`; rejected when partner `status` is not active
+- **Partner portal** — `partnerId` + `partnerRole` claims; org_admin for member mutations
+- **Firestore transactions** — atomic balance updates
+- **Input validation** — shared validators in `utils/validation.js`
+
+---
+
+## Supported currencies
+
+- **Fiat:** KES, NGN, GHS (+ USD as base)
+- **Crypto:** USDT
+- **SafariCoin (SFRC):** mock placeholder only (`safariCoinService` / `safariCoinWallets`)
+
+---
+
+## Project structure
 
 ```
 functions/
-├── index.js                   # Main entry point - exports only
-├── admin.js                   # Firebase Admin SDK initialization
-├── config.js                  # Centralized configuration & feature flags
+├── index.js                    # Exports all Cloud Functions (no business logic)
+├── admin.js                    # Firebase Admin SDK init
+├── config.js                   # Region, secrets, collections, feature flags
 │
-├── http/                      # HTTP handlers (thin controllers)
-│   ├── ratesHttp.js           # Exchange rate endpoints
-│   ├── arbitrageHttp.js       # Arbitrage endpoints
-│   ├── paymentsHttp.js        # Payment webhook & createPayment handlers
-│   ├── customerWalletsHttp.js # Customer wallets REST API
-│   ├── adminHttp.js           # Admin callable functions
-│   ├── migrateUsersHttp.js    # User migration HTTP handlers
-│   └── updatePhoneNumbersHttp.js # Phone update HTTP handlers
+├── http/                       # Thin HTTP / callable handlers
+│   ├── customerWalletsHttp.js  # api — rates, wallets, admin REST
+│   ├── paymentsHttp.js         # Payment callables
+│   ├── webhookApi.js           # IntaSend + TransFi webhooks
+│   ├── ratesHttp.js            # Scheduled + callable rates
+│   ├── arbitrageHttp.js
+│   ├── transactionsHttp.js     # transactionsApi
+│   ├── notificationsHttp.js
+│   ├── adminHttp.js            # Admin callables
+│   ├── adminClaimsHttp.js
+│   ├── customerAuthHttp.js
+│   ├── partnerApi.js           # B2B Partner API (live)
+│   ├── partnerSandboxHttp.js   # B2B sandbox API
+│   └── b2bPortalHttp.js        # B2B portal + platform admin
 │
-├── triggers/                  # Background triggers
-│   ├── usersTrigger.js        # Firestore user creation trigger
-│   ├── userBootstrap.js       # Auth user creation bootstrap
-│   └── balanceSync.js         # Balance sync trigger
+├── services/                   # Business logic
+│   ├── walletService.js
+│   ├── transactionService.js
+│   ├── partnerService.js
+│   ├── paymentLinkService.js
+│   ├── b2bOnboardingService.js
+│   ├── b2bPortalSandboxService.js
+│   ├── b2bMemberService.js
+│   ├── b2bPaymentLinkCheckoutService.js
+│   ├── paymentRailService.js
+│   └── …
 │
-├── workers/                   # Ready for async/long-running tasks
+├── libs/                       # Shared data access, auth, legacy logic
+│   ├── firestore.js
+│   ├── auth.js
+│   ├── rates.js
+│   ├── payments.js
+│   ├── b2bPayments.js
+│   └── …
 │
-├── libs/                      # Pure business logic (testable)
-│   ├── rates.js               # Rate fetching logic
-│   ├── arbitrage.js           # Arbitrage calculations
-│   ├── payments.js            # Payment processing logic
-│   ├── adminActions.js        # Admin operations logic
-│   ├── userWallets.js         # User wallet operations logic
-│   ├── migrateUsers.js        # User migration logic
-│   ├── updatePhoneNumbers.js  # Phone update logic
-│   ├── idempotency.js         # Idempotency pattern implementation
-│   └── outbox.js              # Outbox pattern for reliable async processing
+├── triggers/
+│   ├── usersTrigger.js
+│   ├── userBootstrap.js
+│   └── authUserCleanup.js
 │
-└── utils/                     # Utility functions
-    ├── firestore.js           # Firestore helpers
-    ├── realtime.js            # Realtime DB helpers
-    ├── transactions.js        # Transaction logging utilities
-    ├── validation.js          # Input validation utilities
-    ├── logging.js             # Structured logging utilities
-    └── monitoring.js          # Performance monitoring utilities
+├── jobs/
+│   └── rateUpdater.js
+│
+└── utils/                      # Logging, validation, checkout HTML, claims, …
 ```
 
-## Quick Start
+---
 
-1. **Prerequisites**
-   - Node.js 22
-   - Firebase CLI
-   - Firebase project with Functions, Firestore, and Realtime Database enabled
+## Quick start
 
-2. **Installation**
+1. **Prerequisites** — Node.js 22, Firebase CLI, project with Functions + Firestore + RTDB
+
+2. **Install**
    ```bash
    cd functions
    npm install
    ```
 
-3. **Configuration**
-   - Set Firebase secrets: `INTASEND_SECRET`, `INTASEND_CHALLENGE`, `INTASEND_SECRET_KEY`, `INTASEND_PUBLISHABLE_KEY`
-   - Configure Firestore `config/fees` document
-   - Set up Cloud Scheduler for scheduled functions
+3. **Local emulators**
+   ```bash
+   npm run serve
+   ```
+   From repo root: `node test-functions.js` (with emulators running)
 
-4. **Deployment**
+4. **Secrets / config**
+   - Firebase secrets: `INTASEND_SECRET`, `INTASEND_CHALLENGE`, `INTASEND_SECRET_KEY`, `INTASEND_PUBLISHABLE_KEY`, `TRANSFI_WEBHOOK_SECRET`
+   - Optional: `B2B_SANDBOX_PUBLIC_API_KEY`, `FIREBASE_WEB_API_KEY`, `PAYMENT_LINK_BASE_URL`
+   - Firestore `config/fees` document
+
+5. **Deploy**
    ```bash
    firebase deploy --only functions
    ```
+   Targeted example (B2B portal + sandbox only):
+   ```bash
+   firebase deploy --only functions:b2bPortal,functions:partnerSandbox
+   ```
 
-## Documentation
+---
 
-- **Detailed README**: See `readme.md` for comprehensive documentation, function reference, API details, and troubleshooting
-- **API Reference**: See `api.md` for frontend integration guide
-- **Refactoring**: See `functions/REFACTORING_SUMMARY.md` for migration information
+## Documentation index
+
+| Document | Audience | Contents |
+|----------|----------|----------|
+| [`readme.md`](./readme.md) | Backend / ops | Full function reference, troubleshooting |
+| [`api.md`](./api.md) | Consumer frontend | REST + callable integration |
+| [`B2B_docs.md`](./B2B_docs.md) | B2B integrators | Partner API + portal API reference |
+| [`B2B_SANDBOX.md`](./B2B_SANDBOX.md) | B2B testers | Public sandbox API (`partnerSandbox`) |
+| [`B2B_SANDBOX_DASHBOARD_FRONTEND.md`](./B2B_SANDBOX_DASHBOARD_FRONTEND.md) | B2B dashboard UI | Onboarding checklist + sandbox transactions |
+| [`B2B_FRONTEND_INSTRUCTIONS.md`](./B2B_FRONTEND_INSTRUCTIONS.md) | B2B dashboard UI | Payment links, portal transactions |
+| [`onboarding.md`](./onboarding.md) | B2B ops / partners | Ordered onboarding steps and endpoints |
+| [`functions/BACKEND_ARCHITECTURE.md`](./functions/BACKEND_ARCHITECTURE.md) | Backend maintainers | Services, ledger, data model |
+| [`AGENTS.md`](./AGENTS.md) | Contributors | Repo conventions and commands |
+| [`TRANSACTIONS_API.md`](./TRANSACTIONS_API.md) | Consumer frontend | Transactions REST API |
+
+---
 
 ## License
 
-Private - All rights reserved
+Private — All rights reserved

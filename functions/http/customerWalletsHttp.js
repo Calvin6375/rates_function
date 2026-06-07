@@ -14,6 +14,7 @@ const { sanitizeRatesObject, maybeFixResolvedPair } = require("../utils/customer
 const supportedCountriesService = require("../services/supportedCountriesService");
 const customerSelfRegistrationService = require("../services/customerSelfRegistrationService");
 const { isSuperAdminUid } = require("../utils/adminClaims");
+const { verifyFirebaseAuth } = require("../libs/auth");
 
 const db = admin.firestore();
 const app = express();
@@ -95,29 +96,17 @@ app.use((req, res, next) => {
  */
 async function requireAdmin(req, res, next) {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    const auth = await verifyFirebaseAuth(req);
+    if (!auth.success) {
       res.status(401).json({
         success: false,
         error: "Unauthorized",
-        message: "Authentication required. Please provide a valid Firebase Auth token.",
-      });
-      return;
-    }
-    const token = authHeader.slice(7);
-    let decodedToken;
-    try {
-      decodedToken = await admin.auth().verifyIdToken(token);
-    } catch (verifyErr) {
-      void verifyErr;
-      res.status(401).json({
-        success: false,
-        error: "Unauthorized",
-        message: "Invalid or expired authentication token.",
+        message: auth.error || "Authentication required. Please provide a valid Firebase Auth token.",
       });
       return;
     }
 
+    const decodedToken = auth.decodedToken;
     req.adminId = decodedToken.uid;
 
     // Fast path: admin claim is already in the token (most common case after first login)
@@ -748,26 +737,12 @@ app.post("/customer-wallets", requireAdmin, async (req, res) => {
  */
 app.get("/config/fees", async (req, res) => {
   try {
-    // Verify user is authenticated (but don't require admin for reading)
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    const auth = await verifyFirebaseAuth(req);
+    if (!auth.success) {
       res.status(401).json({
         success: false,
         error: "Unauthorized",
-        message: "Authentication required. Please provide a valid Firebase Auth token.",
-      });
-      return;
-    }
-
-    try {
-      const token = authHeader.split("Bearer ")[1];
-      await admin.auth().verifyIdToken(token);
-      // Token is valid, proceed
-    } catch (authError) {
-      res.status(401).json({
-        success: false,
-        error: "Unauthorized",
-        message: "Invalid or expired authentication token.",
+        message: auth.error || "Authentication required. Please provide a valid Firebase Auth token.",
       });
       return;
     }
