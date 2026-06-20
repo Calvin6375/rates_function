@@ -13,7 +13,7 @@ const p2pListingsLib = require("../libs/p2pListings");
 const { sanitizeRatesObject, maybeFixResolvedPair } = require("../utils/customerRatesSanitize");
 const supportedCountriesService = require("../services/supportedCountriesService");
 const customerSelfRegistrationService = require("../services/customerSelfRegistrationService");
-const { isSuperAdminUid } = require("../utils/adminClaims");
+const { isPlatformAdmin } = require("../utils/accessControl");
 const { verifyFirebaseAuth } = require("../libs/auth");
 
 const db = admin.firestore();
@@ -92,7 +92,7 @@ app.use((req, res, next) => {
 
 /**
  * Express middleware: valid Firebase ID token and platform admin access.
- * Accepts custom claim admin === true or master account (isSuperAdminUid), same as b2bPortal /platform/*.
+ * Accepts userType admin, legacy admin claim, or built-in super-admin email.
  */
 async function requireAdmin(req, res, next) {
   try {
@@ -109,18 +109,16 @@ async function requireAdmin(req, res, next) {
     const decodedToken = auth.decodedToken;
     req.adminId = decodedToken.uid;
 
-    // Fast path: admin claim is already in the token (most common case after first login)
-    if (decodedToken.admin === true) {
+    if (await isPlatformAdmin(decodedToken, decodedToken.uid)) {
       next();
       return;
     }
 
-    // Fallback: token claim may be stale (admin claim was set after this token was issued).
-    // Check the live Firebase Auth record for current custom claims.
-    // This avoids forcing re-login immediately after an admin is promoted.
     try {
       const userRecord = await admin.auth().getUser(decodedToken.uid);
-      if (userRecord.customClaims && userRecord.customClaims.admin === true) {
+      if (userRecord.customClaims &&
+          (userRecord.customClaims.admin === true ||
+           userRecord.customClaims.userType === "admin")) {
         console.log(`requireAdmin: stale token for ${decodedToken.uid} — live claim check passed`);
         next();
         return;
@@ -129,8 +127,7 @@ async function requireAdmin(req, res, next) {
       console.warn("requireAdmin: live claim lookup failed:", userLookupErr.message);
     }
 
-    // Platform owner email (MASTER_ADMIN_EMAIL) — same gate as b2bPortal requirePlatformAdmin.
-    if (await isSuperAdminUid(decodedToken.uid)) {
+    if (await isPlatformAdmin(null, decodedToken.uid)) {
       next();
       return;
     }

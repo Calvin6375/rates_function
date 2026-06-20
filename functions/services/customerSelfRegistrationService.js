@@ -10,6 +10,7 @@ const {
   CHANNEL_C2B,
   parseCustomerAppProvisioningFields,
 } = require("../utils/customerAppProvisioning");
+const { setCustomerAccessClaims, USER_TYPE_CUSTOMER } = require("../utils/accessControl");
 
 const firestore = admin.firestore();
 
@@ -119,13 +120,17 @@ async function registerC2bCustomer(body) {
   const userRef = firestore.collection(config.collections.users).doc(uid);
 
   try {
+    await setCustomerAccessClaims(uid);
     await userRef.set(
         {
+          uid,
           firstName,
           lastName,
           name: displayName,
           email: normalizedEmail,
           phoneNumber,
+          userType: USER_TYPE_CUSTOMER,
+          status: "active",
           institution: tagging.institution,
           channel: tagging.channel,
           balance: 0,
@@ -156,6 +161,7 @@ async function registerC2bCustomer(body) {
 
   return {
     userId: uid,
+    userType: USER_TYPE_CUSTOMER,
     institution: tagging.institution,
     channel: tagging.channel,
   };

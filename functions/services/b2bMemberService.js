@@ -1,11 +1,22 @@
 /**
- * @fileoverview B2B partner org structure: one org admin per partner (set by platform admin),
- * org admin assigns institutional roles. Custom claims: partnerId, partnerRole.
+ * @fileoverview B2B partner org structure: one owner per partner (set by platform admin),
+ * owner assigns institutional roles. Custom claims: userType partner + partnerId + role.
  */
 
 const admin = require("../admin");
 const { collection, serverTimestamp } = require("../libs/firestore");
-const { mergeCustomUserClaims, clearPartnerClaims, getCustomClaims } = require("../utils/customClaimsMerge");
+const { clearPartnerClaims, getCustomClaims } = require("../utils/customClaimsMerge");
+const {
+  PARTNER_ROLE_OWNER,
+  PARTNER_ROLES,
+  LEGACY_PARTNER_ROLE_ORG_ADMIN,
+  LEGACY_ASSIGNABLE_PARTNER_ROLES,
+  normalizePartnerRole,
+  isPartnerOwnerRole,
+  setPartnerAccessClaims,
+  syncUserDocAccessFields,
+  USER_TYPE_PARTNER,
+} = require("../utils/accessControl");
 
 const MEMBERS_SUB = "members";
 
@@ -13,13 +24,85 @@ const MEMBERS_SUB = "members";
 const INSTITUTION_PARTNER_DASHBOARD = "PartnerDashboard";
 const CHANNEL_B2B = "B2B";
 
-/** Roles org admin may assign (claims + members doc). */
+/** Roles partner owner may assign (claims + members doc). */
 /** @type {readonly string[]} */
-const ASSIGNABLE_ROLES = ["member", "viewer", "finance", "support", "auditor", "operations"];
+const ASSIGNABLE_ROLES = ["finance", "support", "operations", "viewer"];
 
 /** All partnerRole values accepted on the portal (token + GET /portal/me). */
 /** @type {readonly string[]} */
-const ALL_PARTNER_ROLES = ["org_admin", ...ASSIGNABLE_ROLES];
+const ALL_PARTNER_ROLES = [
+  PARTNER_ROLE_OWNER,
+  LEGACY_PARTNER_ROLE_ORG_ADMIN,
+  ...ASSIGNABLE_ROLES,
+  ...LEGACY_ASSIGNABLE_PARTNER_ROLES,
+];
+
+const DEFAULT_DASHBOARD_USER_STATUS = "Active";
+
+/** Default Firestore permissions for new B2B partner-dashboard users. */
+const DEFAULT_B2B_PARTNER_PERMISSIONS = [
+  "dashboard.view",
+  "notifications.view",
+  "settings.view",
+];
+
+/**
+ * @param {unknown} permissions
+ * @returns {boolean}
+ */
+function permissionsNeedDefaults(permissions) {
+  if (permissions === undefined || permissions === null) {
+    return true;
+  }
+  return Array.isArray(permissions) && permissions.length === 0;
+}
+
+/**
+ * @param {{ institution?: string, channel?: string }|null} provisioning
+ * @param {Object|null|undefined} existing
+ * @returns {boolean}
+ */
+function isB2BPartnerDashboardUser(provisioning, existing) {
+  if (provisioning && provisioning.institution && provisioning.channel) {
+    return (
+      provisioning.institution === INSTITUTION_PARTNER_DASHBOARD &&
+      provisioning.channel === CHANNEL_B2B
+    );
+  }
+  if (existing && typeof existing === "object") {
+    return (
+      existing.institution === INSTITUTION_PARTNER_DASHBOARD &&
+      existing.channel === CHANNEL_B2B
+    );
+  }
+  return false;
+}
+
+/**
+ * Split a display name into firstName / lastName for users/{uid} bootstrap.
+ *
+ * @param {string|null|undefined} displayName
+ * @return {{ firstName: string|null, lastName: string|null, name: string|null }}
+ */
+function splitDisplayName(displayName) {
+  const display =
+    displayName && String(displayName).trim() ? String(displayName).trim() : null;
+  if (!display) {
+    return {firstName: null, lastName: null, name: null};
+  }
+  const parts = display.split(/\s+/).filter(Boolean);
+  if (parts.length === 0) {
+    return {firstName: null, lastName: null, name: null};
+  }
+  if (parts.length === 1) {
+    return {firstName: parts[0], lastName: null, name: display};
+  }
+  return {
+    firstName: parts[0],
+    lastName: parts.slice(1).join(" "),
+    name: display,
+  };
+}
 
 /**
  * @param {string} partnerId
@@ -86,8 +169,7 @@ async function ensureUserDashboardProfile(uid, { email, displayName, institution
       : null;
   const userRef = collection("users").doc(uid);
   const snap = await userRef.get();
-  const display =
-    displayName && String(displayName).trim() ? String(displayName).trim() : null;
+  const nameParts = splitDisplayName(displayName);
 
   const provisioning =
       institution && channel ? { institution, channel } : null;
@@ -95,16 +177,28 @@ async function ensureUserDashboardProfile(uid, { email, displayName, institution
   if (!snap.exists) {
     /** @type {Record<string, unknown>} */
     const initial = {
-      name: display,
+      status: DEFAULT_DASHBOARD_USER_STATUS,
       email: normalizedEmail,
       createdAt: serverTimestamp(),
       balance: 0,
       country: null,
       updatedAt: serverTimestamp(),
     };
+    if (nameParts.name) {
+      initial.name = nameParts.name;
+    }
+    if (nameParts.firstName) {
+      initial.firstName = nameParts.firstName;
+    }
+    if (nameParts.lastName) {
+      initial.lastName = nameParts.lastName;
+    }
     if (provisioning) {
       initial.institution = provisioning.institution;
       initial.channel = provisioning.channel;
+    }
+    if (isB2BPartnerDashboardUser(provisioning, null)) {
+      initial.permissions = [...DEFAULT_B2B_PARTNER_PERMISSIONS];
     }
     await userRef.set(initial, { merge: true });
     return;
@@ -118,8 +212,17 @@ async function ensureUserDashboardProfile(uid, { email, displayName, institution
       updates.email = normalizedEmail;
     }
   }
-  if (display && !existing.name && !existing.firstName) {
-    updates.name = display;
+  if (!existing.status) {
+    updates.status = DEFAULT_DASHBOARD_USER_STATUS;
+  }
+  if (nameParts.name && !existing.name && !existing.firstName) {
+    updates.name = nameParts.name;
+  }
+  if (nameParts.firstName && !existing.firstName) {
+    updates.firstName = nameParts.firstName;
+  }
+  if (nameParts.lastName && !existing.lastName) {
+    updates.lastName = nameParts.lastName;
   }
   if (!("balance" in existing) && existing.balance === undefined) {
     updates.balance = 0;
@@ -130,6 +233,12 @@ async function ensureUserDashboardProfile(uid, { email, displayName, institution
   if (provisioning) {
     updates.institution = provisioning.institution;
     updates.channel = provisioning.channel;
+  }
+  if (
+    isB2BPartnerDashboardUser(provisioning, existing) &&
+    permissionsNeedDefaults(existing.permissions)
+  ) {
+    updates.permissions = [...DEFAULT_B2B_PARTNER_PERMISSIONS];
   }
   if (Object.keys(updates).length > 0) {
     updates.updatedAt = serverTimestamp();
@@ -201,12 +310,15 @@ async function setPartnerOrgAdmin(partnerId, newOrgAdminUid, actorUid, opts = {}
   }
 
   const incomingClaims = await getCustomClaims(newOrgAdminUid);
+  const incomingRole = normalizePartnerRole(
+      incomingClaims.role || incomingClaims.partnerRole,
+  );
   if (
     incomingClaims.partnerId &&
     incomingClaims.partnerId !== partnerId &&
-    incomingClaims.partnerRole === "org_admin"
+    isPartnerOwnerRole(incomingRole)
   ) {
-    throw new Error("User is already org admin of another partner");
+    throw new Error("User is already owner of another partner");
   }
   if (incomingClaims.partnerId && incomingClaims.partnerId !== partnerId) {
     throw new Error("User belongs to another partner; remove them there first or use a different account");
@@ -221,10 +333,7 @@ async function setPartnerOrgAdmin(partnerId, newOrgAdminUid, actorUid, opts = {}
     }
   }
 
-  await mergeCustomUserClaims(newOrgAdminUid, {
-    partnerId,
-    partnerRole: "org_admin",
-  });
+  await setPartnerAccessClaims(newOrgAdminUid, partnerId, PARTNER_ROLE_OWNER);
 
   await collection("partners").doc(partnerId).update({
     orgAdminUid: newOrgAdminUid,
@@ -236,7 +345,7 @@ async function setPartnerOrgAdmin(partnerId, newOrgAdminUid, actorUid, opts = {}
   const memberRow = {
     email,
     displayName: newUser.displayName || "",
-    role: "org_admin",
+    role: PARTNER_ROLE_OWNER,
     status: "active",
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
@@ -253,6 +362,13 @@ async function setPartnerOrgAdmin(partnerId, newOrgAdminUid, actorUid, opts = {}
   await ensureUserDashboardProfile(newOrgAdminUid, {
     email,
     displayName: newUser.displayName || "",
+  });
+
+  await syncUserDocAccessFields(newOrgAdminUid, {
+    userType: USER_TYPE_PARTNER,
+    partnerId,
+    role: PARTNER_ROLE_OWNER,
+    status: "active",
   });
 
   return { partnerId, orgAdminUid: newOrgAdminUid };
@@ -276,7 +392,9 @@ async function listMembers(partnerId) {
  * @returns {Promise<{ userId: string, email: string, role: string }>}
  */
 async function addMember(partnerId, { email, password, role, displayName }, actorUid) {
-  if (!ASSIGNABLE_ROLES.includes(role)) {
+  const rawRole = String(role || "").trim();
+  const claimRole = normalizePartnerRole(rawRole);
+  if (!ASSIGNABLE_ROLES.includes(claimRole)) {
     throw new Error(`Invalid role. Must be one of: ${ASSIGNABLE_ROLES.join(", ")}`);
   }
   const normalizedEmail = String(email).trim().toLowerCase();
@@ -316,16 +434,13 @@ async function addMember(partnerId, { email, password, role, displayName }, acto
 
   const uid = userRecord.uid;
 
-  await mergeCustomUserClaims(uid, {
-    partnerId,
-    partnerRole: role,
-  });
+  await setPartnerAccessClaims(uid, partnerId, claimRole);
 
   await membersCollection(partnerId).doc(uid).set(
     {
       email: normalizedEmail,
       displayName: displayName || userRecord.displayName || "",
-      role,
+      role: claimRole,
       status: "active",
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
@@ -339,7 +454,14 @@ async function addMember(partnerId, { email, password, role, displayName }, acto
     displayName: displayName || userRecord.displayName || "",
   });
 
-  return { userId: uid, email: normalizedEmail, role };
+  await syncUserDocAccessFields(uid, {
+    userType: USER_TYPE_PARTNER,
+    partnerId,
+    role: claimRole,
+    status: "active",
+  });
+
+  return { userId: uid, email: normalizedEmail, role: claimRole };
 }
 
 /**
@@ -351,7 +473,8 @@ async function addMember(partnerId, { email, password, role, displayName }, acto
  * @returns {Promise<void>}
  */
 async function updateMemberRole(partnerId, targetUid, role) {
-  if (!ASSIGNABLE_ROLES.includes(role)) {
+  const claimRole = normalizePartnerRole(role);
+  if (!ASSIGNABLE_ROLES.includes(claimRole)) {
     throw new Error(`Invalid role. Must be one of: ${ASSIGNABLE_ROLES.join(", ")}`);
   }
 
@@ -361,18 +484,22 @@ async function updateMemberRole(partnerId, targetUid, role) {
     throw new Error("Member not found");
   }
   const data = memberDoc.data();
-  if (data.role === "org_admin") {
-    throw new Error("Cannot change org admin role from the portal; platform admin must reassign org admin");
+  if (isPartnerOwnerRole(data.role)) {
+    throw new Error("Cannot change partner owner role from the portal; platform admin must reassign owner");
   }
 
-  await mergeCustomUserClaims(targetUid, {
-    partnerId,
-    partnerRole: role,
-  });
+  await setPartnerAccessClaims(targetUid, partnerId, claimRole);
 
   await memberRef.update({
-    role,
+    role: claimRole,
     updatedAt: serverTimestamp(),
+  });
+
+  await syncUserDocAccessFields(targetUid, {
+    userType: USER_TYPE_PARTNER,
+    partnerId,
+    role: claimRole,
+    status: "active",
   });
 }
 
@@ -389,8 +516,8 @@ async function removeMember(partnerId, targetUid) {
   if (!memberDoc.exists) {
     throw new Error("Member not found");
   }
-  if (memberDoc.data().role === "org_admin") {
-    throw new Error("Cannot remove org admin; platform admin must assign a new org admin");
+  if (isPartnerOwnerRole(memberDoc.data().role)) {
+    throw new Error("Cannot remove partner owner; platform admin must assign a new owner");
   }
 
   await clearPartnerClaims(targetUid);
@@ -402,13 +529,16 @@ async function removeMember(partnerId, targetUid) {
  * @returns {boolean}
  */
 function isAssignablePartnerRole(role) {
-  return ASSIGNABLE_ROLES.includes(role);
+  const normalized = normalizePartnerRole(role);
+  return ASSIGNABLE_ROLES.includes(normalized) ||
+    LEGACY_ASSIGNABLE_PARTNER_ROLES.includes(String(role || "").trim());
 }
 
 module.exports = {
   MEMBERS_SUB,
   ASSIGNABLE_ROLES,
   ALL_PARTNER_ROLES,
+  PARTNER_ROLE_OWNER,
   INSTITUTION_PARTNER_DASHBOARD,
   CHANNEL_B2B,
   setPartnerOrgAdmin,

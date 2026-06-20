@@ -6,8 +6,129 @@
 const admin = require("../admin");
 const { collection } = require("../libs/firestore");
 const config = require("../config");
+const { getCustomClaims } = require("../utils/customClaimsMerge");
+const {
+  parseAccessFromToken,
+  normalizePartnerRole,
+  legacyPartnerRoleFromNormalized,
+} = require("../utils/accessControl");
 
 const MAX_PAGE = 100;
+const ONBOARDING_COL = "onboarding";
+const INSTITUTION_PARTNER_DASHBOARD = "PartnerDashboard";
+const CHANNEL_B2B = "B2B";
+
+/**
+ * @param {{ institution?: string|null, channel?: string|null }} user
+ * @returns {boolean}
+ */
+function isB2BDashboardProfile(user) {
+  return user.channel === CHANNEL_B2B &&
+    user.institution === INSTITUTION_PARTNER_DASHBOARD;
+}
+
+/**
+ * Resolve partner linkage from Auth claims and, for B2B dashboard profiles,
+ * onboarding.registeredPartnerId when the partner doc exists.
+ *
+ * @param {string} uid
+ * @param {boolean} checkOnboardingFallback
+ * @returns {Promise<{ partnerId: string|null, partnerRole: string|null, userType: string|null, role: string|null }>}
+ */
+async function resolvePartnerContextForUid(uid, checkOnboardingFallback) {
+  let partnerId = null;
+  let partnerRole = null;
+  let userType = null;
+  let role = null;
+
+  try {
+    const claims = await getCustomClaims(uid);
+    const access = parseAccessFromToken(claims);
+    userType = access.userType;
+    role = access.role;
+    if (typeof claims.partnerId === "string" && claims.partnerId.trim()) {
+      partnerId = claims.partnerId.trim();
+    }
+    if (access.role && partnerId) {
+      partnerRole = legacyPartnerRoleFromNormalized(access.role);
+    } else if (typeof claims.partnerRole === "string" && claims.partnerRole.trim()) {
+      partnerRole = claims.partnerRole.trim();
+      role = role || normalizePartnerRole(partnerRole);
+    }
+    if (!userType && partnerId) {
+      userType = "partner";
+    }
+  } catch (err) {
+    if (err.code !== "auth/user-not-found") {
+      throw err;
+    }
+  }
+
+  if (!partnerId && checkOnboardingFallback) {
+    const obSnap = await collection(ONBOARDING_COL).doc(uid).get();
+    const registeredPartnerId = obSnap.exists ?
+      obSnap.data()?.registeredPartnerId :
+      null;
+    if (registeredPartnerId && typeof registeredPartnerId === "string") {
+      const candidate = registeredPartnerId.trim();
+      if (candidate) {
+        const partnerSnap = await collection("partners").doc(candidate).get();
+        if (partnerSnap.exists) {
+          partnerId = candidate;
+        }
+      }
+    }
+  }
+
+  return { partnerId, partnerRole, userType, role };
+}
+
+/**
+ * @param {Object[]} users
+ * @returns {Promise<Object[]>}
+ */
+async function enrichUsersWithPartnerContext(users) {
+  if (!users.length) {
+    return users;
+  }
+
+  const contexts = await Promise.all(
+      users.map((user) => resolvePartnerContextForUid(
+          user.userId,
+          isB2BDashboardProfile(user),
+      )),
+  );
+
+  const partnerIds = [
+    ...new Set(contexts.map((ctx) => ctx.partnerId).filter(Boolean)),
+  ];
+  /** @type {Record<string, string|null>} */
+  const nameByPartnerId = {};
+  if (partnerIds.length) {
+    const refs = partnerIds.map((id) => collection("partners").doc(id));
+    const snaps = await admin.firestore().getAll(...refs);
+    for (const snap of snaps) {
+      if (snap.exists) {
+        const name = snap.data()?.name;
+        nameByPartnerId[snap.id] =
+          name != null && String(name).trim() ? String(name).trim() : null;
+      }
+    }
+  }
+
+  return users.map((user, index) => {
+    const ctx = contexts[index];
+    const { partnerId, partnerRole, userType, role } = ctx;
+    return {
+      ...user,
+      userType: userType || user.userType || null,
+      role: role || user.role || null,
+      partnerId,
+      partnerRole,
+      partnerName: partnerId ? (nameByPartnerId[partnerId] ?? null) : null,
+    };
+  });
+}
 
 /**
  * @param {FirebaseFirestore.QueryDocumentSnapshot} doc
@@ -84,7 +205,8 @@ async function listConsumerUsers(pageLimit = 50, startAfterUserId = null) {
     q = q.startAfter(startAfterUserId);
   }
   const snap = await q.get();
-  const users = snap.docs.map((doc) => serializeConsumerUserSummary(doc));
+  const summaries = snap.docs.map((doc) => serializeConsumerUserSummary(doc));
+  const users = await enrichUsersWithPartnerContext(summaries);
   const nextCursor = snap.docs.length === lim ? snap.docs[snap.docs.length - 1].id : null;
   return { users, nextCursor };
 }
@@ -95,7 +217,12 @@ async function listConsumerUsers(pageLimit = 50, startAfterUserId = null) {
  */
 async function getConsumerUser(userId) {
   const doc = await collection("users").doc(userId).get();
-  return serializeConsumerUserDetail(doc);
+  const detail = serializeConsumerUserDetail(doc);
+  if (!detail) {
+    return null;
+  }
+  const [enriched] = await enrichUsersWithPartnerContext([detail]);
+  return enriched;
 }
 
 /**

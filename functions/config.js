@@ -104,6 +104,7 @@ const config = {
     cryptoLedger: "cryptoLedger",
     walletAggregates: "walletAggregates",
     webhookEvents: "webhookEvents",
+    platformAdmins: "platformAdmins",
     sendIdempotencyKeys: "sendIdempotencyKeys",
     pendingReservations: "pendingReservations",
   },

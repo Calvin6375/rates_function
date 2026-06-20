@@ -26,7 +26,7 @@ const NOTIFICATION_TYPES = {
 /**
  * Create a notification and send it to both dashboard and mobile app
  * @param {Object} options - Notification options
- * @param {string} options.userId - User ID (null for system-wide notifications)
+ * @param {string} options.userId - User ID (`null` → `"system"` for platform admin alerts only)
  * @param {string} options.type - Notification type
  * @param {string} options.title - Notification title
  * @param {string} options.message - Notification message
@@ -388,6 +388,24 @@ async function markNotificationAsRead(notificationId) {
 }
 
 /**
+ * @param {string} notificationId
+ * @returns {Promise<Object|null>}
+ */
+async function getNotificationById(notificationId) {
+  const doc = await firestore.collection("notifications").doc(notificationId).get();
+  if (!doc.exists) {
+    return null;
+  }
+  const data = doc.data();
+  return {
+    id: doc.id,
+    ...data,
+    createdAt: data.createdAt?.toDate?.()?.toISOString() || null,
+    updatedAt: data.updatedAt?.toDate?.()?.toISOString() || null,
+  };
+}
+
+/**
  * Get user notifications
  * @param {string} userId - User ID (or "system" for admin notifications)
  * @param {number} limit - Number of notifications to return
@@ -447,6 +465,7 @@ module.exports = {
   notifyDirectTopupAdmins,
   notifyDirectPayoutAdmins,
   markNotificationAsRead,
+  getNotificationById,
   getUserNotifications,
   NOTIFICATION_TYPES,
 };

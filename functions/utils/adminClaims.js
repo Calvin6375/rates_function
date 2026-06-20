@@ -1,103 +1,69 @@
 /**
- * @fileoverview Admin Custom Claims management utility
- * Handles setting/unsetting admin claims for Firebase Authentication
- * 
- * SECURITY: Admin claims are stored in Firebase Auth tokens, not Firestore
- * This provides better security than checking Firestore role fields
+ * @fileoverview Admin custom claims — delegates to accessControl (TruePay IAM).
  */
 
-const admin = require("../admin");
+const {
+  SUPER_ADMIN_EMAIL,
+  ADMIN_ROLE_SUPER,
+  setAdminAccessClaims,
+  clearAdminAccessClaims,
+  isSuperAdminEmailUid,
+  isSuperAdmin,
+  isPlatformAdmin,
+  verifyAdminFromAuth,
+  getCustomClaims,
+} = require("./accessControl");
 
 /**
- * Platform owner email (normalized). Override per deployment with env `MASTER_ADMIN_EMAIL`.
- * Same identity is used for `isSuperAdminUid` (B2B portal platform routes without `admin` claim).
- */
-const SUPER_ADMIN_EMAIL = (
-  process.env.MASTER_ADMIN_EMAIL || "calvinrumba8@gmail.com"
-).trim()
-    .toLowerCase();
-
-/**
- * Set admin claim for a user
- * @param {string} userId - User ID
+ * Grant platform super-admin (legacy name preserved for callables).
+ *
+ * @param {string} userId
  * @returns {Promise<void>}
  */
 async function setAdminClaim(userId) {
-  try {
-    await admin.auth().setCustomUserClaims(userId, {admin: true});
-    console.log(`✅ Set admin claim for user: ${userId}`);
-  } catch (error) {
-    console.error(`❌ Error setting admin claim for ${userId}:`, error.message);
-    throw error;
-  }
+  await setAdminAccessClaims(userId, ADMIN_ROLE_SUPER, null);
 }
 
 /**
- * Remove admin claim from a user
- * @param {string} userId - User ID
+ * @param {string} userId
  * @returns {Promise<void>}
  */
 async function removeAdminClaim(userId) {
-  try {
-    await admin.auth().setCustomUserClaims(userId, {admin: false});
-    console.log(`✅ Removed admin claim for user: ${userId}`);
-  } catch (error) {
-    console.error(`❌ Error removing admin claim for ${userId}:`, error.message);
-    throw error;
-  }
+  await clearAdminAccessClaims(userId);
 }
 
 /**
- * Check if user has admin claim
- * @param {string} userId - User ID
- * @returns {Promise<boolean>} True if user has admin claim
+ * @param {string} userId
+ * @returns {Promise<boolean>}
  */
 async function hasAdminClaim(userId) {
   try {
-    const userRecord = await admin.auth().getUser(userId);
-    return userRecord.customClaims?.admin === true;
+    const claims = await getCustomClaims(userId);
+    return claims.userType === "admin" || claims.admin === true;
   } catch (error) {
-    console.error(`❌ Error checking admin claim for ${userId}:`, error.message);
+    console.error(`Error checking admin claim for ${userId}:`, error.message);
     return false;
   }
 }
 
-/**
- * Verify admin from auth token (for use in functions)
- * @param {Object} auth - Firebase Auth object from request context
- * @returns {boolean} True if user has admin claim
- */
 function verifyAdminFromToken(auth) {
-  if (!auth || !auth.token) {
-    return false;
-  }
-  return auth.token.admin === true;
+  return verifyAdminFromAuth(auth);
 }
 
-/**
- * True if Firebase Auth user for uid has the super-admin email (platform owner).
- * @param {string} uid
- * @returns {Promise<boolean>}
- */
 async function isSuperAdminUid(uid) {
-  if (!uid || typeof uid !== "string") {
-    return false;
-  }
-  try {
-    const userRecord = await admin.auth().getUser(uid);
-    const email = (userRecord.email || "").trim().toLowerCase();
-    return email === SUPER_ADMIN_EMAIL;
-  } catch (error) {
-    console.error(`Error checking super admin for ${uid}:`, error.message);
-    return false;
-  }
+  return isSuperAdminEmailUid(uid);
 }
 
 module.exports = {
+  SUPER_ADMIN_EMAIL,
   setAdminClaim,
   removeAdminClaim,
   hasAdminClaim,
   verifyAdminFromToken,
   isSuperAdminUid,
+  isSuperAdmin,
+  isPlatformAdmin,
+  setAdminAccessClaims,
+  clearAdminAccessClaims,
+  ADMIN_ROLE_SUPER,
 };
-

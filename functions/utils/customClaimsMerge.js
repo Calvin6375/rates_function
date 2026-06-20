@@ -43,6 +43,8 @@ async function clearPartnerClaims(uid) {
   await mergeCustomUserClaims(uid, {
     partnerId: null,
     partnerRole: null,
+    userType: null,
+    role: null,
   });
 }
 

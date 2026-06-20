@@ -6,7 +6,18 @@
 const {onRequest} = require("firebase-functions/v2/https");
 const express = require("express");
 const config = require("../config");
-const {getUserNotifications, markNotificationAsRead} = require("../utils/notifications");
+const {verifyFirebaseAuth} = require("../libs/auth");
+const {
+  getUserNotifications,
+  getNotificationById,
+  markNotificationAsRead,
+} = require("../utils/notifications");
+const {
+  buildNotificationAccessScope,
+  resolveNotificationTargetUserId,
+  filterNotificationsForScope,
+  assertNotificationWritable,
+} = require("../utils/notificationAccess");
 
 const app = express();
 
@@ -16,7 +27,7 @@ app.use(express.json());
 // CORS middleware - supports credentials
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  
+
   const allowedOrigins = [
     "https://truepay-72060.web.app",
     "https://truepay-72060.firebaseapp.com",
@@ -27,7 +38,7 @@ app.use((req, res, next) => {
     "http://127.0.0.1:5173",
     "http://127.0.0.1:8080",
   ];
-  
+
   let allowedOrigin = "*";
   if (origin) {
     if (allowedOrigins.includes(origin)) {
@@ -38,13 +49,13 @@ app.use((req, res, next) => {
       allowedOrigin = origin;
     }
   }
-  
+
   res.set("Access-Control-Allow-Origin", allowedOrigin);
   res.set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
   res.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
   res.set("Access-Control-Allow-Credentials", "true");
   res.set("Access-Control-Max-Age", "3600");
-  
+
   if (req.method === "OPTIONS") {
     res.status(204).send("");
     return;
@@ -53,19 +64,55 @@ app.use((req, res, next) => {
 });
 
 /**
+ * @param {import("express").Request} req
+ * @param {import("express").Response} res
+ * @param {import("express").NextFunction} next
+ */
+async function loadFirebaseUser(req, res, next) {
+  const result = await verifyFirebaseAuth(req);
+  if (!result.success) {
+    res.status(401).json({success: false, error: result.error || "Unauthorized"});
+    return;
+  }
+  req.userId = result.userId;
+  req.decodedToken = result.decodedToken;
+  try {
+    req.notificationScope = await buildNotificationAccessScope(
+        req.userId,
+        req.decodedToken,
+    );
+  } catch (err) {
+    console.error("notificationScope:", err.message);
+    res.status(500).json({success: false, error: "Authorization check failed"});
+    return;
+  }
+  next();
+}
+
+/**
  * GET /notifications
- * Get notifications for a user or all admin notifications
- * 
+ * Scoped by caller: defaults to auth uid; system inbox requires platform super.
+ *
  * Query parameters:
- * - userId (optional): User ID, defaults to "system" for admin dashboard
+ * - userId (optional): Target inbox — defaults to caller uid (not system)
  * - limit (optional): Number of notifications to return, defaults to 50
  */
-app.get("/notifications", async (req, res) => {
+app.get("/notifications", loadFirebaseUser, async (req, res) => {
   try {
-    const userId = req.query.userId || "system"; // "system" for admin dashboard
-    const limit = parseInt(req.query.limit) || 50;
+    const scope = req.notificationScope;
+    const resolved = resolveNotificationTargetUserId(req.query.userId, scope);
+    if (!resolved.ok) {
+      res.status(resolved.status).json({
+        success: false,
+        error: resolved.error,
+        message: resolved.message,
+      });
+      return;
+    }
 
-    const notifications = await getUserNotifications(userId, limit);
+    const limit = parseInt(String(req.query.limit || "50"), 10) || 50;
+    const raw = await getUserNotifications(resolved.targetUserId, limit);
+    const notifications = filterNotificationsForScope(raw, scope);
 
     res.status(200).json({
       success: true,
@@ -84,12 +131,28 @@ app.get("/notifications", async (req, res) => {
 
 /**
  * PATCH /notifications/:id/read
- * Mark notification as read
+ * Mark notification as read (scoped to caller).
  */
-app.patch("/notifications/:id/read", async (req, res) => {
+app.patch("/notifications/:id/read", loadFirebaseUser, async (req, res) => {
   try {
-    const {id} = req.params;
-    await markNotificationAsRead(id);
+    const scope = req.notificationScope;
+    const notification = await getNotificationById(req.params.id);
+    if (!notification) {
+      res.status(404).json({success: false, error: "Notification not found"});
+      return;
+    }
+
+    const allowed = assertNotificationWritable(notification, scope);
+    if (!allowed.ok) {
+      res.status(allowed.status).json({
+        success: false,
+        error: allowed.error,
+        message: allowed.message,
+      });
+      return;
+    }
+
+    await markNotificationAsRead(req.params.id);
 
     res.status(200).json({
       success: true,
@@ -107,20 +170,30 @@ app.patch("/notifications/:id/read", async (req, res) => {
 
 /**
  * POST /notifications/mark-all-read
- * Mark all notifications as read for a user
- * 
+ * Mark all notifications as read for a scoped inbox.
+ *
  * Request body:
- * - userId (optional): User ID, defaults to "system"
+ * - userId (optional): Target inbox — defaults to caller uid (not system)
  */
-app.post("/notifications/mark-all-read", async (req, res) => {
+app.post("/notifications/mark-all-read", loadFirebaseUser, async (req, res) => {
   try {
-    const userId = req.body.userId || "system";
-    const notifications = await getUserNotifications(userId, 1000); // Get all
-    
-    // Mark all unread notifications as read
+    const scope = req.notificationScope;
+    const resolved = resolveNotificationTargetUserId(req.body?.userId, scope);
+    if (!resolved.ok) {
+      res.status(resolved.status).json({
+        success: false,
+        error: resolved.error,
+        message: resolved.message,
+      });
+      return;
+    }
+
+    const raw = await getUserNotifications(resolved.targetUserId, 1000);
+    const notifications = filterNotificationsForScope(raw, scope);
     const unreadNotifications = notifications.filter((n) => !n.read);
+
     await Promise.all(
-        unreadNotifications.map((n) => markNotificationAsRead(n.id))
+        unreadNotifications.map((n) => markNotificationAsRead(n.id)),
     );
 
     res.status(200).json({

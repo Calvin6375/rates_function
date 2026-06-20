@@ -1,16 +1,25 @@
 /**
  * @fileoverview HTTP handlers for admin claims management
- * Allows existing admins to set/unset admin claims for other users
+ * Allows super admins to set/unset platform admin roles for other users.
  */
 
 const {onCall, HttpsError} = require("firebase-functions/v2/https");
+const admin = require("../admin");
 const config = require("../config");
-const {setAdminClaim, removeAdminClaim, verifyAdminFromToken} = require("../utils/adminClaims");
+const {
+  setAdminAccessClaims,
+  clearAdminAccessClaims,
+  verifySuperAdminFromAuth,
+  ADMIN_ROLES,
+  ADMIN_ROLE_SUPER,
+  SUPER_ADMIN_EMAIL,
+  syncUserDocAccessFields,
+  USER_TYPE_ADMIN,
+} = require("../utils/accessControl");
 const {logAdminAction} = require("../utils/transactions");
 
 /**
- * Callable Function: Set Admin Claim
- * Admin-only function to grant admin privileges to a user
+ * Callable Function: Set platform admin role (super_admin only).
  */
 exports.setAdminClaim = onCall(
     {
@@ -26,40 +35,74 @@ exports.setAdminClaim = onCall(
           throw new HttpsError("unauthenticated", "Authentication required");
         }
 
-        // Verify admin role using Custom Claims
-        if (!verifyAdminFromToken(request.auth)) {
-          throw new HttpsError("permission-denied", "Admin access required");
+        if (!verifySuperAdminFromAuth(request.auth)) {
+          throw new HttpsError("permission-denied", "Super admin access required");
         }
 
-        const {userId} = request.data || {};
+        const {userId, role} = request.data || {};
 
         if (!userId || typeof userId !== "string") {
           throw new HttpsError("invalid-argument", "userId is required and must be a string");
         }
 
-        // Validate userId format
         if (userId.trim().length === 0) {
           throw new HttpsError("invalid-argument", "userId cannot be empty");
         }
 
-        // Set admin claim
-        await setAdminClaim(userId);
+        const adminRole = role && typeof role === "string" ? role.trim() : ADMIN_ROLE_SUPER;
+        if (!ADMIN_ROLES.includes(adminRole)) {
+          throw new HttpsError(
+              "invalid-argument",
+              `role must be one of: ${ADMIN_ROLES.join(", ")}`,
+          );
+        }
 
-        // Log admin action
+        if (adminRole === ADMIN_ROLE_SUPER) {
+          try {
+            const target = await admin.auth().getUser(userId);
+            const email = (target.email || "").trim().toLowerCase();
+            if (email !== SUPER_ADMIN_EMAIL) {
+              throw new HttpsError(
+                  "permission-denied",
+                  "Only the built-in super-admin account may hold super_admin role",
+              );
+            }
+          } catch (e) {
+            if (e instanceof HttpsError) {
+              throw e;
+            }
+            if (e.code === "auth/user-not-found") {
+              throw new HttpsError("not-found", `User ${userId} not found`);
+            }
+            throw e;
+          }
+        }
+
+        await setAdminAccessClaims(userId, adminRole, adminId);
+
+        const targetUser = await admin.auth().getUser(userId);
+        await syncUserDocAccessFields(userId, {
+          userType: USER_TYPE_ADMIN,
+          role: adminRole,
+          email: targetUser.email || null,
+          status: "Active",
+        });
+
         await logAdminAction(
             adminId,
             userId,
             "setAdminClaim",
             {hasAdminClaim: false},
-            {hasAdminClaim: true},
+            {hasAdminClaim: true, role: adminRole},
         );
 
-        console.log(`✅ Admin ${adminId} set admin claim for user ${userId}`);
+        console.log(`✅ Super admin ${adminId} set ${adminRole} for user ${userId}`);
 
         return {
           success: true,
           userId,
-          message: "Admin claim set successfully. User must sign out and sign in again for changes to take effect.",
+          role: adminRole,
+          message: "Admin role set successfully. User must sign out and sign in again for changes to take effect.",
         };
       } catch (error) {
         console.error("❌ Error setting admin claim:", {
@@ -82,8 +125,7 @@ exports.setAdminClaim = onCall(
 );
 
 /**
- * Callable Function: Remove Admin Claim
- * Admin-only function to revoke admin privileges from a user
+ * Callable Function: Remove platform admin role (super_admin only).
  */
 exports.removeAdminClaim = onCall(
     {
@@ -99,9 +141,8 @@ exports.removeAdminClaim = onCall(
           throw new HttpsError("unauthenticated", "Authentication required");
         }
 
-        // Verify admin role using Custom Claims
-        if (!verifyAdminFromToken(request.auth)) {
-          throw new HttpsError("permission-denied", "Admin access required");
+        if (!verifySuperAdminFromAuth(request.auth)) {
+          throw new HttpsError("permission-denied", "Super admin access required");
         }
 
         const {userId} = request.data || {};
@@ -110,20 +151,34 @@ exports.removeAdminClaim = onCall(
           throw new HttpsError("invalid-argument", "userId is required and must be a string");
         }
 
-        // Validate userId format
         if (userId.trim().length === 0) {
           throw new HttpsError("invalid-argument", "userId cannot be empty");
         }
 
-        // Prevent self-removal (safety check)
         if (userId === adminId) {
           throw new HttpsError("permission-denied", "Cannot remove your own admin claim");
         }
 
-        // Remove admin claim
-        await removeAdminClaim(userId);
+        try {
+          const target = await admin.auth().getUser(userId);
+          const email = (target.email || "").trim().toLowerCase();
+          if (email === SUPER_ADMIN_EMAIL) {
+            throw new HttpsError(
+                "permission-denied",
+                "Cannot remove the built-in super-admin account",
+            );
+          }
+        } catch (e) {
+          if (e instanceof HttpsError) {
+            throw e;
+          }
+          if (e.code !== "auth/user-not-found") {
+            throw e;
+          }
+        }
 
-        // Log admin action
+        await clearAdminAccessClaims(userId);
+
         await logAdminAction(
             adminId,
             userId,
@@ -132,7 +187,7 @@ exports.removeAdminClaim = onCall(
             {hasAdminClaim: false},
         );
 
-        console.log(`✅ Admin ${adminId} removed admin claim for user ${userId}`);
+        console.log(`✅ Super admin ${adminId} removed admin claim for user ${userId}`);
 
         return {
           success: true,
@@ -158,4 +213,3 @@ exports.removeAdminClaim = onCall(
       }
     },
 );
-

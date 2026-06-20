@@ -8,7 +8,7 @@ const { onRequest } = require("firebase-functions/v2/https");
 const { defineSecret } = require("firebase-functions/params");
 const express = require("express");
 const config = require("../config");
-const { isSuperAdminUid } = require("../utils/adminClaims");
+const { isPlatformAdmin, isSuperAdmin } = require("../utils/accessControl");
 const { verifyFirebaseAuth } = require("../libs/auth");
 const partnerService = require("../services/partnerService");
 const b2bMemberService = require("../services/b2bMemberService");
@@ -27,7 +27,15 @@ const { logAdminAction } = require("../utils/transactions");
 const intaSendPublishableKey = defineSecret(config.secrets.intaSendPublishableKey);
 const intaSendSecretKey = defineSecret(config.secrets.intaSendSecretKey);
 
-const { ALL_PARTNER_ROLES } = b2bMemberService;
+const {
+  parseAccessFromToken,
+  resolvePartnerAccess,
+  isKnownPartnerRole,
+  isPartnerOwnerRole,
+  legacyPartnerRoleFromNormalized,
+  USER_TYPE_ADMIN,
+  USER_TYPE_PARTNER,
+} = require("../utils/accessControl");
 
 /** Must match `exports.<name>` in `functions/index.js` (URL path segment before routes). */
 const B2B_PORTAL_FUNCTION_SEGMENT = "b2bPortal";
@@ -81,15 +89,11 @@ async function loadFirebaseUser(req, res, next) {
 }
 
 /**
- * Platform admin: Firebase custom claim `admin: true`, or master account (see `isSuperAdminUid`).
+ * Platform admin: userType admin or legacy admin claim or built-in super-admin email.
  */
 async function requirePlatformAdmin(req, res, next) {
   try {
-    if (req.decodedToken?.admin === true) {
-      next();
-      return;
-    }
-    if (await isSuperAdminUid(req.userId)) {
+    if (await isPlatformAdmin(req.decodedToken, req.userId)) {
       next();
       return;
     }
@@ -101,18 +105,14 @@ async function requirePlatformAdmin(req, res, next) {
 }
 
 function attachPartnerContext(req, res, next) {
-  const pid = req.decodedToken?.partnerId;
-  const role = req.decodedToken?.partnerRole;
-  if (!pid || typeof pid !== "string") {
-    res.status(403).json({ success: false, error: "Not a B2B partner user (missing partnerId claim)" });
+  const resolved = resolvePartnerAccess(req.decodedToken);
+  if (!resolved || !isKnownPartnerRole(resolved.role)) {
+    res.status(403).json({ success: false, error: "Not a B2B partner user (missing partner claims)" });
     return;
   }
-  if (!role || !ALL_PARTNER_ROLES.includes(role)) {
-    res.status(403).json({ success: false, error: "Invalid or missing partnerRole claim" });
-    return;
-  }
-  req.partnerId = pid;
-  req.partnerRole = role;
+  req.partnerId = resolved.partnerId;
+  req.partnerRole = resolved.role;
+  req.legacyPartnerRole = legacyPartnerRoleFromNormalized(resolved.role);
   next();
 }
 
@@ -122,22 +122,17 @@ function attachPartnerContext(req, res, next) {
  * Platform super admin: allow without partner claims (admin: true or master email).
  */
 async function attachPartnerContextOrPlatformAdmin(req, res, next) {
-  const pid = req.decodedToken?.partnerId;
-  const role = req.decodedToken?.partnerRole;
-  if (pid && typeof pid === "string" && role && ALL_PARTNER_ROLES.includes(role)) {
-    req.partnerId = pid;
-    req.partnerRole = role;
+  const resolved = resolvePartnerAccess(req.decodedToken);
+  if (resolved && isKnownPartnerRole(resolved.role)) {
+    req.partnerId = resolved.partnerId;
+    req.partnerRole = resolved.role;
+    req.legacyPartnerRole = legacyPartnerRoleFromNormalized(resolved.role);
     req.platformTransactionScope = false;
     next();
     return;
   }
   try {
-    if (req.decodedToken?.admin === true) {
-      req.platformTransactionScope = true;
-      next();
-      return;
-    }
-    if (await isSuperAdminUid(req.userId)) {
+    if (await isPlatformAdmin(req.decodedToken, req.userId)) {
       req.platformTransactionScope = true;
       next();
       return;
@@ -147,12 +142,12 @@ async function attachPartnerContextOrPlatformAdmin(req, res, next) {
     res.status(500).json({ success: false, error: "Authorization check failed" });
     return;
   }
-  res.status(403).json({ success: false, error: "Not a B2B partner user (missing partnerId claim)" });
+  res.status(403).json({ success: false, error: "Not a B2B partner user (missing partner claims)" });
 }
 
 function requirePartnerOrgAdmin(req, res, next) {
-  if (req.partnerRole !== "org_admin") {
-    res.status(403).json({ success: false, error: "Partner org admin access required" });
+  if (!isPartnerOwnerRole(req.partnerRole)) {
+    res.status(403).json({ success: false, error: "Partner owner access required" });
     return;
   }
   next();
@@ -641,7 +636,7 @@ app.get("/platform/consumer-users/:userId", loadFirebaseUser, requirePlatformAdm
  */
 app.delete("/platform/users/:userId", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
   try {
-    const actorIsSuperAdmin = await isSuperAdminUid(req.userId);
+    const actorIsSuperAdmin = await isSuperAdmin(req.decodedToken, req.userId);
     const data = await dashboardUserDeletionService.deleteUserAsPlatformAdmin(
         req.userId,
         req.params.userId,
@@ -671,10 +666,13 @@ app.delete("/platform/users/:userId", loadFirebaseUser, requirePlatformAdmin, as
  */
 app.get("/platform/me", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
   try {
+    const access = parseAccessFromToken(req.decodedToken);
     res.status(200).json({
       success: true,
       data: {
         userId: req.userId,
+        userType: access.userType || USER_TYPE_ADMIN,
+        role: access.role,
         admin: true,
         email: (req.decodedToken && req.decodedToken.email) || null,
       },
@@ -788,6 +786,14 @@ app.patch("/portal/onboarding", loadFirebaseUser, async (req, res) => {
  */
 app.post("/portal/onboarding/register-partner", loadFirebaseUser, async (req, res) => {
   try {
+    if (req.decodedToken?.email_verified !== true) {
+      res.status(403).json({
+        success: false,
+        error: "EMAIL_NOT_VERIFIED",
+        message: "Verify your email before generating API credentials.",
+      });
+      return;
+    }
     const { name, settlementCurrency, webhookUrl } = req.body || {};
     const out = await b2bOnboardingService.registerSelfServePartner(req.userId, {
       name,
@@ -883,48 +889,47 @@ app.post("/portal/onboarding/complete", loadFirebaseUser, async (req, res) => {
 app.get("/portal/me", loadFirebaseUser, async (req, res) => {
   try {
     const dt = req.decodedToken || {};
-    const isPlatformAdmin =
-      dt.admin === true || (await isSuperAdminUid(req.userId));
-    const pid = dt.partnerId;
-    const role = dt.partnerRole;
+    const platformAdmin = await isPlatformAdmin(dt, req.userId);
+    const resolved = resolvePartnerAccess(dt);
 
-    const hasPartner =
-      typeof pid === "string" &&
-      pid.length > 0 &&
-      typeof role === "string" &&
-      ALL_PARTNER_ROLES.includes(role);
-
-    if (isPlatformAdmin && !hasPartner) {
+    if (platformAdmin && !resolved) {
+      const access = parseAccessFromToken(dt);
       res.status(200).json({
         success: true,
         data: {
           userId: req.userId,
+          userType: access.userType || USER_TYPE_ADMIN,
+          role: access.role,
           admin: true,
           partnerId: null,
           partnerRole: null,
+          roleLegacy: null,
           partner: null,
         },
       });
       return;
     }
 
-    if (!hasPartner) {
+    if (!resolved || !isKnownPartnerRole(resolved.role)) {
       res.status(403).json({
         success: false,
-        error: "Not a B2B partner user (missing partnerId claim)",
+        error: "Not a B2B partner user (missing partner claims)",
       });
       return;
     }
 
-    const partner = await partnerService.getPartner(pid);
+    const partner = await partnerService.getPartner(resolved.partnerId);
     res.status(200).json({
       success: true,
       data: {
         userId: req.userId,
-        admin: isPlatformAdmin,
-        partnerId: pid,
-        partnerRole: role,
-        partner: partner || { id: pid },
+        userType: USER_TYPE_PARTNER,
+        role: resolved.role,
+        admin: platformAdmin,
+        partnerId: resolved.partnerId,
+        partnerRole: legacyPartnerRoleFromNormalized(resolved.role),
+        roleLegacy: legacyPartnerRoleFromNormalized(resolved.role),
+        partner: partner || { id: resolved.partnerId },
       },
     });
   } catch (err) {

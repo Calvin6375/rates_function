@@ -64,13 +64,29 @@ node_modules/
 
 # dotenv environment variables file
 .env
+.env.*
+!.env.example
 
 # Circle entity secret recovery files (never commit)
 functions/recovery/
 recovery/
 
-# Local Firebase service account keys
+# Secrets & credentials — never commit (see Google key exposure policy)
 serviceAccountKey.json
+*-service-account*.json
+*-serviceAccount*.json
+*adminsdk*.json
+firebase-adminsdk*.json
+credentials.json
+google-credentials.json
+gcloud-*.json
+sa.json
+*.pem
+*.p12
+
+# Local key directories (keep keys in ~/keys outside the repo)
+keys/
+**/keys/*.json
 
 # dataconnect generated files
 .dataconnect

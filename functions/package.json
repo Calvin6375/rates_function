@@ -8,7 +8,9 @@
     "start": "npm run shell",
     "deploy": "firebase deploy --only functions",
     "logs": "firebase functions:log",
-    "circle:register-secret": "node scripts/register-circle-entity-secret.js"
+    "circle:register-secret": "node scripts/register-circle-entity-secret.js",
+    "b2b:backfill-partners": "node scripts/backfill-b2b-partner-orgs.js",
+    "auth:bootstrap-super-admin": "node scripts/bootstrap-super-admin.js"
   },
   "engines": {
     "node": "22"

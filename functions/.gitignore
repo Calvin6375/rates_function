@@ -1,2 +1,13 @@
 node_modules/
 *.local
+
+# Local credentials (prefer GOOGLE_APPLICATION_CREDENTIALS outside repo)
+serviceAccountKey.json
+*adminsdk*.json
+firebase-adminsdk*.json
+credentials.json
+sa.json
+*.pem
+*.p12
+.env
+.env.*

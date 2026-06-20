@@ -6,6 +6,11 @@
 
 const {collection, serverTimestamp} = require("../libs/firestore");
 const {getCustomClaims} = require("../utils/customClaimsMerge");
+const {
+  normalizePartnerRole,
+  isPartnerOwnerRole,
+} = require("../utils/accessControl");
+const {deepMerge} = require("../utils/objectDeepMerge");
 const partnerService = require("./partnerService");
 const b2bMemberService = require("./b2bMemberService");
 
@@ -16,6 +21,67 @@ const PATCHABLE_KEYS = [
   "business", "owner", "payments", "kyc",
   "useCases", "terms", "progress", "sandbox",
 ];
+
+/** Ordered onboarding stages (frontend syncOnboardingStatus). */
+const ONBOARDING_STATUSES = [
+  "draft",
+  "email_verified",
+  "profile_complete",
+  "credentials_ready",
+  "payment_links_ready",
+  "submitted",
+  "active",
+];
+
+/** @type {readonly Set<string>} */
+const TERMINAL_ONBOARDING_STATUSES = new Set(["submitted", "active"]);
+
+/** @type {readonly string[]} */
+const PATCH_ACCEPTED_KEYS = [...PATCHABLE_KEYS, "onboardingStatus"];
+
+/**
+ * @param {unknown} status
+ * @return {number}
+ */
+function onboardingStatusRank(status) {
+  const idx = ONBOARDING_STATUSES.indexOf(String(status).trim());
+  return idx;
+}
+
+/**
+ * Apply client onboardingStatus only when it advances (never downgrade).
+ *
+ * @param {unknown} existingStatus
+ * @param {unknown} patchStatus
+ * @return {string}
+ */
+function resolveOnboardingStatusPatch(existingStatus, patchStatus) {
+  const next = patchStatus != null ? String(patchStatus).trim() : "";
+  if (!next) {
+    throw new Error("onboardingStatus must be a non-empty string");
+  }
+  if (!ONBOARDING_STATUSES.includes(next)) {
+    throw new Error(
+        `Invalid onboardingStatus "${next}" (expected one of: ${ONBOARDING_STATUSES.join(", ")})`,
+    );
+  }
+
+  const currentRaw =
+    existingStatus != null && String(existingStatus).trim() ?
+      String(existingStatus).trim() :
+      "draft";
+  const current = ONBOARDING_STATUSES.includes(currentRaw) ? currentRaw : "draft";
+  const currentRank = onboardingStatusRank(current);
+  const nextRank = onboardingStatusRank(next);
+
+  if (TERMINAL_ONBOARDING_STATUSES.has(current) && nextRank < currentRank) {
+    return current;
+  }
+  if (nextRank < currentRank) {
+    return current;
+  }
+  return next;
+}
 
 /**
  * @param {unknown} v
@@ -72,7 +138,7 @@ async function getOnboarding(uid) {
 }
 
 /**
- * Shallow merge allowed top-level keys into onboarding/{uid}.
+ * Deep-merge allowed section keys into onboarding/{uid}.
  *
  * @param {string} uid
  * @param {Record<string, unknown>} partial
@@ -82,21 +148,32 @@ async function patchOnboarding(uid, partial) {
   if (!partial || typeof partial !== "object") {
     throw new Error("Body must be a JSON object");
   }
+  const ref = onboardingRef(uid);
+  const snap = await ref.get();
+  const existing = snap.exists ? snap.data() || {} : {};
+
   /** @type {Record<string, unknown>} */
   const updates = {updatedAt: serverTimestamp()};
   for (const key of PATCHABLE_KEYS) {
     if (Object.prototype.hasOwnProperty.call(partial, key)) {
-      updates[key] = partial[key];
+      const prev = existing[key];
+      updates[key] = deepMerge(prev, partial[key]);
     }
   }
-  if (Object.keys(updates).length <= 1) {
-    throw new Error(`Provide at least one of: ${PATCHABLE_KEYS.join(", ")}`);
+  if (Object.prototype.hasOwnProperty.call(partial, "onboardingStatus")) {
+    updates.onboardingStatus = resolveOnboardingStatusPatch(
+        existing.onboardingStatus,
+        partial.onboardingStatus,
+    );
   }
-  const ref = onboardingRef(uid);
-  const snap = await ref.get();
+  if (Object.keys(updates).length <= 1) {
+    throw new Error(`Provide at least one of: ${PATCH_ACCEPTED_KEYS.join(", ")}`);
+  }
   if (!snap.exists) {
     updates.createdAt = serverTimestamp();
-    updates.onboardingStatus = "draft";
+    if (!Object.prototype.hasOwnProperty.call(updates, "onboardingStatus")) {
+      updates.onboardingStatus = "draft";
+    }
   }
   await ref.set(updates, {merge: true});
   const out = await ref.get();
@@ -123,16 +200,16 @@ async function registerSelfServePartner(uid, input) {
 
   const claims = await getCustomClaims(uid);
   const claimPid = claims.partnerId;
-  const claimRole = claims.partnerRole;
+  const claimRole = normalizePartnerRole(claims.role || claims.partnerRole);
 
   if (claimPid && typeof claimPid === "string" && claimRole &&
-      claimRole !== "org_admin") {
+      !isPartnerOwnerRole(claimRole)) {
     throw new Error(
         "Account already linked to a partner; self-registration unavailable.",
     );
   }
 
-  if (claimPid && claimRole === "org_admin") {
+  if (claimPid && isPartnerOwnerRole(claimRole)) {
     const partner = await partnerService.getPartner(claimPid);
     if (!partner) {
       throw new Error("Partner missing for your account; contact support.");
@@ -250,8 +327,11 @@ async function completeOnboarding(uid, attestation) {
     );
   }
 
-  if (claims.partnerRole && claims.partnerRole !== "org_admin") {
-    throw new Error("Only the partner org admin can complete onboarding");
+  if (claims.partnerRole || claims.role) {
+    const ownerRole = normalizePartnerRole(claims.role || claims.partnerRole);
+    if (!isPartnerOwnerRole(ownerRole)) {
+      throw new Error("Only the partner owner can complete onboarding");
+    }
   }
   if (claims.partnerId && claims.partnerId !== partnerId) {
     throw new Error("Token partnerId does not match onboarding partner");
@@ -354,6 +434,7 @@ async function markGoLiveDoneForPartner(partnerId) {
 module.exports = {
   ONBOARDING_COL,
   PATCHABLE_KEYS,
+  ONBOARDING_STATUSES,
   getOnboarding,
   patchOnboarding,
   registerSelfServePartner,
