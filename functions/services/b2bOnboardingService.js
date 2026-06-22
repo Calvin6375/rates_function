@@ -263,7 +263,7 @@ async function registerSelfServePartner(uid, input) {
   await onboardingRef(uid).set(
       {
         registeredPartnerId: created.partnerId,
-        onboardingStatus: "draft",
+        onboardingStatus: "email_verified",
         updatedAt: serverTimestamp(),
         createdAt: serverTimestamp(),
       },
@@ -431,6 +431,103 @@ async function markGoLiveDoneForPartner(partnerId) {
   );
 }
 
+/**
+ * Derive a display name for a new partner org from onboarding and profile data.
+ *
+ * @param {Object|null|undefined} onboarding
+ * @param {Object|null|undefined} userData
+ * @param {string|null|undefined} email
+ * @return {string|null}
+ */
+function derivePartnerName(onboarding, userData, email) {
+  const business = onboarding?.business;
+  if (business && typeof business === "object") {
+    if (business.name && String(business.name).trim()) {
+      return String(business.name).trim();
+    }
+    if (business.legalName && String(business.legalName).trim()) {
+      return String(business.legalName).trim();
+    }
+  }
+  const owner = onboarding?.owner;
+  if (owner && typeof owner === "object") {
+    if (owner.businessName && String(owner.businessName).trim()) {
+      return String(owner.businessName).trim();
+    }
+    if (owner.fullName && String(owner.fullName).trim()) {
+      return String(owner.fullName).trim();
+    }
+  }
+  if (userData?.name && String(userData.name).trim()) {
+    return String(userData.name).trim();
+  }
+  const resolvedEmail =
+    email && String(email).trim() ?
+      String(email).trim().toLowerCase() :
+      userData?.email && String(userData.email).includes("@") ?
+        String(userData.email).trim().toLowerCase() :
+        null;
+  if (resolvedEmail && resolvedEmail.includes("@")) {
+    const local = resolvedEmail.split("@")[0].trim();
+    if (local) {
+      return local.replace(/[._+-]+/g, " ").trim() || null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Idempotent: after email verification, ensure the user has a linked partner org.
+ * Sandbox registration is not required. Returns null when email is not verified.
+ *
+ * @param {string} uid
+ * @param {{ emailVerified?: boolean, email?: string|null }} opts
+ * @return {Promise<Object|null>}
+ */
+async function ensurePartnerOrgOnEmailVerified(uid, opts = {}) {
+  if (opts.emailVerified !== true) {
+    return null;
+  }
+
+  const claims = await getCustomClaims(uid);
+  const claimPid =
+    typeof claims.partnerId === "string" && claims.partnerId.trim() ?
+      claims.partnerId.trim() :
+      null;
+  if (claimPid) {
+    const partner = await partnerService.getPartner(claimPid);
+    if (partner) {
+      return {
+        partnerId: claimPid,
+        orgAdminUid: partner.orgAdminUid || uid,
+        alreadyRegistered: true,
+      };
+    }
+  }
+
+  const obSnap = await onboardingRef(uid).get();
+  const onboarding = obSnap.exists ? obSnap.data() : null;
+  const userSnap = await collection("users").doc(uid).get();
+  const userData = userSnap.exists ? userSnap.data() : null;
+
+  let partnerName = derivePartnerName(onboarding, userData, opts.email);
+  if (!partnerName) {
+    partnerName = `Partner ${uid.slice(0, 8)}`;
+  }
+
+  const out = await registerSelfServePartner(uid, {name: partnerName});
+
+  await onboardingRef(uid).set(
+      {
+        onboardingStatus: "email_verified",
+        updatedAt: serverTimestamp(),
+      },
+      {merge: true},
+  );
+
+  return out;
+}
+
 module.exports = {
   ONBOARDING_COL,
   PATCHABLE_KEYS,
@@ -442,4 +539,6 @@ module.exports = {
   resolveGoLiveDone,
   markGoLiveDoneForPartner,
   serializeOnboardingDoc,
+  derivePartnerName,
+  ensurePartnerOrgOnEmailVerified,
 };

@@ -16,6 +16,7 @@ const b2bOnboardingService = require("../services/b2bOnboardingService");
 const b2bPortalSandboxService = require("../services/b2bPortalSandboxService");
 const platformConsumerService = require("../services/platformConsumerService");
 const dashboardUserDeletionService = require("../services/dashboardUserDeletionService");
+const partnerDeletionService = require("../services/partnerDeletionService");
 const paymentLinkService = require("../services/paymentLinkService");
 const b2bPaymentLinkCheckoutService = require("../services/b2bPaymentLinkCheckoutService");
 const paymentRailService = require("../services/paymentRailService");
@@ -399,6 +400,35 @@ app.patch("/platform/partners/:partnerId", loadFirebaseUser, requirePlatformAdmi
   }
 });
 
+/**
+ * DELETE /platform/partners/:partnerId
+ * Platform master admin: delete partner org, clear member claims, remove payment links.
+ */
+app.delete("/platform/partners/:partnerId", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+  try {
+    const data = await partnerDeletionService.deletePartnerAsPlatformAdmin(
+        req.params.partnerId,
+    );
+    await logAdminAction(
+        req.userId,
+        req.params.partnerId,
+        "deletePartner.platform",
+        {partnerId: req.params.partnerId},
+        data,
+    );
+    res.status(200).json({
+      success: true,
+      data,
+      message: "Partner organization deleted",
+    });
+  } catch (err) {
+    const msg = err.message || "Delete failed";
+    console.error("b2bPortal DELETE /platform/partners/:partnerId:", msg);
+    const status = msg.includes("not found") ? 404 : 400;
+    res.status(status).json({success: false, error: msg});
+  }
+});
+
 // --- Platform payment links (super admin) ---
 
 app.post("/platform/partners/:partnerId/payment-links", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
@@ -704,9 +734,34 @@ app.post("/portal/ensure-dashboard-profile", loadFirebaseUser, async (req, res) 
         req.userId,
         provisioning,
     );
+    let partnerOrg = null;
+    if (req.decodedToken?.email_verified === true) {
+      try {
+        partnerOrg = await b2bOnboardingService.ensurePartnerOrgOnEmailVerified(
+            req.userId,
+            {
+              emailVerified: true,
+              email: req.decodedToken.email || null,
+            },
+        );
+      } catch (ensureErr) {
+        console.error(
+            "b2bPortal ensure-dashboard-profile partner org:",
+            ensureErr.message,
+        );
+      }
+    }
     res.status(200).json({
       success: true,
       message: "Dashboard profile ensured",
+      data: partnerOrg ? {
+        partnerOrg: {
+          partnerId: partnerOrg.partnerId,
+          orgAdminUid: partnerOrg.orgAdminUid,
+          alreadyRegistered: partnerOrg.alreadyRegistered === true,
+          ...(partnerOrg.apiKey ? {apiKey: partnerOrg.apiKey} : {}),
+        },
+      } : undefined,
     });
   } catch (err) {
     console.error("b2bPortal POST /portal/ensure-dashboard-profile:", err.message);
@@ -719,12 +774,26 @@ app.post("/portal/ensure-dashboard-profile", loadFirebaseUser, async (req, res) 
 app.get("/portal/onboarding", loadFirebaseUser, async (req, res) => {
   try {
     const dt = req.decodedToken || {};
+    let partnerOrg = null;
+    if (dt.email_verified === true) {
+      try {
+        partnerOrg = await b2bOnboardingService.ensurePartnerOrgOnEmailVerified(
+            req.userId,
+            {
+              emailVerified: true,
+              email: dt.email || null,
+            },
+        );
+      } catch (ensureErr) {
+        console.error("b2bPortal GET /portal/onboarding partner org:", ensureErr.message);
+      }
+    }
     const onboarding = await b2bOnboardingService.getOnboarding(req.userId);
     const sandboxExtras =
       await b2bPortalSandboxService.getSandboxOnboardingExtras(req.userId);
     const goLiveDone = await b2bOnboardingService.resolveGoLiveDone(
         req.userId,
-        dt.partnerId,
+        dt.partnerId || partnerOrg?.partnerId,
     );
     const projectId = process.env.GCLOUD_PROJECT || "truepay-72060";
     const partnerSandboxBaseUrl =
@@ -749,6 +818,12 @@ app.get("/portal/onboarding", loadFirebaseUser, async (req, res) => {
       data: {
         onboarding: mergedOnboarding,
         emailVerified: dt.email_verified === true,
+        partnerOrg: partnerOrg ? {
+          partnerId: partnerOrg.partnerId,
+          orgAdminUid: partnerOrg.orgAdminUid,
+          alreadyRegistered: partnerOrg.alreadyRegistered === true,
+          ...(partnerOrg.apiKey ? {apiKey: partnerOrg.apiKey} : {}),
+        } : null,
         sandbox: {
           publicApiKey: config.b2bSandbox.apiKey,
           virtualPartnerId: config.b2bSandbox.partnerId,
