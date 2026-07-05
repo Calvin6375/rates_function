@@ -13,6 +13,8 @@ const p2pListingsLib = require("../libs/p2pListings");
 const { sanitizeRatesObject, maybeFixResolvedPair } = require("../utils/customerRatesSanitize");
 const supportedCountriesService = require("../services/supportedCountriesService");
 const customerSelfRegistrationService = require("../services/customerSelfRegistrationService");
+const { mountFundingRoutes } = require("./fundingHttp");
+const { mountFundingOpsRoutes } = require("./fundingOpsHttp");
 const { isPlatformAdmin } = require("../utils/accessControl");
 const { verifyFirebaseAuth } = require("../libs/auth");
 
@@ -980,6 +982,10 @@ app.put("/config/fees", requireAdmin, async (req, res) => {
     });
   }
 });
+
+// Tourist Payments — funding layer (Paystack, merchant settlement)
+mountFundingRoutes(app);
+mountFundingOpsRoutes(app);
 
 // Export as Firebase Function
 exports.api = onRequest(

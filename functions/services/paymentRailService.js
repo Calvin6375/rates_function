@@ -7,6 +7,7 @@ const config = require("../config");
 
 /** @type {Readonly<Record<string, string>>} */
 const circleRailAdapter = require("./circle/circleRailAdapter");
+const settlementRailService = require("./settlement/settlementRailService");
 
 const SUPPORTED_RAILS = Object.freeze({
   intasend: "intasend",
@@ -573,6 +574,15 @@ async function processCircleDeposit(params) {
   };
 }
 
+/**
+ * Settlement rails (Daraja B2B) — delegates to settlementRailService.
+ * @param {string} [railId]
+ * @returns {Object}
+ */
+function resolveSettlementRail(railId = "daraja_b2b") {
+  return settlementRailService.resolveSettlementRail(railId);
+}
+
 module.exports = {
   SUPPORTED_RAILS,
   INTASEND_CHECKOUT_CURRENCIES,
@@ -594,4 +604,5 @@ module.exports = {
   createSession,
   processDeposit,
   processCircleDeposit,
+  resolveSettlementRail,
 };

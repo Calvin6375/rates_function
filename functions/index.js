@@ -19,7 +19,13 @@ const b2bPortalHttp = require("./http/b2bPortalHttp");
 const customerAuthHttp = require("./http/customerAuthHttp");
 const cryptoApi = require("./http/cryptoApi");
 const circleWebhookHttp = require("./http/circleWebhookHttp");
+const paystackWebhookHttp = require("./http/paystackWebhookHttp");
+const darajaCallbackHttp = require("./http/darajaCallbackHttp");
 const reconcileCircleLedgerJob = require("./jobs/reconcileCircleLedger");
+const reconcileFundingOrdersJob = require("./jobs/reconcileFundingOrders");
+const releaseExpiredReservationsJob = require("./jobs/releaseExpiredReservations");
+const reconcileWalletIntegrityJob = require("./jobs/reconcileWalletIntegrity");
+const retrySettlementJobsJob = require("./jobs/retrySettlementJobs");
 
 // Import triggers
 const usersTrigger = require("./triggers/usersTrigger");
@@ -39,7 +45,13 @@ exports.getArbitrageRates = arbitrageHttp.getArbitrageRates;
 exports.handleTopUpWebhook = webhookApi.handleTopUpWebhook;
 exports.handleTransFiTopUpWebhook = webhookApi.handleTransFiTopUpWebhook;
 exports.handleCircleWebhook = circleWebhookHttp.handleCircleWebhook;
+exports.handlePaystackWebhook = paystackWebhookHttp.handlePaystackWebhook;
+exports.handleDarajaCallback = darajaCallbackHttp.handleDarajaCallback;
 exports.reconcileCircleLedger = reconcileCircleLedgerJob.reconcileCircleLedger;
+exports.reconcileFundingOrders = reconcileFundingOrdersJob.reconcileFundingOrders;
+exports.releaseExpiredReservations = releaseExpiredReservationsJob.releaseExpiredReservations;
+exports.reconcileWalletIntegrity = reconcileWalletIntegrityJob.reconcileWalletIntegrity;
+exports.retrySettlementJobs = retrySettlementJobsJob.retrySettlementJobs;
 exports.createPayment = paymentsHttp.createPayment;
 exports.createDirectTopup = paymentsHttp.createDirectTopup;
 exports.createDirectPayout = paymentsHttp.createDirectPayout;

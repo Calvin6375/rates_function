@@ -10,7 +10,10 @@
     "logs": "firebase functions:log",
     "circle:register-secret": "node scripts/register-circle-entity-secret.js",
     "b2b:backfill-partners": "node scripts/backfill-b2b-partner-orgs.js",
-    "auth:bootstrap-super-admin": "node scripts/bootstrap-super-admin.js"
+    "c2b:backfill-customer-claims": "node scripts/backfill-c2b-customer-claims.js",
+    "auth:bootstrap-super-admin": "node scripts/bootstrap-super-admin.js",
+    "test": "jest --passWithNoTests",
+    "test:funding": "jest test/funding --passWithNoTests"
   },
   "engines": {
     "node": "22"
@@ -35,7 +38,8 @@
   "devDependencies": {
     "eslint": "^8.57.1",
     "eslint-config-google": "^0.14.0",
-    "firebase-functions-test": "^3.1.0"
+    "firebase-functions-test": "^3.1.0",
+    "jest": "^29.7.0"
   },
   "private": true
 }

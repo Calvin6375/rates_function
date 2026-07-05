@@ -11,6 +11,8 @@ const { ref } = require("../libs/realtime");
 const { syncBalanceToRealtimeDatabase } = require("../utils/firestore");
 
 const ledgerService = require("./ledger/ledgerService");
+const fiatLedgerService = require("./ledger/fiatLedgerService");
+const fiatReservationService = require("./ledger/fiatReservationService");
 const circleRailAdapter = require("./circle/circleRailAdapter");
 
 const OWNER_TYPES = Object.freeze({ user: "user", partner: "partner" });
@@ -176,11 +178,149 @@ async function getBalances(userId) {
   };
 }
 
+/**
+ * Dual-write USD balance to users document (Flutter backward compat).
+ * @param {string} userId
+ * @param {number} newUsdBalance
+ * @returns {Promise<{ previousBalance: number, newBalance: number }>}
+ */
+async function dualWriteUsdBalance(userId, newUsdBalance) {
+  const userRef = admin.firestore().collection(config.collections.users).doc(userId);
+  let result = { previousBalance: 0, newBalance: newUsdBalance };
+
+  await admin.firestore().runTransaction(async (tx) => {
+    const doc = await tx.get(userRef);
+    if (!doc.exists) {
+      throw new Error(`User ${userId} not found`);
+    }
+    const data = doc.data();
+    const previousBalance = Number(data.usdBalance ?? data.USD ?? 0);
+    result = { previousBalance, newBalance: newUsdBalance };
+
+    const kesBalance = Number(data.kesBalance ?? data.KES ?? 0);
+    const usdtBalance = Number(data.usdtBalance ?? data.USDT ?? 0);
+
+    tx.update(userRef, {
+      usdBalance: newUsdBalance,
+      USD: newUsdBalance,
+      fiatBalance: newUsdBalance,
+      wallets: {
+        USD: newUsdBalance,
+        KES: kesBalance,
+        USDT: usdtBalance,
+      },
+      updatedAt: serverTimestamp(),
+    });
+  });
+
+  return result;
+}
+
+/**
+ * Get spendable fiat balance from ledger aggregates minus reservations.
+ * @param {string} userId
+ * @param {string} [asset="USD"]
+ * @returns {Promise<number>}
+ */
+async function getFiatAvailableBalance(userId, asset = "USD") {
+  return fiatReservationService.getAvailableBalance(userId, asset);
+}
+
+/**
+ * Credit user fiat via append-only ledger + dual-write to users doc.
+ * @param {string} userId
+ * @param {number} amount
+ * @param {string} [currency="USD"]
+ * @param {Object} [options]
+ * @returns {Promise<{ previousBalance: number, newBalance: number, duplicate?: boolean, ledgerEntryId?: string }>}
+ */
+async function creditUserFiat(userId, amount, currency = "USD", options = {}) {
+  const asset = String(currency).toUpperCase();
+  const numericAmount = Number(amount);
+  if (!userId || !Number.isFinite(numericAmount) || numericAmount <= 0) {
+    throw new Error("Invalid fiat credit parameters");
+  }
+
+  const referenceId = options.referenceId;
+  if (!referenceId) {
+    throw new Error("referenceId is required for idempotent fiat credit");
+  }
+
+  const ledgerResult = await fiatLedgerService.appendTransaction({
+    userId,
+    type: options.type || "funding",
+    asset,
+    amount: numericAmount,
+    direction: "credit",
+    source: options.source || "funding",
+    referenceId,
+    fundingOrderId: options.fundingOrderId || null,
+    transactionRecordId: options.transactionRecordId || null,
+    metadata: options.metadata || {},
+  });
+
+  const dualWrite = await dualWriteUsdBalance(userId, ledgerResult.newBalance);
+  await syncUserBalanceToRealtime(userId, asset);
+
+  return {
+    previousBalance: dualWrite.previousBalance,
+    newBalance: ledgerResult.newBalance,
+    duplicate: ledgerResult.duplicate,
+    ledgerEntryId: ledgerResult.entryId,
+  };
+}
+
+/**
+ * Debit user fiat via append-only ledger + dual-write to users doc.
+ * @param {string} userId
+ * @param {number} amount
+ * @param {string} [currency="USD"]
+ * @param {Object} [options]
+ * @returns {Promise<{ previousBalance: number, newBalance: number, duplicate?: boolean, ledgerEntryId?: string }>}
+ */
+async function debitUserFiat(userId, amount, currency = "USD", options = {}) {
+  const asset = String(currency).toUpperCase();
+  const numericAmount = Number(amount);
+  if (!userId || !Number.isFinite(numericAmount) || numericAmount <= 0) {
+    throw new Error("Invalid fiat debit parameters");
+  }
+
+  const referenceId = options.referenceId;
+  if (!referenceId) {
+    throw new Error("referenceId is required for idempotent fiat debit");
+  }
+
+  const ledgerResult = await fiatLedgerService.appendTransaction({
+    userId,
+    type: options.type || "merchant_settlement",
+    asset,
+    amount: numericAmount,
+    direction: "debit",
+    source: options.source || "settlement",
+    referenceId,
+    transactionRecordId: options.transactionRecordId || null,
+    metadata: options.metadata || {},
+  });
+
+  const dualWrite = await dualWriteUsdBalance(userId, ledgerResult.newBalance);
+  await syncUserBalanceToRealtime(userId, asset);
+
+  return {
+    previousBalance: dualWrite.previousBalance,
+    newBalance: ledgerResult.newBalance,
+    duplicate: ledgerResult.duplicate,
+    ledgerEntryId: ledgerResult.entryId,
+  };
+}
+
 module.exports = {
   OWNER_TYPES,
   getUserWalletBalances,
   getCryptoBalance,
   getBalances,
+  getFiatAvailableBalance,
+  creditUserFiat,
+  debitUserFiat,
   getOrCreatePartnerWallet,
   getPartnerWallet,
   updatePartnerWalletBalance,

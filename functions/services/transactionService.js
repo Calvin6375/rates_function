@@ -8,6 +8,9 @@ const config = require("../config");
 const { collection, serverTimestamp } = require("../libs/firestore");
 const { logTransaction, generateTransactionId } = require("../utils/transactions");
 const ledgerService = require("./ledgerService");
+const walletService = require("./walletService");
+const fundingOrderService = require("./funding/fundingOrderService");
+const { FUNDING_STATUSES } = require("../utils/fundingTypes");
 
 /** Transaction types supported by the engine */
 const TRANSACTION_TYPES = Object.freeze({
@@ -17,6 +20,8 @@ const TRANSACTION_TYPES = Object.freeze({
   crypto_offramp: "crypto_offramp",
   b2b_payment: "b2b_payment",
   settlement: "settlement",
+  funding: "funding",
+  merchant_payment: "merchant_payment",
 });
 
 /** Transaction lifecycle statuses */
@@ -178,7 +183,7 @@ function isFirestoreIndexUnavailable(err) {
 /** Transaction types grouped for platform dashboard channel filter */
 const CHANNEL_TYPES = Object.freeze({
   b2b: ["b2b_payment"],
-  c2b: ["topup", "withdrawal", "crypto_onramp", "crypto_offramp"],
+  c2b: ["topup", "withdrawal", "crypto_onramp", "crypto_offramp", "funding", "merchant_payment"],
 });
 
 /**
@@ -331,6 +336,114 @@ async function listTransactionRecords({
   }
 }
 
+/**
+ * Complete a funding order: ledger credit, transaction record, order status update.
+ * No provider-specific logic — caller must verify payment first.
+ *
+ * @param {Object} params
+ * @param {Object} params.fundingOrder
+ * @param {import("../utils/fundingTypes").NormalizedFundingEvent} params.verifiedEvent
+ * @returns {Promise<{ success: boolean, duplicate?: boolean, transactionRecordId?: string, error?: string }>}
+ */
+async function completeFundingOrder(params) {
+  const { fundingOrder, verifiedEvent } = params;
+
+  if (!fundingOrder || !verifiedEvent) {
+    return { success: false, error: "Missing funding order or verified event" };
+  }
+
+  if (fundingOrder.status === FUNDING_STATUSES.completed) {
+    return { success: true, duplicate: true, transactionRecordId: fundingOrder.transactionRecordId };
+  }
+
+  const referenceId = `fund_${fundingOrder.provider}_${verifiedEvent.providerTransactionId || verifiedEvent.providerReference}`;
+
+  await fundingOrderService.updateFundingOrder(fundingOrder.id, {
+    status: FUNDING_STATUSES.processing,
+    providerTransactionId: verifiedEvent.providerTransactionId || fundingOrder.providerTransactionId,
+  });
+
+  try {
+    const { transactionId } = await createTransactionRecord({
+      type: TRANSACTION_TYPES.funding,
+      userId: fundingOrder.userId,
+      amount: fundingOrder.amount,
+      currency: fundingOrder.currency,
+      status: STATUSES.processing,
+      metadata: {
+        fundingOrderId: fundingOrder.id,
+        provider: fundingOrder.provider,
+        providerReference: fundingOrder.providerReference,
+        providerTransactionId: verifiedEvent.providerTransactionId,
+        product: fundingOrder.metadata?.product || "tourist_payments",
+      },
+      logLegacy: false,
+    });
+
+    const creditResult = await walletService.creditUserFiat(
+        fundingOrder.userId,
+        fundingOrder.amount,
+        fundingOrder.currency,
+        {
+          referenceId,
+          type: "funding",
+          source: fundingOrder.provider,
+          fundingOrderId: fundingOrder.id,
+          transactionRecordId: transactionId,
+          metadata: {
+            providerReference: fundingOrder.providerReference,
+          },
+        },
+    );
+
+    await updateTransactionStatus(transactionId, STATUSES.completed, {
+      metadata: {
+        fundingOrderId: fundingOrder.id,
+        provider: fundingOrder.provider,
+        previousBalance: creditResult.previousBalance,
+        newBalance: creditResult.newBalance,
+        ledgerEntryId: creditResult.ledgerEntryId,
+      },
+    });
+
+    await fundingOrderService.updateFundingOrder(fundingOrder.id, {
+      status: FUNDING_STATUSES.completed,
+      transactionRecordId: transactionId,
+      providerTransactionId: verifiedEvent.providerTransactionId || fundingOrder.providerTransactionId,
+    });
+
+    try {
+      await logTransaction(
+          fundingOrder.userId,
+          TRANSACTION_TYPES.funding,
+          fundingOrder.amount,
+          STATUSES.completed,
+          creditResult.previousBalance,
+          creditResult.newBalance,
+          {
+            currency: fundingOrder.currency,
+            fundingOrderId: fundingOrder.id,
+            provider: fundingOrder.provider,
+          },
+      );
+    } catch (logErr) {
+      console.warn("completeFundingOrder: legacy log failed (non-fatal):", logErr.message);
+    }
+
+    return {
+      success: true,
+      duplicate: creditResult.duplicate,
+      transactionRecordId: transactionId,
+    };
+  } catch (err) {
+    await fundingOrderService.updateFundingOrder(fundingOrder.id, {
+      status: FUNDING_STATUSES.failed,
+      failureReason: err.message,
+    });
+    return { success: false, error: err.message };
+  }
+}
+
 module.exports = {
   TRANSACTION_TYPES,
   STATUSES,
@@ -342,4 +455,5 @@ module.exports = {
   serializePortalTransaction,
   resolveChannelTypes,
   generateTransactionRecordId,
+  completeFundingOrder,
 };

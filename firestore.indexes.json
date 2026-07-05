@@ -139,6 +139,62 @@
         {"fieldPath": "type", "order": "ASCENDING"},
         {"fieldPath": "createdAt", "order": "DESCENDING"}
       ]
+    },
+    {
+      "collectionGroup": "fundingOrders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "provider", "order": "ASCENDING"},
+        {"fieldPath": "providerReference", "order": "ASCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "fundingOrders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "correlationId", "order": "ASCENDING"},
+        {"fieldPath": "createdAt", "order": "DESCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "fundingOrders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "status", "order": "ASCENDING"},
+        {"fieldPath": "createdAt", "order": "ASCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "webhookReceipts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "correlationId", "order": "ASCENDING"},
+        {"fieldPath": "receivedAt", "order": "DESCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "settlementJobs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "providerReference", "order": "ASCENDING"},
+        {"fieldPath": "status", "order": "ASCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "settlementJobs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "status", "order": "ASCENDING"},
+        {"fieldPath": "nextRetryAt", "order": "ASCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "pendingFiatReservations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "status", "order": "ASCENDING"},
+        {"fieldPath": "expiresAt", "order": "ASCENDING"}
+      ]
     }
   ],
   "fieldOverrides": []
