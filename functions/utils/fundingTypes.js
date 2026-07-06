@@ -44,8 +44,11 @@ const FUNDING_STATUSES = Object.freeze({
   failed: "failed",
 });
 
-/** Tourist Payments funding currency — TruePay owns FX conversion. */
+/** Tourist Payments funding currency — wallet/settlement layer (USD). */
 const FUNDING_CURRENCY = "USD";
+
+/** C2B Paystack checkout charge currency (Kenya merchant default). */
+const C2B_PAYSTACK_CURRENCY = "KES";
 
 const FIAT_ASSETS = Object.freeze(["USD", "KES", "NGN", "GHS", "USDT"]);
 
@@ -119,6 +122,7 @@ module.exports = {
   FUNDING_PROVIDERS,
   FUNDING_STATUSES,
   FUNDING_CURRENCY,
+  C2B_PAYSTACK_CURRENCY,
   FIAT_ASSETS,
   MERCHANT_PAYMENT_STATUSES,
   SETTLEMENT_JOB_STATUSES,

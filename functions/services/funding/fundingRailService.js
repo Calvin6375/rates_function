@@ -40,8 +40,11 @@ async function initializePayment(params) {
  * @param {string} providerReference
  * @returns {Promise<Object>}
  */
-async function verifyPayment(provider, providerReference) {
+async function verifyPayment(provider, providerReference, ctx = {}) {
   const adapter = resolveProvider(provider);
+  if (adapter.verifyPayment.length >= 2) {
+    return adapter.verifyPayment(providerReference, ctx);
+  }
   return adapter.verifyPayment(providerReference);
 }
 

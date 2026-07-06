@@ -4,45 +4,91 @@
  */
 
 const {onCall, HttpsError} = require("firebase-functions/v2/https");
+const {defineSecret} = require("firebase-functions/params");
 const config = require("../config");
 const paymentsLib = require("../libs/payments");
 const swapLib = require("../libs/swap");
 const sendMoneyLib = require("../libs/sendMoney");
+const c2bFundingBridge = require("../services/funding/c2bFundingBridgeService");
+const fundingOrderService = require("../services/funding/fundingOrderService");
+const fundingWebhookService = require("../services/funding/fundingWebhookService");
+const {createLogger} = require("../utils/paymentOpsLogger");
+const {FUNDING_CURRENCY} = require("../utils/fundingTypes");
+
+const logger = createLogger({service: "paymentsHttp"});
+const paystackSecretKey = defineSecret(config.secrets.paystackSecretKey);
+const paystackSplitCode = defineSecret(config.secrets.paystackSplitCode);
+const paystackSecrets = [paystackSecretKey, paystackSplitCode];
+
+const REDACTED_HEADER_KEYS = new Set([
+  "authorization",
+  "cookie",
+  "x-api-key",
+  "x-firebase-appcheck",
+]);
 
 /**
- * Derive stable payment reference from checkout URL (TransFi vs IntaSend).
- * @param {string} checkoutUrl
- * @returns {string|null}
+ * @param {Object<string, string|string[]|undefined>} headers
+ * @returns {Object<string, string|string[]>}
  */
-function extractInvoiceIdFromCheckoutUrl(checkoutUrl) {
-  if (!checkoutUrl || typeof checkoutUrl !== "string") {
-    return null;
+function sanitizeCallableHeaders(headers = {}) {
+  const safe = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (value == null) {
+      continue;
+    }
+    safe[key] = REDACTED_HEADER_KEYS.has(String(key).toLowerCase()) ?
+      "[redacted]" :
+      value;
   }
-  // TransFi: .../checkout/payment-link/<id>
-  const transfi = checkoutUrl.match(/\/checkout\/payment-link\/([^/?#]+)/i);
-  if (transfi && transfi[1]) {
-    return transfi[1];
-  }
-  // IntaSend: .../checkout/<invoice-id>/express/ or .../checkout/<invoice-id>
-  const inta = checkoutUrl.match(/checkout\/([^/?#]+)/i);
-  if (inta && inta[1] && inta[1].toLowerCase() !== "payment-link") {
-    return inta[1];
-  }
-  return null;
+  return safe;
 }
 
 /**
- * Callable function: Create Payment Order
- * Creates order document in Firestore and invoice mapping in Firestore
+ * C2B createPayment uses server-side Paystack checkout only.
+ * Reject legacy client-side IntaSend session fields so apps cannot open the wrong URL.
+ *
+ * @param {Object} data
+ * @param {string} userId
+ */
+function assertNoLegacyIntaSendClientCheckout(data, userId) {
+  const intasendCheckoutId = data.intasendCheckoutId || null;
+  const clientCheckoutUrl = data.checkoutUrl ? String(data.checkoutUrl).trim() : null;
+  const usesLegacyIntaSend =
+    !!intasendCheckoutId ||
+    (clientCheckoutUrl && /intasend\.com/i.test(clientCheckoutUrl));
+
+  if (!usesLegacyIntaSend) {
+    return;
+  }
+
+  logger.warn("createPayment.legacy_intasend_client_checkout", {
+    userId,
+    hasIntasendCheckoutId: !!intasendCheckoutId,
+    hasClientCheckoutUrl: !!clientCheckoutUrl,
+  });
+
+  throw new HttpsError(
+      "failed-precondition",
+      "C2B top-up no longer uses client-side IntaSend checkout. Remove IntaSend " +
+      "session creation from the app. Call createPayment with amount, currency, and " +
+      "email only, then launch checkoutUrl from the response (Paystack hosted checkout).",
+  );
+}
+
+/**
+ * Callable function: Create Payment Order (C2B tourist card top-up via Paystack).
+ * Initializes Paystack checkout server-side and returns the legacy response shape
+ * expected by the Flutter app (`orderId`, `invoiceId`, `checkoutUrl`, …).
  */
 exports.createPayment = onCall(
     {
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
+      secrets: paystackSecrets,
     },
     async (request) => {
-      // Get the authenticated user from the request
       const auth = request.auth;
       if (!auth) {
         throw new HttpsError("unauthenticated", "User must be authenticated to create payment");
@@ -51,24 +97,13 @@ exports.createPayment = onCall(
       const userId = auth.uid;
       const data = request.data || {};
 
-      console.log("📥 Received createPayment request:", {
-        userId,
-        hasAmount: !!data.amount,
-        hasCurrency: !!data.currency,
-        hasInvoiceId: !!data.invoiceId,
-        hasCheckoutUrl: !!data.checkoutUrl,
-        checkoutUrl: data.checkoutUrl,
-      });
-
-      // Extract payment details
       const amount = Number(data.amount);
-      const currency = data.currency || "KES";
-      let invoiceId = data.invoiceId || null;
-      const checkoutUrl = data.checkoutUrl || null;
-      const phoneNumber = data.phoneNumber || null;
-      const metadata = data.metadata || {};
+      const currency = String(data.currency || FUNDING_CURRENCY).toUpperCase();
+      const email = data.email || auth.token?.email || null;
+      const callbackUrl = data.callbackUrl || data.redirectUrl || null;
+      const metadata = data.metadata && typeof data.metadata === "object" ? data.metadata : {};
+      const idempotencyKey = data.idempotencyKey || data.requestId || null;
 
-      // Validate required fields
       if (!amount || amount <= 0) {
         throw new HttpsError("invalid-argument", "Amount must be a positive number");
       }
@@ -77,47 +112,46 @@ exports.createPayment = onCall(
         throw new HttpsError("invalid-argument", "Currency is required");
       }
 
-      // Extract invoice / payment-link ID from checkout URL if not provided directly
-      if (!invoiceId && checkoutUrl) {
-        invoiceId = extractInvoiceIdFromCheckoutUrl(checkoutUrl);
-      }
-
-      if (!invoiceId) {
-        throw new HttpsError(
-            "invalid-argument",
-            "Either invoiceId or checkoutUrl with invoice ID must be provided",
-        );
-      }
+      assertNoLegacyIntaSendClientCheckout(data, userId);
 
       try {
-        console.log(`🔄 Creating payment order for user: ${userId}`, {
+        logger.info("createPayment.request", {
+          userId,
           amount,
           currency,
-          invoiceId: invoiceId,
+          hasCallbackUrl: !!callbackUrl,
+          headers: sanitizeCallableHeaders(request.rawRequest?.headers),
         });
 
-        const response = await paymentsLib.createPaymentOrder(userId, {
+        const response = await c2bFundingBridge.createC2bTopupCheckout({
+          userId,
           amount,
           currency,
-          invoiceId,
-          checkoutUrl,
-          phoneNumber,
+          email,
+          callbackUrl,
           metadata,
+          idempotencyKey,
+          correlationId: data.correlationId || null,
         });
 
-        console.log("✅ Returning payment creation response:", {
+        logger.info("createPayment.success", {
+          userId,
           orderId: response.orderId,
           invoiceId: response.invoiceId,
-          hasCheckoutUrl: !!response.checkoutUrl,
+          checkoutUrl: response.checkoutUrl || null,
+          provider: response.provider || null,
         });
 
         return response;
       } catch (error) {
-        console.error("❌ Error creating payment order:", {
-          userId: userId,
+        logger.error("createPayment.failed", {
+          userId,
           error: error.message,
-          stack: error.stack,
         });
+
+        if (error instanceof HttpsError) {
+          throw error;
+        }
 
         throw new HttpsError("internal", `Failed to create payment order: ${error.message}`);
       }
@@ -258,14 +292,15 @@ exports.createDirectPayout = onCall(
 );
 
 /**
- * Callable: Mark payment link as opened (client calls when user opens IntaSend checkout)
- * Accepts invoiceId, intasendCheckoutId, or paymentId. Idempotent; returns { success: true }.
+ * Callable: Mark payment link as opened, or confirm Paystack funding after redirect.
+ * Accepts invoiceId / paymentId (Paystack reference or funding order id).
  */
 exports.handlePaymentWebhook = onCall(
     {
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
+      secrets: [paystackSecretKey],
     },
     async (request) => {
       const auth = request.auth;
@@ -276,7 +311,26 @@ exports.handlePaymentWebhook = onCall(
       const data = (raw && typeof raw === "object" && !Array.isArray(raw)) ? raw : {};
       const invoiceId =
         data.invoiceId || data.intasendCheckoutId || data.paymentId ||
+        data.fundingOrderId || data.orderId ||
         (typeof raw === "string" ? raw : null);
+
+      if (invoiceId) {
+        const byReference = await fundingOrderService.findByProviderReference("paystack", invoiceId);
+        const byId = !byReference ?
+          await fundingOrderService.getFundingOrderForUser(auth.uid, invoiceId) :
+          null;
+        const fundingOrder = byReference || byId;
+
+        if (fundingOrder && fundingOrder.userId === auth.uid) {
+          const result = await fundingWebhookService.confirmFundingOrder(auth.uid, fundingOrder.id);
+          return {
+            success: result.success !== false,
+            duplicate: result.duplicate || false,
+            fundingOrderId: fundingOrder.id,
+            invoiceId: fundingOrder.providerReference,
+          };
+        }
+      }
 
       await paymentsLib.markPaymentLinkOpened(auth.uid, invoiceId);
       return {success: true};

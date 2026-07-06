@@ -179,14 +179,16 @@ async function getBalances(userId) {
 }
 
 /**
- * Dual-write USD balance to users document (Flutter backward compat).
+ * Dual-write fiat balance to users document (Flutter backward compat).
  * @param {string} userId
- * @param {number} newUsdBalance
+ * @param {string} asset USD | KES
+ * @param {number} newBalance
  * @returns {Promise<{ previousBalance: number, newBalance: number }>}
  */
-async function dualWriteUsdBalance(userId, newUsdBalance) {
+async function dualWriteFiatBalance(userId, asset, newBalance) {
+  const currency = String(asset).toUpperCase();
   const userRef = admin.firestore().collection(config.collections.users).doc(userId);
-  let result = { previousBalance: 0, newBalance: newUsdBalance };
+  let result = { previousBalance: 0, newBalance };
 
   await admin.firestore().runTransaction(async (tx) => {
     const doc = await tx.get(userRef);
@@ -194,26 +196,48 @@ async function dualWriteUsdBalance(userId, newUsdBalance) {
       throw new Error(`User ${userId} not found`);
     }
     const data = doc.data();
-    const previousBalance = Number(data.usdBalance ?? data.USD ?? 0);
-    result = { previousBalance, newBalance: newUsdBalance };
 
+    const usdBalance = Number(data.usdBalance ?? data.USD ?? 0);
     const kesBalance = Number(data.kesBalance ?? data.KES ?? 0);
     const usdtBalance = Number(data.usdtBalance ?? data.USDT ?? 0);
 
-    tx.update(userRef, {
-      usdBalance: newUsdBalance,
-      USD: newUsdBalance,
-      fiatBalance: newUsdBalance,
-      wallets: {
-        USD: newUsdBalance,
-        KES: kesBalance,
-        USDT: usdtBalance,
-      },
-      updatedAt: serverTimestamp(),
-    });
+    let previousBalance = 0;
+    const update = { updatedAt: serverTimestamp() };
+
+    if (currency === "USD") {
+      previousBalance = usdBalance;
+      update.usdBalance = newBalance;
+      update.USD = newBalance;
+      update.fiatBalance = newBalance;
+    } else if (currency === "KES") {
+      previousBalance = kesBalance;
+      update.kesBalance = newBalance;
+      update.KES = newBalance;
+    } else {
+      throw new Error(`Unsupported fiat dual-write currency: ${currency}`);
+    }
+
+    update.wallets = {
+      USD: currency === "USD" ? newBalance : usdBalance,
+      KES: currency === "KES" ? newBalance : kesBalance,
+      USDT: usdtBalance,
+    };
+
+    result = { previousBalance, newBalance };
+    tx.update(userRef, update);
   });
 
   return result;
+}
+
+/**
+ * @deprecated Use dualWriteFiatBalance(userId, "USD", balance)
+ * @param {string} userId
+ * @param {number} newUsdBalance
+ * @returns {Promise<{ previousBalance: number, newBalance: number }>}
+ */
+async function dualWriteUsdBalance(userId, newUsdBalance) {
+  return dualWriteFiatBalance(userId, "USD", newUsdBalance);
 }
 
 /**
@@ -259,7 +283,7 @@ async function creditUserFiat(userId, amount, currency = "USD", options = {}) {
     metadata: options.metadata || {},
   });
 
-  const dualWrite = await dualWriteUsdBalance(userId, ledgerResult.newBalance);
+  const dualWrite = await dualWriteFiatBalance(userId, asset, ledgerResult.newBalance);
   await syncUserBalanceToRealtime(userId, asset);
 
   return {
@@ -302,7 +326,7 @@ async function debitUserFiat(userId, amount, currency = "USD", options = {}) {
     metadata: options.metadata || {},
   });
 
-  const dualWrite = await dualWriteUsdBalance(userId, ledgerResult.newBalance);
+  const dualWrite = await dualWriteFiatBalance(userId, asset, ledgerResult.newBalance);
   await syncUserBalanceToRealtime(userId, asset);
 
   return {

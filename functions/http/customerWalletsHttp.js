@@ -4,6 +4,7 @@
  */
 
 const { onRequest } = require("firebase-functions/v2/https");
+const { defineSecret } = require("firebase-functions/params");
 const admin = require("../admin");
 const express = require("express");
 const config = require("../config");
@@ -987,6 +988,9 @@ app.put("/config/fees", requireAdmin, async (req, res) => {
 mountFundingRoutes(app);
 mountFundingOpsRoutes(app);
 
+const paystackSecretKey = defineSecret(config.secrets.paystackSecretKey);
+const paystackSplitCode = defineSecret(config.secrets.paystackSplitCode);
+
 // Export as Firebase Function
 exports.api = onRequest(
   {
@@ -994,6 +998,7 @@ exports.api = onRequest(
     cpu: config.resources.cpu,
     memory: config.resources.memory,
     enforceAppCheck: true,
+    secrets: [paystackSecretKey, paystackSplitCode],
   },
   app,
 );

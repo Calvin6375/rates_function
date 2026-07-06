@@ -10,12 +10,17 @@ const fundingOrderService = require("../services/funding/fundingOrderService");
 const fundingRailService = require("../services/funding/fundingRailService");
 const fundingWebhookService = require("../services/funding/fundingWebhookService");
 const fundingIdempotencyService = require("../services/funding/fundingIdempotencyService");
+const { convertToKesForPaystack } = require("../services/funding/c2bFundingFxService");
 const merchantSettlementService = require("../services/settlement/merchantSettlementService");
+const { resolvePaystackCallbackUrl, buildAppReturnDeepLink, apiBaseUrl } =
+  require("../services/funding/fundingCallbackService");
+const { renderFundingPaymentReturnHtml } = require("../utils/fundingPaymentReturnPage");
 const { recordEvent } = require("../services/ops/paymentTimelineService");
+const opsMetrics = require("../services/ops/opsMetricsService");
 const { createPaymentContext, correlationFromRequest } = require("../utils/paymentContext");
 const { createLogger } = require("../utils/paymentOpsLogger");
 const {
-  FUNDING_CURRENCY,
+  C2B_PAYSTACK_CURRENCY,
   FUNDING_PROVIDERS,
   TIMELINE_EVENT_TYPES,
 } = require("../utils/fundingTypes");
@@ -26,6 +31,51 @@ const logger = createLogger({ service: "fundingHttp" });
  * @param {import("express").Express} app
  */
 function mountFundingRoutes(app) {
+  /**
+   * GET /funding/payment-return — Paystack browser redirect landing (public).
+   * Paystack appends ?reference=…&trxref=… — no WebView required.
+   */
+  app.get("/funding/payment-return", async (req, res) => {
+    const reference = String(req.query.reference || req.query.trxref || "").trim() || null;
+    const deepLink = buildAppReturnDeepLink(reference);
+    const statusUrl = `${apiBaseUrl()}/public/funding/status`;
+
+    res.set("Cache-Control", "no-store");
+    res.status(200).send(renderFundingPaymentReturnHtml({
+      reference,
+      deepLink,
+      statusUrl,
+    }));
+  });
+
+  /**
+   * GET /public/funding/status — poll funding order status by Paystack reference (public).
+   */
+  app.get("/public/funding/status", async (req, res) => {
+    const reference = String(req.query.reference || "").trim();
+    if (!reference) {
+      res.status(400).json({ success: false, error: "reference is required" });
+      return;
+    }
+
+    const order = await fundingOrderService.findByProviderReference(
+        FUNDING_PROVIDERS.paystack,
+        reference,
+    );
+    if (!order) {
+      res.status(404).json({ success: false, error: "Funding order not found" });
+      return;
+    }
+
+    res.status(200).json({
+      success: true,
+      status: order.status,
+      amount: order.amount,
+      currency: order.currency,
+      reference: order.providerReference,
+    });
+  });
+
   /**
    * POST /funding/orders — create funding order and initialize Paystack checkout
    */
@@ -39,6 +89,7 @@ function mountFundingRoutes(app) {
     const userId = auth.userId;
     const body = req.body || {};
     const amount = Number(body.amount);
+    const inputCurrency = String(body.currency || "USD").toUpperCase();
     const provider = String(body.provider || config.funding.defaultProvider).toLowerCase();
     const email = body.email || auth.decodedToken?.email || null;
     const callbackUrl = body.callbackUrl || body.redirectUrl || null;
@@ -54,7 +105,15 @@ function mountFundingRoutes(app) {
       return;
     }
 
-    if (provider !== FUNDING_PROVIDERS.paystack) {
+    let charge;
+    try {
+      charge = await convertToKesForPaystack(amount, inputCurrency);
+    } catch (fxErr) {
+      res.status(400).json({ success: false, error: fxErr.message });
+      return;
+    }
+
+    if (!fundingRailService.listProviders().includes(provider)) {
       res.status(400).json({ success: false, error: `Provider not yet enabled: ${provider}` });
       return;
     }
@@ -107,26 +166,42 @@ function mountFundingRoutes(app) {
         id: orderId,
         userId,
         provider,
-        amount,
-        currency: FUNDING_CURRENCY,
+        amount: charge.amountKes,
+        currency: C2B_PAYSTACK_CURRENCY,
         correlationId: ctx.correlationId,
         fundingRequestId: idempotencyKey,
         metadata: {
           ...metadata,
-          product: "tourist_payments",
+          product: "tourist",
           correlationId: ctx.correlationId,
+          userId,
+          fundingProvider: provider,
+          requestedAmount: charge.requestedAmount,
+          requestedCurrency: charge.requestedCurrency,
+          fxRate: charge.fxRate,
+          paystackCurrency: charge.paystackCurrency,
         },
       });
 
-      const session = await fundingRailService.initializePayment({
-        provider,
-        amount,
-        currency: FUNDING_CURRENCY,
-        email,
-        callbackUrl,
-        providerReference: order.providerReference,
-        metadata: order.metadata,
-      });
+      let session;
+      try {
+        session = await fundingRailService.initializePayment({
+          provider,
+          amount: charge.amountKes,
+          currency: C2B_PAYSTACK_CURRENCY,
+          email,
+          callbackUrl: resolvePaystackCallbackUrl(callbackUrl),
+          providerReference: order.providerReference,
+          fundingOrderId: order.id,
+          userId,
+          correlationId: ctx.correlationId,
+          metadata: order.metadata,
+        });
+        await opsMetrics.increment("funding.checkout.initialized", 1);
+      } catch (initErr) {
+        await opsMetrics.increment("funding.checkout.failed", 1);
+        throw initErr;
+      }
 
       const updated = await fundingOrderService.updateFundingOrder(order.id, {
         providerReference: session.providerReference,
@@ -140,7 +215,13 @@ function mountFundingRoutes(app) {
         eventType: TIMELINE_EVENT_TYPES.order_created,
         provider,
         status: updated.status,
-        metadata: { amount, currency: FUNDING_CURRENCY },
+        metadata: {
+          amount: charge.amountKes,
+          currency: C2B_PAYSTACK_CURRENCY,
+          requestedAmount: charge.requestedAmount,
+          requestedCurrency: charge.requestedCurrency,
+          fxRate: charge.fxRate,
+        },
       });
 
       await recordEvent({

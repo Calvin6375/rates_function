@@ -19,10 +19,10 @@ const logger = createLogger({ service: "fundingWebhook" });
  * @param {string} eventId
  * @returns {Promise<boolean>}
  */
-async function isWebhookDuplicate(eventId) {
+async function isWebhookDuplicate(provider, eventId) {
   if (!eventId) return false;
   const receipt = await webhookReceiptService.getReceipt(
-      webhookReceiptService.receiptDocId("paystack", eventId),
+      webhookReceiptService.receiptDocId(provider, eventId),
   );
   if (!receipt) return false;
   return receipt.status === WEBHOOK_RECEIPT_STATUSES.processed ||
@@ -35,10 +35,10 @@ async function isWebhookDuplicate(eventId) {
  * @param {Object} [ctx]
  * @returns {Promise<void>}
  */
-async function recordWebhookEvent(eventId, payload, ctx = {}) {
+async function recordWebhookEvent(provider, eventId, payload, ctx = {}) {
   if (!eventId) return;
   await webhookReceiptService.updateReceiptStatus(
-      webhookReceiptService.receiptDocId("paystack", eventId),
+      webhookReceiptService.receiptDocId(provider, eventId),
       WEBHOOK_RECEIPT_STATUSES.processed,
       { fundingOrderId: ctx.fundingOrderId || null, correlationId: ctx.correlationId || null },
   );
@@ -57,7 +57,8 @@ async function processFundingEvent(params) {
   const { provider, event, webhookEventId = null, receiptId = null } = params;
   const started = Date.now();
 
-  if (webhookEventId && await isWebhookDuplicate(webhookEventId)) {
+  if (webhookEventId && await isWebhookDuplicate(provider, webhookEventId)) {
+    await opsMetrics.increment("funding.webhook.duplicate", 1);
     return { success: true, duplicate: true };
   }
 
@@ -89,7 +90,7 @@ async function processFundingEvent(params) {
 
   if (fundingOrder.status === FUNDING_STATUSES.completed) {
     if (webhookEventId) {
-      await recordWebhookEvent(webhookEventId, event, {
+      await recordWebhookEvent(provider, webhookEventId, event, {
         fundingOrderId: fundingOrder.id,
         correlationId,
       });
@@ -119,7 +120,7 @@ async function processFundingEvent(params) {
     });
     await opsMetrics.increment("funding.failed", 1);
     if (webhookEventId) {
-      await recordWebhookEvent(webhookEventId, event, {
+      await recordWebhookEvent(provider, webhookEventId, event, {
         fundingOrderId: fundingOrder.id,
         correlationId,
       });
@@ -131,8 +132,15 @@ async function processFundingEvent(params) {
     return { success: true, fundingOrderId: fundingOrder.id };
   }
 
-  const verified = await fundingRailService.verifyPayment(provider, event.providerReference);
+  const verifyStarted = Date.now();
+  const verified = await fundingRailService.verifyPayment(provider, event.providerReference, {
+    correlationId,
+    fundingOrderId: fundingOrder.id,
+  });
+  await opsMetrics.recordTiming("funding.verification", Date.now() - verifyStarted);
+
   if (verified.status !== "success") {
+    await opsMetrics.increment("funding.verification.failed", 1);
     return { success: false, error: "Payment verification failed" };
   }
 
@@ -155,6 +163,7 @@ async function processFundingEvent(params) {
       metadata: { transactionRecordId: result.transactionRecordId },
     });
     await opsMetrics.recordFundingVolume(fundingOrder.amount);
+    await opsMetrics.increment("funding.completed", 1);
     await paymentNotifications.notifyFundingCompleted({
       userId: fundingOrder.userId,
       fundingOrderId: fundingOrder.id,
@@ -174,7 +183,7 @@ async function processFundingEvent(params) {
   });
 
   if (webhookEventId) {
-    await recordWebhookEvent(webhookEventId, event, {
+    await recordWebhookEvent(provider, webhookEventId, event, {
       fundingOrderId: fundingOrder.id,
       correlationId,
     });

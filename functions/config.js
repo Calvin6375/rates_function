@@ -40,6 +40,10 @@ const config = {
     circleApiKey: "CIRCLE_API_KEY",
     circleEntitySecret: "CIRCLE_ENTITY_SECRET",
     paystackSecretKey: "PAYSTACK_SECRET_KEY",
+    paystackPublicKey: "PAYSTACK_PUBLIC_KEY",
+    paystackSplitCode: "PAYSTACK_SPLIT_CODE",
+    paystackCallbackUrl: "PAYSTACK_CALLBACK_URL",
+    paystackWebhookSecret: "PAYSTACK_WEBHOOK_SECRET",
     darajaConsumerKey: "DARAJA_CONSUMER_KEY",
     darajaConsumerSecret: "DARAJA_CONSUMER_SECRET",
     darajaInitiatorPassword: "DARAJA_INITIATOR_PASSWORD",
@@ -152,6 +156,10 @@ const config = {
 
   paystack: {
     secretKey: getEnv("PAYSTACK_SECRET_KEY", null),
+    publicKey: getEnv("PAYSTACK_PUBLIC_KEY", null),
+    splitCode: getEnv("PAYSTACK_SPLIT_CODE", null),
+    callbackUrl: getEnv("PAYSTACK_CALLBACK_URL", null),
+    webhookSecret: getEnv("PAYSTACK_WEBHOOK_SECRET", null),
     baseUrl: getEnv("PAYSTACK_API_BASE_URL", "https://api.paystack.co"),
   },
 
@@ -188,6 +196,14 @@ const config = {
     reservationTtlMinutes: Number(getEnv("FIAT_RESERVATION_TTL_MINUTES", "30")),
     settlementMaxRetries: Number(getEnv("SETTLEMENT_MAX_RETRIES", "5")),
     settlementRetryBaseMs: Number(getEnv("SETTLEMENT_RETRY_BASE_MS", "60000")),
+  },
+
+  /** C2B consumer app — Paystack return / deep link (external browser flow) */
+  c2b: {
+    /** Override `api` base URL for hosted payment-return page */
+    apiBaseUrl: getEnv("C2B_API_BASE_URL", null),
+    /** Deep link opened after Paystack redirect, e.g. truepay://payment/callback */
+    appDeepLink: getEnv("C2B_APP_DEEP_LINK", "truepay://payment/callback"),
   },
 };
 
