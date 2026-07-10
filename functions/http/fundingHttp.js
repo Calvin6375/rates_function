@@ -21,6 +21,7 @@ const { createPaymentContext, correlationFromRequest } = require("../utils/payme
 const { createLogger } = require("../utils/paymentOpsLogger");
 const {
   C2B_PAYSTACK_CURRENCY,
+  FUNDING_CURRENCY,
   FUNDING_PROVIDERS,
   TIMELINE_EVENT_TYPES,
 } = require("../utils/fundingTypes");
@@ -49,7 +50,7 @@ function mountFundingRoutes(app) {
   });
 
   /**
-   * GET /public/funding/status — poll funding order status by Paystack reference (public).
+   * GET /public/funding/status — poll funding order status by provider reference (public).
    */
   app.get("/public/funding/status", async (req, res) => {
     const reference = String(req.query.reference || "").trim();
@@ -58,10 +59,19 @@ function mountFundingRoutes(app) {
       return;
     }
 
-    const order = await fundingOrderService.findByProviderReference(
-        FUNDING_PROVIDERS.paystack,
-        reference,
-    );
+    const providerHint = String(req.query.provider || "").trim().toLowerCase();
+    const providers = providerHint ?
+      [providerHint] :
+      fundingRailService.listProviders();
+
+    let order = null;
+    for (const provider of providers) {
+      order = await fundingOrderService.findByProviderReference(provider, reference);
+      if (order) {
+        break;
+      }
+    }
+
     if (!order) {
       res.status(404).json({ success: false, error: "Funding order not found" });
       return;
@@ -73,11 +83,12 @@ function mountFundingRoutes(app) {
       amount: order.amount,
       currency: order.currency,
       reference: order.providerReference,
+      provider: order.provider,
     });
   });
 
   /**
-   * POST /funding/orders — create funding order and initialize Paystack checkout
+   * POST /funding/orders — create funding order and initialize provider checkout
    */
   app.post("/funding/orders", async (req, res) => {
     const auth = await verifyFirebaseAuth(req);
@@ -93,6 +104,7 @@ function mountFundingRoutes(app) {
     const provider = String(body.provider || config.funding.defaultProvider).toLowerCase();
     const email = body.email || auth.decodedToken?.email || null;
     const callbackUrl = body.callbackUrl || body.redirectUrl || null;
+    const transakAccessToken = body.transakAccessToken || body.accessToken || null;
     const metadata = body.metadata && typeof body.metadata === "object" ? body.metadata : {};
     const idempotencyKey =
       req.get("Idempotency-Key") ||
@@ -105,17 +117,37 @@ function mountFundingRoutes(app) {
       return;
     }
 
-    let charge;
-    try {
-      charge = await convertToKesForPaystack(amount, inputCurrency);
-    } catch (fxErr) {
-      res.status(400).json({ success: false, error: fxErr.message });
-      return;
-    }
-
     if (!fundingRailService.listProviders().includes(provider)) {
       res.status(400).json({ success: false, error: `Provider not yet enabled: ${provider}` });
       return;
+    }
+
+    let chargeAmount = amount;
+    let chargeCurrency = inputCurrency;
+    let chargeMeta = {
+      requestedAmount: amount,
+      requestedCurrency: inputCurrency,
+    };
+
+    if (provider === FUNDING_PROVIDERS.paystack) {
+      try {
+        const charge = await convertToKesForPaystack(amount, inputCurrency);
+        chargeAmount = charge.amountKes;
+        chargeCurrency = C2B_PAYSTACK_CURRENCY;
+        chargeMeta = {
+          requestedAmount: charge.requestedAmount,
+          requestedCurrency: charge.requestedCurrency,
+          fxRate: charge.fxRate,
+          paystackCurrency: charge.paystackCurrency,
+        };
+      } catch (fxErr) {
+        res.status(400).json({ success: false, error: fxErr.message });
+        return;
+      }
+    } else if (provider === FUNDING_PROVIDERS.transak) {
+      chargeCurrency = FUNDING_CURRENCY;
+      chargeMeta.treasuryWallet = process.env.TRANSAK_TREASURY_WALLET || config.transak?.treasuryWallet || null;
+      chargeMeta.cryptoCurrency = process.env.TRANSAK_DEFAULT_CRYPTO || config.transak?.defaultCrypto || "USDT";
     }
 
     try {
@@ -166,8 +198,8 @@ function mountFundingRoutes(app) {
         id: orderId,
         userId,
         provider,
-        amount: charge.amountKes,
-        currency: C2B_PAYSTACK_CURRENCY,
+        amount: chargeAmount,
+        currency: chargeCurrency,
         correlationId: ctx.correlationId,
         fundingRequestId: idempotencyKey,
         metadata: {
@@ -175,11 +207,9 @@ function mountFundingRoutes(app) {
           product: "tourist",
           correlationId: ctx.correlationId,
           userId,
-          fundingProvider: provider,
-          requestedAmount: charge.requestedAmount,
-          requestedCurrency: charge.requestedCurrency,
-          fxRate: charge.fxRate,
-          paystackCurrency: charge.paystackCurrency,
+          provider,
+          environment: process.env.GCLOUD_PROJECT || config.transak?.environment || "staging",
+          ...chargeMeta,
         },
       });
 
@@ -187,14 +217,15 @@ function mountFundingRoutes(app) {
       try {
         session = await fundingRailService.initializePayment({
           provider,
-          amount: charge.amountKes,
-          currency: C2B_PAYSTACK_CURRENCY,
+          amount: chargeAmount,
+          currency: chargeCurrency,
           email,
           callbackUrl: resolvePaystackCallbackUrl(callbackUrl),
           providerReference: order.providerReference,
           fundingOrderId: order.id,
           userId,
           correlationId: ctx.correlationId,
+          transakAccessToken,
           metadata: order.metadata,
         });
         await opsMetrics.increment("funding.checkout.initialized", 1);
@@ -203,11 +234,21 @@ function mountFundingRoutes(app) {
         throw initErr;
       }
 
-      const updated = await fundingOrderService.updateFundingOrder(order.id, {
+      const patch = {
         providerReference: session.providerReference,
         providerTransactionId: session.providerTransactionId || null,
         checkoutUrl: session.checkoutUrl,
-      });
+      };
+      if (provider === FUNDING_PROVIDERS.transak && session.raw) {
+        patch.metadata = {
+          ...order.metadata,
+          quoteId: session.raw.quote?.quoteId || order.metadata.quoteId || null,
+          cryptoAmount: session.raw.cryptoAmount || session.raw.quote?.cryptoAmount || null,
+          treasuryWallet: session.raw.treasuryWallet || order.metadata.treasuryWallet || null,
+        };
+      }
+
+      const updated = await fundingOrderService.updateFundingOrder(order.id, patch);
 
       await recordEvent({
         fundingOrderId: order.id,
@@ -216,11 +257,9 @@ function mountFundingRoutes(app) {
         provider,
         status: updated.status,
         metadata: {
-          amount: charge.amountKes,
-          currency: C2B_PAYSTACK_CURRENCY,
-          requestedAmount: charge.requestedAmount,
-          requestedCurrency: charge.requestedCurrency,
-          fxRate: charge.fxRate,
+          amount: chargeAmount,
+          currency: chargeCurrency,
+          ...chargeMeta,
         },
       });
 

@@ -19,9 +19,62 @@ It marks the order’s `linkOpenedAt` and returns `{ "success": true }`.
 
 ---
 
-## 2. “Creating order” – Firestore permission-denied (client change required)
+## 2. C2B top-up – remove client-side IntaSend checkout (Flutter change required)
 
-The `orders` collection is **write-protected**: only Cloud Functions (admin SDK) can create or update orders. The `createPayment` callable **already creates the order** in `paymentsLib.createPaymentOrder`.
+C2B tourist card top-up now uses **Paystack hosted checkout** initialized **server-side** by `createPayment`. The backend returns `checkoutUrl` (e.g. `https://checkout.paystack.com/…`).
+
+**Do not** create an IntaSend checkout session in Flutter before calling `createPayment`. If the app still sends `intasendCheckoutId` or an IntaSend `checkoutUrl`, the callable returns `failed-precondition` and the app must be updated.
+
+### Wrong (current bug)
+
+```dart
+// 1. Creates IntaSend checkout client-side
+final intaSendUrl = await intaSendService.createCheckout(...);
+
+// 2. Calls createPayment with IntaSend fields
+final result = await createPayment({
+  'amount': 200,
+  'currency': 'KES',
+  'checkoutUrl': intaSendUrl,           // remove
+  'intasendCheckoutId': checkoutId,     // remove
+});
+
+// 3. BUG: opens IntaSend URL instead of Paystack URL from response
+await launchUrl(Uri.parse(intaSendUrl));
+```
+
+### Correct (Paystack C2B)
+
+```dart
+final result = await createPayment({
+  'amount': 200,
+  'currency': 'KES',   // or USD — backend converts to KES for Paystack
+  'email': user.email,
+});
+
+final data = result.data as Map<String, dynamic>;
+final checkoutUrl = data['checkoutUrl'] as String;  // Paystack URL from server
+
+await launchUrl(
+  Uri.parse(checkoutUrl),
+  mode: LaunchMode.externalApplication,
+);
+
+// After Paystack redirect / deep link:
+await handlePaymentWebhook({'invoiceId': data['invoiceId']});
+```
+
+**Request:** `amount`, `currency`, optional `email` only.
+
+**Response:** use `checkoutUrl` (aliases: `url`, `authorization_url`) — never a locally built IntaSend URL.
+
+The `orders` collection remains **write-protected**; `createPayment` creates the funding order on the server. Do not write to `orders` from the client.
+
+---
+
+## 3. “Creating order” – Firestore permission-denied (client change required)
+
+The `orders` collection is **write-protected**: only Cloud Functions (admin SDK) can create or update orders. The `createPayment` callable creates the funding order on the server via the Paystack C2B bridge.
 
 Your Flutter app must **not** create an order document in Firestore from the client. That causes:
 
@@ -32,18 +85,16 @@ Your Flutter app must **not** create an order document in Firestore from the cli
 **What to do in the Flutter app**
 
 1. Remove any client-side logic that writes to the `orders` collection (e.g. in `PaymentService`, `IntaSendService`, or `topup_page.dart` when you see logs like “Creating order for user”).
-2. Rely only on `createPayment` for order creation. The flow should be:
-   - Call **IntaSend** to create a checkout session.
-   - Call **`createPayment`** with `checkoutUrl`, `intasendCheckoutId` (or `invoiceId`), `amount`, `currency`, etc.  
-     → This creates the order and invoice mapping on the server.
-   - Optionally call **`handlePaymentWebhook`** with the checkout/invoice id when the user opens the payment link (to set `linkOpenedAt`).
-   - Open the checkout URL in the browser.
+2. Remove client-side **IntaSend checkout session** creation for C2B top-up (see section 2 above).
+3. Call **`createPayment`** with `amount`, `currency`, and optional `email` only — **not** `checkoutUrl` / `intasendCheckoutId`.
+4. Open **`checkoutUrl` from the createPayment response** (Paystack) in the browser.
+5. Optionally call **`handlePaymentWebhook`** with `invoiceId` from the response when the user returns from checkout.
 
 If you need an “order” reference in the client after `createPayment`, use the `orderId` (and `invoiceId` / `paymentId`) returned by `createPayment`; do not create a new `orders` document from the client.
 
 ---
 
-## 3. "Creating order" for swap – use `createSwapOrder` callable
+## 4. "Creating order" for swap – use `createSwapOrder` callable
 
 The `orders` collection is write-protected. For **swap** (e.g. USDT → USD), do not create an order document from the client. Call the **`createSwapOrder`** callable instead. It creates the order in Firestore, debits the source currency and credits the destination in one transaction, and returns `orderId` and `newBalances`.
 
@@ -51,7 +102,7 @@ The `orders` collection is write-protected. For **swap** (e.g. USDT → USD), do
 
 ---
 
-## 4. "Creating order" for send money – use `createSendMoneyOrder` callable
+## 5. "Creating order" for send money – use `createSendMoneyOrder` callable
 
 The `orders` collection is write-protected. For **send money** (P2P transfer), do not create an order document from the client. Call the **`createSendMoneyOrder`** callable instead. It creates the order in Firestore, debits the sender and credits the recipient in one transaction, and returns `orderId`, `senderNewBalances`, and `recipientNewBalances`.
 

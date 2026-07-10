@@ -4,7 +4,7 @@
 
 TruePay is a Firebase-based backend for a cryptocurrency exchange and payments platform serving African markets. It powers:
 
-- **Consumer app (C2B)** — users exchange USD for local fiat (KES, NGN, GHS) via USDT using Binance P2P rates, top up wallets through IntaSend, run swap / send-money flows, and hold **USDC** in Circle developer-controlled wallets.
+- **Consumer app (C2B)** — users exchange USD for local fiat (KES, NGN, GHS) via USDT using Binance P2P rates, top up wallets via **Paystack** (Tourist card checkout) or **IntaSend** (mobile money), pay merchants from USD balance (Daraja settlement), run swap / send-money flows, and hold **USDC** in Circle developer-controlled wallets.
 - **B2B partners** — hotels, lodges, fintechs, and similar businesses integrate via API key, manage teams in a portal, collect payments through hosted payment links, and settle to bank accounts.
 - **Platform operations** — TruePay staff use admin callables and the B2B super-admin portal to manage users, partners, and compliance.
 
@@ -23,14 +23,28 @@ Firebase project ID in this repo: **`truepay-72060`**. Default region: **`us-cen
 
 ### 2. Consumer payment processing
 
-- **IntaSend** — mobile money checkout, webhooks, wallet top-ups
+- **Paystack** — Tourist wallet top-ups via hosted card checkout (`createPayment` callable and `POST /funding/orders`); see [§3 Tourist Payments](#3-tourist-payments-paystack-funding)
+- **IntaSend** — mobile money checkout, webhooks, direct top-ups, B2B payment links
 - **TransFi** — additional top-up webhook path
 - **Circle** — USDC deposits and on-chain sends via developer-controlled wallets
-- Callables: `createPayment`, `createDirectTopup`, `createDirectPayout`, `createSwapOrder`, `createSendMoneyOrder`, `requestPasswordReset`
-- Webhooks: `handleTopUpWebhook`, `handleTransFiTopUpWebhook`, `handlePaymentWebhook`, `handleCircleWebhook`
+- Callables: `createPayment`, `createDirectTopup`, `createDirectPayout`, `createSwapOrder`, `createSendMoneyOrder`, `handlePaymentWebhook`, `requestPasswordReset`
+- Webhooks: `handlePaystackWebhook`, `handleTopUpWebhook`, `handleTransFiTopUpWebhook`, `handleCircleWebhook`, `handleDarajaCallback`
 - Idempotent processing; HMAC / challenge verification on webhooks
 
-### 3. Circle USDC crypto wallets
+### 3. Tourist Payments (Paystack funding)
+
+Tourist Payments is the C2B funding and merchant-settlement layer for international card top-ups and USD → KES merchant payouts.
+
+- **Paystack** — hosted checkout with transaction split (`PAYSTACK_SPLIT_CODE`); charges in KES; server-side `verifyPayment` before any wallet credit
+- **Entry points** — `createPayment` callable (legacy-compatible response for Flutter) and REST on **`api`**: `POST /funding/orders`, `GET /funding/orders/:id`, `POST /funding/confirm`, `POST /funding/merchant-payments`
+- **Funding flow** — `c2bFundingBridgeService` → `fundingOrderService` → `fundingRailService` → `paystackProvider`; browser return via `GET /api/funding/payment-return` → deep link `truepay://payment/callback`
+- **Webhook** — `handlePaystackWebhook` verifies `x-paystack-signature`, persists `webhookReceipts`, delegates to `fundingWebhookService` (never credits wallet without server-side verify)
+- **Merchant settlement** — tourist pays merchant from USD balance → `merchantSettlementService` → Safaricom **Daraja B2B** → `handleDarajaCallback` (Paystack is not involved in merchant payouts)
+- **Data** — `fundingOrders`, `fundingIdempotencyKeys`, `merchantDirectory`, `merchantPayments`, `settlementJobs`, fiat ledger (`fiatLedger`, `walletAggregatesFiat`)
+- **Scheduled jobs** — `reconcileFundingOrders` (every 15m), `retrySettlementJobs`, `releaseExpiredReservations`, `reconcileWalletIntegrity`
+- See [`PAYSTACK_TOURIST.md`](./PAYSTACK_TOURIST.md), [`PAYMENT_LIFECYCLE.md`](./PAYMENT_LIFECYCLE.md), and [`FUNDING_OPS.md`](./FUNDING_OPS.md)
+
+### 4. Circle USDC crypto wallets
 
 - **Developer-controlled wallets** via Circle API — backend never holds private keys
 - REST surface: **`cryptoApi`** — `GET /crypto/wallet`, `/crypto/balance`, `/crypto/transactions`; `POST /crypto/send`
@@ -39,15 +53,16 @@ Firebase project ID in this repo: **`truepay-72060`**. Default region: **`us-cen
 - Scheduled **`reconcileCircleLedger`** job (every 6h) corrects ledger drift against Circle on-chain balances
 - See [`CIRCLE.md`](./CIRCLE.md) (backend) and [`circle_c2b.md`](./circle_c2b.md) (Flutter integration)
 
-### 4. Wallet management
+### 5. Wallet management
 
 - **Fiat (Firestore)** — master balances and transaction history in `users` / `customerWallets`
+- **Tourist USD (fiat ledger)** — append-only `fiatLedger` + `walletAggregatesFiat` for Paystack-funded balances; `fiatReservations` for merchant settlement holds
 - **Fiat (Realtime Database)** — fast cache at `wallet/{userId}/fiat/{currency}` (clients should read here)
 - **USDC (Firestore ledger)** — append-only `cryptoLedger`, aggregate cache, reservations; separate from fiat
 - **Partner wallets** — separate `wallets` collection with `ownerType: 'partner'`
 - Balance writes sync to RTDB via shared helpers (not a separate exported trigger)
 
-### 5. Identity & access
+### 6. Identity & access
 
 - Firebase Authentication as the single IdP for consumer app, partner dashboard, and platform admin
 - **Custom claims** (`userType`, `role`, `partnerId`) — see [`FRONTEND_AUTH_HANDOFF.md`](./FRONTEND_AUTH_HANDOFF.md) and [`auth.md`](./auth.md)
@@ -59,13 +74,13 @@ Firebase project ID in this repo: **`truepay-72060`**. Default region: **`us-cen
 - `userBootstrap` callable and `onUserCreated` trigger initialize profiles and wallets
 - `onAuthUserDeleted` cleans up Firestore / RTDB user data
 
-### 6. Admin dashboard (consumer)
+### 7. Admin dashboard (consumer)
 
 - Admin callables in `adminHttp.js` (balance adjust, KYC, commission config, IntaSend status, orphan pruning)
 - Custom claim helpers: `setAdminClaim`, `removeAdminClaim`
 - Sensitive REST routes on `api` require Firebase custom claim **`admin: true`** (or new `userType: "admin"`)
 
-### 7. B2B platform
+### 8. B2B platform
 
 Three HTTP surfaces (see [`B2B_docs.md`](./B2B_docs.md)):
 
@@ -110,8 +125,8 @@ Exports live in `functions/index.js`. Business logic sits in **`services/`**; HT
  │ notifications│              │ rates        │              │ /portal/*    │
  │ callables    │              │ payments     │              │ onboarding   │
  │ webhooks     │              │ checkout     │              │ payment links│
- └──────┬───────┘              │ wallet, tx   │              │ sandbox tests│
-        │                      └──────┬───────┘              └──────┬───────┘
+ │ funding/*    │              │ wallet, tx   │              │ sandbox tests│
+ └──────┬───────┘              └──────┬───────┘              └──────┬───────┘
         │                             │                             │
         └─────────────────────────────┼─────────────────────────────┘
                                       ▼
@@ -119,6 +134,8 @@ Exports live in `functions/index.js`. Business logic sits in **`services/`**; HT
  │ services/ · libs/                                                             │
  │ walletService · transactionService · partnerService · paymentLinkService ·    │
  │ b2bOnboardingService · b2bPortalSandboxService · paymentRailService ·         │
+ │ funding/* (fundingRailService, paystackProvider, c2bFundingBridgeService) ·  │
+ │ settlement/* (merchantSettlementService, darajaRail) ·                        │
  │ circle/* (circleService, circleRailAdapter, circleWebhookService) ·           │
  │ ledger/* (ledgerService, reservationService) · sync/rtdbSyncService · …       │
  └──────────────────────────────────────────────────────────────────────────────┘
@@ -128,10 +145,13 @@ Exports live in `functions/index.js`. Business logic sits in **`services/`**; HT
  ┌───────────────┐           ┌───────────────┐           ┌───────────────┐
  │ Firestore     │           │ Realtime DB   │           │ External APIs │
  │ users, orders │           │ fiat wallet   │           │ Binance P2P   │
- │ partners      │           │ crypto USDC   │           │ IntaSend      │
- │ wallets       │           │ rates         │           │ TransFi       │
- │ onboarding    │           │               │           │ Circle        │
- │ paymentLinks  │           │               │           │               │
+ │ partners      │           │ crypto USDC   │           │ Paystack      │
+ │ wallets       │           │ rates         │           │ IntaSend      │
+ │ onboarding    │           │               │           │ TransFi       │
+ │ paymentLinks  │           │               │           │ Circle        │
+ │ fundingOrders │           │               │           │ Daraja (M-Pesa)│
+ │ merchantPay.  │           │               │           │               │
+ │ settlementJobs│           │               │           │               │
  │ cryptoLedger  │           │               │           │               │
  │ walletAggreg. │           │               │           │               │
  │ transaction   │           │               │           │               │
@@ -142,6 +162,7 @@ Exports live in `functions/index.js`. Business logic sits in **`services/`**; HT
 **How to read this**
 
 - **Consumer app (fiat)** → `api`, `transactionsApi`, `notificationsApi`, payment callables, IntaSend/TransFi webhooks. Data in `users`, `customerWallets`, orders, RTDB fiat wallet paths.
+- **Consumer app (Tourist / Paystack)** → `createPayment`, `handlePaymentWebhook`, `handlePaystackWebhook`, `api` `/funding/*` routes. Source of truth in `fundingOrders`; credits via fiat ledger. Merchant payouts via `merchantSettlementService` + Daraja.
 - **Consumer app (USDC)** → `cryptoApi`, `handleCircleWebhook`, `reconcileCircleLedger`. Ledger in `cryptoLedger` / `walletAggregates`; RTDB at `wallet/{uid}/crypto/USDC` is display-only.
 - **B2B integrations** → `partner` with per-partner API key; use `partnerSandbox` for pre-live testing without Firestore partner activation.
 - **B2B portal** → `b2bPortal` for humans: platform admins manage partners; org admins manage members, payment links, and onboarding. Live Partner API stays blocked until partner `status` is **`active`**.
@@ -167,7 +188,9 @@ See [`functions/BACKEND_ARCHITECTURE.md`](./functions/BACKEND_ARCHITECTURE.md) f
 - **Firebase Authentication** — user auth and custom claims
 - **Node.js 22**
 - **Express** — HTTP routing for REST functions
-- **IntaSend** — consumer and B2B payment links
+- **Paystack** — Tourist card funding (hosted checkout, webhooks, transaction splits)
+- **IntaSend** — consumer mobile money and B2B payment links
+- **Safaricom Daraja** — tourist merchant settlement (B2B payouts)
 - **Binance P2P API** — exchange rate source
 - **Circle Developer-Controlled Wallets** — USDC wallet creation, on-chain transfers, webhooks
 
@@ -184,9 +207,18 @@ See [`functions/BACKEND_ARCHITECTURE.md`](./functions/BACKEND_ARCHITECTURE.md) f
 ### Payment system (consumer fiat)
 
 1. Client creates order via callable or REST
-2. User pays on IntaSend / TransFi
-3. Webhook verifies signature and resolves user (phone, order, metadata)
+2. User pays on Paystack (Tourist), IntaSend, or TransFi
+3. Webhook verifies signature and resolves user (reference, order, metadata)
 4. Firestore balance update (transaction-safe) → RTDB sync → audit log
+
+### Tourist Payments (Paystack + Daraja)
+
+1. Flutter calls `createPayment` or `POST /funding/orders` with amount (USD or KES)
+2. Backend creates `fundingOrders` record, initializes Paystack checkout (KES charge + `split_code`)
+3. User pays on Paystack hosted checkout; return page deep-links to app (`truepay://payment/callback`)
+4. `handlePaystackWebhook` verifies signature → server-side `verifyPayment` → `completeFundingOrder` → fiat ledger credit
+5. Tourist pays merchant from USD balance → `merchantSettlementService` reserves fiat → Daraja B2B → `handleDarajaCallback`
+6. `reconcileFundingOrders` recovers stale pending orders; `retrySettlementJobs` retries failed Daraja payouts
 
 ### Circle USDC (consumer crypto)
 
@@ -212,7 +244,7 @@ See [`functions/BACKEND_ARCHITECTURE.md`](./functions/BACKEND_ARCHITECTURE.md) f
 
 ## Security features
 
-- **Webhook verification** — IntaSend HMAC / challenge; TransFi secret; Circle entity secret / signature
+- **Webhook verification** — Paystack HMAC (`x-paystack-signature`); IntaSend HMAC / challenge; TransFi secret; Circle entity secret / signature; Daraja callback validation
 - **Firebase Auth** — required on callables, `cryptoApi`, and portal routes
 - **Admin access** — `userType: "admin"` or legacy custom claim `admin: true` (master UID allowlist for super-admin)
 - **Partner API** — `X-API-KEY`; rejected when partner `status` is not active
@@ -225,7 +257,7 @@ See [`functions/BACKEND_ARCHITECTURE.md`](./functions/BACKEND_ARCHITECTURE.md) f
 
 ## Supported currencies
 
-- **Fiat:** KES, NGN, GHS (+ USD as base)
+- **Fiat:** KES, NGN, GHS (+ USD as Tourist wallet base; Paystack charges in KES)
 - **Crypto (P2P rates):** USDT
 - **Crypto (Circle wallets):** USDC — separate ledger and RTDB path from fiat/USDT
 - **SafariCoin (SFRC):** mock placeholder only (`safariCoinService` / `safariCoinWallets`)
@@ -242,9 +274,13 @@ functions/
 │
 ├── http/                       # Thin HTTP / callable handlers
 │   ├── customerWalletsHttp.js  # api — rates, wallets, register, admin REST
+│   ├── fundingHttp.js          # Tourist Payments REST (mounted on api)
+│   ├── fundingOpsHttp.js       # Funding ops / metrics (mounted on api)
+│   ├── paystackWebhookHttp.js  # handlePaystackWebhook
+│   ├── darajaCallbackHttp.js   # handleDarajaCallback
 │   ├── cryptoApi.js            # cryptoApi — USDC wallet, balance, send
 │   ├── circleWebhookHttp.js    # handleCircleWebhook
-│   ├── paymentsHttp.js         # Payment callables
+│   ├── paymentsHttp.js         # Payment callables (createPayment → Paystack)
 │   ├── webhookApi.js           # IntaSend + TransFi webhooks
 │   ├── ratesHttp.js            # Scheduled + callable rates
 │   ├── arbitrageHttp.js
@@ -269,6 +305,17 @@ functions/
 │   ├── paymentRailService.js
 │   ├── customerSelfRegistrationService.js
 │   ├── platformConsumerService.js
+│   ├── funding/                # Tourist Payments — Paystack funding layer
+│   │   ├── fundingRailService.js
+│   │   ├── fundingOrderService.js
+│   │   ├── fundingWebhookService.js
+│   │   ├── c2bFundingBridgeService.js
+│   │   ├── paystackRail.js
+│   │   └── providers/paystackProvider.js
+│   ├── settlement/             # Tourist merchant payouts — Daraja
+│   │   ├── merchantSettlementService.js
+│   │   ├── settlementRailService.js
+│   │   └── darajaRail.js
 │   ├── circle/                 # Circle USDC integration
 │   │   ├── circleService.js
 │   │   ├── circleRailAdapter.js
@@ -296,7 +343,11 @@ functions/
 │
 ├── jobs/
 │   ├── rateUpdater.js
-│   └── reconcileCircleLedger.js
+│   ├── reconcileCircleLedger.js
+│   ├── reconcileFundingOrders.js
+│   ├── retrySettlementJobs.js
+│   ├── releaseExpiredReservations.js
+│   └── reconcileWalletIntegrity.js
 │
 ├── scripts/                    # One-off ops / backfill scripts
 │   ├── register-circle-entity-secret.js
@@ -329,8 +380,10 @@ functions/
 
 4. **Secrets / config**
    - Firebase secrets: `INTASEND_SECRET`, `INTASEND_CHALLENGE`, `INTASEND_SECRET_KEY`, `INTASEND_PUBLISHABLE_KEY`, `TRANSFI_WEBHOOK_SECRET`
+   - Paystack (Tourist): `PAYSTACK_SECRET_KEY`, `PAYSTACK_SPLIT_CODE` (+ optional: `PAYSTACK_CALLBACK_URL`, `PAYSTACK_WEBHOOK_SECRET`, `PAYSTACK_PUBLIC_KEY`)
+   - Daraja (merchant settlement): `DARAJA_CONSUMER_KEY`, `DARAJA_CONSUMER_SECRET`, `DARAJA_INITIATOR_PASSWORD` (+ `DARAJA_RESULT_URL` for live callbacks)
    - Circle: `CIRCLE_API_KEY`, `CIRCLE_ENTITY_SECRET` (+ env: `CIRCLE_WALLET_SET_ID`, `CIRCLE_BLOCKCHAIN`, `CIRCLE_USDC_TOKEN_ID`, `CIRCLE_ENV`)
-   - Optional: `B2B_SANDBOX_PUBLIC_API_KEY`, `FIREBASE_WEB_API_KEY`, `PAYMENT_LINK_BASE_URL`, `MASTER_ADMIN_EMAIL`
+   - Optional: `B2B_SANDBOX_PUBLIC_API_KEY`, `FIREBASE_WEB_API_KEY`, `PAYMENT_LINK_BASE_URL`, `MASTER_ADMIN_EMAIL`, `C2B_APP_DEEP_LINK`, `FUNDING_DEFAULT_PROVIDER`
    - Firestore `config/fees` document
 
 5. **Ops scripts** (from `functions/`)
@@ -349,6 +402,7 @@ functions/
    ```bash
    firebase deploy --only functions:b2bPortal,functions:partnerSandbox
    firebase deploy --only functions:cryptoApi,functions:handleCircleWebhook,functions:reconcileCircleLedger
+   firebase deploy --only functions:handlePaystackWebhook,functions:reconcileFundingOrders,functions:retrySettlementJobs
    ```
 
 ---
@@ -359,6 +413,9 @@ functions/
 |----------|----------|----------|
 | [`readme.md`](./readme.md) | Backend / ops | Full function reference, troubleshooting |
 | [`api.md`](./api.md) | Consumer frontend | REST + callable integration |
+| [`PAYSTACK_TOURIST.md`](./PAYSTACK_TOURIST.md) | Consumer frontend (Flutter) | Paystack Tourist funding — `createPayment`, webhooks, deep links |
+| [`PAYMENT_LIFECYCLE.md`](./PAYMENT_LIFECYCLE.md) | Backend / ops | End-to-end funding + settlement correlation and flows |
+| [`FUNDING_OPS.md`](./FUNDING_OPS.md) | Backend / ops | Tourist Payments runbook, scheduled jobs, incident response |
 | [`CIRCLE.md`](./CIRCLE.md) | Backend / ops | Circle USDC architecture, ledger model, webhooks |
 | [`circle_c2b.md`](./circle_c2b.md) | Consumer frontend (Flutter) | cryptoApi integration guide |
 | [`auth.md`](./auth.md) | All frontend teams | Authentication and authorization model |

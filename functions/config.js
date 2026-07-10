@@ -44,6 +44,9 @@ const config = {
     paystackSplitCode: "PAYSTACK_SPLIT_CODE",
     paystackCallbackUrl: "PAYSTACK_CALLBACK_URL",
     paystackWebhookSecret: "PAYSTACK_WEBHOOK_SECRET",
+    transakApiKey: "TRANSAK_API_KEY",
+    transakSecretKey: "TRANSAK_SECRET_KEY",
+    transakWebhookSecret: "TRANSAK_WEBHOOK_SECRET",
     darajaConsumerKey: "DARAJA_CONSUMER_KEY",
     darajaConsumerSecret: "DARAJA_CONSUMER_SECRET",
     darajaInitiatorPassword: "DARAJA_INITIATOR_PASSWORD",
@@ -161,6 +164,20 @@ const config = {
     callbackUrl: getEnv("PAYSTACK_CALLBACK_URL", null),
     webhookSecret: getEnv("PAYSTACK_WEBHOOK_SECRET", null),
     baseUrl: getEnv("PAYSTACK_API_BASE_URL", "https://api.paystack.co"),
+  },
+
+  transak: {
+    apiKey: getEnv("TRANSAK_API_KEY", null),
+    secretKey: getEnv("TRANSAK_SECRET_KEY", null),
+    webhookSecret: getEnv("TRANSAK_WEBHOOK_SECRET", null),
+    environment: getEnv("TRANSAK_ENVIRONMENT", "staging"),
+    baseUrl: getEnv("TRANSAK_API_BASE_URL", null),
+    partnersBaseUrl: getEnv("TRANSAK_PARTNERS_API_BASE_URL", null),
+    defaultFiat: getEnv("TRANSAK_DEFAULT_FIAT", "USD"),
+    defaultCrypto: getEnv("TRANSAK_DEFAULT_CRYPTO", "USDT"),
+    defaultNetwork: getEnv("TRANSAK_DEFAULT_NETWORK", "ethereum"),
+    treasuryWallet: getEnv("TRANSAK_TREASURY_WALLET", null),
+    referrerDomain: getEnv("TRANSAK_REFERRER_DOMAIN", "truepay.africa"),
   },
 
   /** Safaricom Daraja — stub mode when credentials absent */
