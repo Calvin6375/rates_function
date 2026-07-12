@@ -63,9 +63,41 @@ app.use((req, res, next) => {
 });
 
 app.use((req, res, next) => {
-  res.set("Access-Control-Allow-Origin", "*");
+  const origin = req.headers.origin;
+  const allowedOrigins = [
+    "https://truepay-72060.web.app",
+    "https://truepay-72060.firebaseapp.com",
+    "https://theadmin.truepay.live",
+    "https://truepay.live",
+    "https://www.truepay.live",
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://localhost:8080",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:8080",
+  ];
+
+  let allowedOrigin = "*";
+  if (origin) {
+    if (allowedOrigins.includes(origin)) {
+      allowedOrigin = origin;
+    } else if (origin.includes("localhost") || origin.includes("127.0.0.1")) {
+      allowedOrigin = origin;
+    } else if (
+      origin.includes("truepay-72060") ||
+      /^https:\/\/([a-z0-9-]+\.)*truepay\.live$/i.test(origin)
+    ) {
+      allowedOrigin = origin;
+    }
+  }
+
+  res.set("Access-Control-Allow-Origin", allowedOrigin);
   res.set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
   res.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  if (allowedOrigin !== "*") {
+    res.set("Access-Control-Allow-Credentials", "true");
+  }
   if (req.method === "OPTIONS") {
     res.status(204).send("");
     return;

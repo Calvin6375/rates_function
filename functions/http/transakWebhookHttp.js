@@ -15,6 +15,7 @@ const { createLogger } = require("../utils/paymentOpsLogger");
 
 const logger = createLogger({ service: "transakWebhook" });
 
+const transakApiKey = defineSecret(config.secrets.transakApiKey);
 const transakSecretKey = defineSecret(config.secrets.transakSecretKey);
 const transakWebhookSecret = defineSecret(config.secrets.transakWebhookSecret);
 
@@ -115,7 +116,7 @@ app.post("/", async (req, res) => {
 
 exports.handleTransakWebhook = onRequest(
     {
-      secrets: [transakSecretKey, transakWebhookSecret],
+      secrets: [transakApiKey, transakSecretKey, transakWebhookSecret],
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,

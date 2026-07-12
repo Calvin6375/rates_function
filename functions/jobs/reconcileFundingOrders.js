@@ -9,12 +9,14 @@ const { reconcileStaleFundingOrders } = require("../services/funding/fundingReco
 const { createLogger } = require("../utils/paymentOpsLogger");
 
 const paystackSecretKey = defineSecret(config.secrets.paystackSecretKey);
+const transakApiKey = defineSecret(config.secrets.transakApiKey);
+const transakSecretKey = defineSecret(config.secrets.transakSecretKey);
 const logger = createLogger({ service: "reconcileFundingOrders" });
 
 exports.reconcileFundingOrders = onSchedule(
     {
       schedule: "*/15 * * * *",
-      secrets: [paystackSecretKey],
+      secrets: [paystackSecretKey, transakApiKey, transakSecretKey],
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,

@@ -31,6 +31,9 @@ app.use((req, res, next) => {
   const allowedOrigins = [
     "https://truepay-72060.web.app",
     "https://truepay-72060.firebaseapp.com",
+    "https://theadmin.truepay.live",
+    "https://truepay.live",
+    "https://www.truepay.live",
     "http://localhost:3000",
     "http://localhost:5173",
     "http://localhost:8080",
@@ -45,7 +48,10 @@ app.use((req, res, next) => {
       allowedOrigin = origin;
     } else if (origin.includes("localhost") || origin.includes("127.0.0.1")) {
       allowedOrigin = origin;
-    } else if (origin.includes("truepay-72060")) {
+    } else if (
+      origin.includes("truepay-72060") ||
+      /^https:\/\/([a-z0-9-]+\.)*truepay\.live$/i.test(origin)
+    ) {
       allowedOrigin = origin;
     }
   }

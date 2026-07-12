@@ -26,12 +26,22 @@ const {
   TIMELINE_EVENT_TYPES,
 } = require("../utils/fundingTypes");
 
+const transakProvider = require("../services/funding/providers/transakProvider");
+
 const logger = createLogger({ service: "fundingHttp" });
 
 /**
  * @param {import("express").Express} app
  */
 function mountFundingRoutes(app) {
+  /**
+   * GET /internal/transak/health — Transak configuration probe (no secrets).
+   */
+  app.get("/internal/transak/health", (req, res) => {
+    res.set("Cache-Control", "no-store");
+    res.status(200).json(transakProvider.getHealthStatus());
+  });
+
   /**
    * GET /funding/payment-return — Paystack browser redirect landing (public).
    * Paystack appends ?reference=…&trxref=… — no WebView required.

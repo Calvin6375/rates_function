@@ -11,6 +11,7 @@ const swapLib = require("../libs/swap");
 const sendMoneyLib = require("../libs/sendMoney");
 const c2bFundingBridge = require("../services/funding/c2bFundingBridgeService");
 const fundingOrderService = require("../services/funding/fundingOrderService");
+const fundingRailService = require("../services/funding/fundingRailService");
 const fundingWebhookService = require("../services/funding/fundingWebhookService");
 const {createLogger} = require("../utils/paymentOpsLogger");
 const {FUNDING_CURRENCY} = require("../utils/fundingTypes");
@@ -19,6 +20,15 @@ const logger = createLogger({service: "paymentsHttp"});
 const paystackSecretKey = defineSecret(config.secrets.paystackSecretKey);
 const paystackSplitCode = defineSecret(config.secrets.paystackSplitCode);
 const paystackSecrets = [paystackSecretKey, paystackSplitCode];
+const transakApiKey = defineSecret(config.secrets.transakApiKey);
+const transakSecretKey = defineSecret(config.secrets.transakSecretKey);
+const transakTreasuryWallet = defineSecret(config.secrets.transakTreasuryWallet);
+const transakCheckoutSecrets = [
+  transakApiKey,
+  transakSecretKey,
+  transakTreasuryWallet,
+];
+const fundingCheckoutSecrets = [...paystackSecrets, ...transakCheckoutSecrets];
 
 const REDACTED_HEADER_KEYS = new Set([
   "authorization",
@@ -86,7 +96,7 @@ exports.createPayment = onCall(
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
-      secrets: paystackSecrets,
+      secrets: fundingCheckoutSecrets,
     },
     async (request) => {
       const auth = request.auth;
@@ -147,6 +157,18 @@ exports.createPayment = onCall(
         logger.error("createPayment.failed", {
           userId,
           error: error.message,
+          ...(error.details ? {
+            transakRequest: {
+              method: error.details.httpMethod || null,
+              url: error.details.url || null,
+              params: error.details.requestParams || null,
+              body: error.details.requestBody || null,
+            },
+            transakResponse: {
+              statusCode: error.details.statusCode || null,
+              body: error.details.responseBody || null,
+            },
+          } : {}),
         });
 
         if (error instanceof HttpsError) {
@@ -300,7 +322,7 @@ exports.handlePaymentWebhook = onCall(
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
-      secrets: [paystackSecretKey],
+      secrets: [paystackSecretKey, transakApiKey, transakSecretKey],
     },
     async (request) => {
       const auth = request.auth;
@@ -315,7 +337,13 @@ exports.handlePaymentWebhook = onCall(
         (typeof raw === "string" ? raw : null);
 
       if (invoiceId) {
-        const byReference = await fundingOrderService.findByProviderReference("paystack", invoiceId);
+        let byReference = null;
+        for (const provider of fundingRailService.listProviders()) {
+          byReference = await fundingOrderService.findByProviderReference(provider, invoiceId);
+          if (byReference) {
+            break;
+          }
+        }
         const byId = !byReference ?
           await fundingOrderService.getFundingOrderForUser(auth.uid, invoiceId) :
           null;

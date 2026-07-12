@@ -1,18 +1,39 @@
 /**
  * @fileoverview Transak Funding Provider adapter.
- * Transak API communication only — no wallet or ledger logic.
+ * Uses official Transak Public + Partner APIs only — no wallet or ledger logic.
+ *
+ * @see https://docs.transak.com/api/public/end-points
+ * @see https://docs.transak.com/api/public/get-price
+ * @see https://docs.transak.com/api/public/create-widget-url
+ * @see https://docs.transak.com/api/public/get-orders
+ * @see https://docs.transak.com/api/public/get-order-by-order-id
  */
 
 const jwt = require("jsonwebtoken");
-const axios = require("axios");
 const config = require("../../../config");
 const { createLogger } = require("../../../utils/paymentOpsLogger");
 const { FUNDING_PROVIDERS, FUNDING_CURRENCY } = require("../../../utils/fundingTypes");
+const {
+  PartnerConfigurationError,
+  getConfigSnapshot,
+  getHealthStatus: buildHealthStatus,
+  logStartupConfiguration,
+  transakHttpRequest,
+  validateQuoteRequest,
+} = require("./transakDiagnostics");
 
 const PROVIDER_ID = FUNDING_PROVIDERS.transak;
 const DEFAULT_PAYMENT_METHOD = "credit_debit_card";
 const DEFAULT_PRODUCTS = "BUY";
-const logger = createLogger({ service: "transakProvider", provider: PROVIDER_ID });
+const REQUEST_TIMEOUT_MS = 15000;
+
+/** Official API path constants — not hostnames. */
+const API_PATHS = Object.freeze({
+  GET_PRICE: "/api/v1/pricing/public/quotes",
+  CREATE_WIDGET_SESSION: "/api/v2/auth/session",
+  GET_ORDERS: "/partners/api/v2/orders",
+  GET_ORDER_BY_ID: (orderId) => `/partners/api/v2/order/${encodeURIComponent(orderId)}`,
+});
 
 const COMPLETED_STATUSES = new Set(["COMPLETED"]);
 const FAILED_STATUSES = new Set([
@@ -24,6 +45,17 @@ const FAILED_STATUSES = new Set([
   "REFUNDED",
 ]);
 
+const WEBHOOK_EVENT_IDS = new Set([
+  "ORDER_COMPLETED",
+  "ORDER_FAILED",
+  "ORDER_PROCESSING",
+  "ORDER_CREATED",
+  "ORDER_PAYMENT_VERIFYING",
+  "ORDER_AWAITING_PAYMENT_FROM_USER",
+]);
+
+const logger = createLogger({ service: "transakProvider", provider: PROVIDER_ID });
+
 /**
  * @returns {string|null}
  */
@@ -32,6 +64,7 @@ function getApiKey() {
 }
 
 /**
+ * Partner Access Token — used for partner APIs and webhook JWT verification.
  * @returns {string|null}
  */
 function getSecretKey() {
@@ -48,7 +81,7 @@ function getWebhookSecret() {
 }
 
 /**
- * @returns {string}
+ * @returns {"staging"|"production"}
  */
 function getEnvironment() {
   const env = String(
@@ -58,29 +91,31 @@ function getEnvironment() {
 }
 
 /**
+ * Public + Partner API host (Get Price, Get Orders, Get Order By ID).
  * @returns {string}
  */
-function getGatewayBaseUrl() {
+function getPublicApiBaseUrl() {
   const explicit = process.env.TRANSAK_API_BASE_URL || config.transak?.baseUrl || null;
+  if (explicit && String(explicit).trim()) {
+    return String(explicit).trim().replace(/\/+$/, "");
+  }
+  return getEnvironment() === "production" ?
+    "https://api.transak.com" :
+    "https://api-stg.transak.com";
+}
+
+/**
+ * Gateway host for Create Widget URL session API only.
+ * @returns {string}
+ */
+function getGatewayApiBaseUrl() {
+  const explicit = process.env.TRANSAK_GATEWAY_API_BASE_URL || config.transak?.gatewayBaseUrl || null;
   if (explicit && String(explicit).trim()) {
     return String(explicit).trim().replace(/\/+$/, "");
   }
   return getEnvironment() === "production" ?
     "https://api-gateway.transak.com" :
     "https://api-gateway-stg.transak.com";
-}
-
-/**
- * @returns {string}
- */
-function getPartnersBaseUrl() {
-  const explicit = process.env.TRANSAK_PARTNERS_API_BASE_URL || config.transak?.partnersBaseUrl || null;
-  if (explicit && String(explicit).trim()) {
-    return String(explicit).trim().replace(/\/+$/, "");
-  }
-  return getEnvironment() === "production" ?
-    "https://api.transak.com/partners/api/v2" :
-    "https://api-stg.transak.com/partners/api/v2";
 }
 
 /**
@@ -101,7 +136,7 @@ function getDefaultCrypto() {
  * @returns {string}
  */
 function getDefaultNetwork() {
-  return String(process.env.TRANSAK_DEFAULT_NETWORK || config.transak?.defaultNetwork || "ethereum").toLowerCase();
+  return String(process.env.TRANSAK_DEFAULT_NETWORK || config.transak?.defaultNetwork || "tron").toLowerCase();
 }
 
 /**
@@ -121,22 +156,62 @@ function getReferrerDomain() {
 /**
  * @returns {boolean}
  */
+function isHeadlessEnabled() {
+  const raw = process.env.TRANSAK_HEADLESS || config.transak?.headless || "true";
+  return String(raw).toLowerCase() === "true";
+}
+
+/**
+ * @returns {string}
+ */
+function getIntegrationMode() {
+  const explicit = process.env.TRANSAK_MODE || config.transak?.mode || null;
+  if (explicit) {
+    const normalized = String(explicit).toLowerCase();
+    if (normalized === "headless") {
+      return "Headless";
+    }
+    if (normalized === "widget") {
+      return "Widget";
+    }
+    return String(explicit);
+  }
+  return isHeadlessEnabled() ? "Headless" : "Widget";
+}
+
+/**
+ * @returns {boolean}
+ */
 function isConfigured() {
   return !!(getApiKey() && getSecretKey() && getTreasuryWallet());
 }
 
+const diagnosticsGetters = {
+  getApiKey,
+  getSecretKey,
+  getWebhookSecret,
+  getEnvironment,
+  getPublicApiBaseUrl,
+  getGatewayApiBaseUrl,
+  getDefaultFiat,
+  getDefaultCrypto,
+  getDefaultNetwork,
+  getTreasuryWallet,
+  isHeadlessEnabled,
+  getIntegrationMode,
+  isConfigured,
+  API_PATHS,
+};
+
 /**
- * @param {import("axios").AxiosError} err
- * @returns {string}
+ * @param {Object} [ctx]
+ * @returns {Object}
  */
-function formatTransakError(err) {
-  const status = err.response?.status;
-  const body = err.response?.data;
-  const message = body?.error?.message || body?.message || err.message;
-  if (status && message) {
-    return `Transak ${status}: ${message}`;
-  }
-  return message;
+function buildHttpContext(ctx = {}) {
+  return {
+    ...ctx,
+    configSnapshot: getConfigSnapshot(diagnosticsGetters),
+  };
 }
 
 /**
@@ -145,15 +220,14 @@ function formatTransakError(err) {
  */
 function buildPartnerHeaders(ctx = {}) {
   const apiKey = getApiKey();
-  const secretKey = getSecretKey();
-  if (!apiKey || !secretKey) {
+  const accessToken = getSecretKey();
+  if (!apiKey || !accessToken) {
     throw new Error("Transak is not configured (TRANSAK_API_KEY / TRANSAK_SECRET_KEY)");
   }
 
   return {
     "x-api-key": apiKey,
-    "access-token": secretKey,
-    "x-access-token": secretKey,
+    "access-token": accessToken,
     "x-user-ip": ctx.userIp || "127.0.0.1",
     "Content-Type": "application/json",
     accept: "application/json",
@@ -162,9 +236,10 @@ function buildPartnerHeaders(ctx = {}) {
 
 /**
  * @param {Object} order
+ * @param {string} [fallbackReference]
  * @returns {import("../../../utils/fundingTypes").NormalizedFundingEvent}
  */
-function normalizeTransakOrder(order) {
+function normalizeTransakOrder(order, fallbackReference = "") {
   const statusRaw = String(order.status || "").toUpperCase();
   let status = "pending";
   if (COMPLETED_STATUSES.has(statusRaw)) {
@@ -174,9 +249,9 @@ function normalizeTransakOrder(order) {
   }
 
   const providerReference = String(
-      order.partnerOrderId || order.partnerCustomerId || order.id || "",
+      order.partnerOrderId || order.partnerCustomerId || fallbackReference || order.id || "",
   );
-  const providerTransactionId = String(order.id || order.orderId || providerReference);
+  const providerTransactionId = String(order.id || order.orderId || order._id || providerReference);
 
   return {
     providerReference,
@@ -186,6 +261,110 @@ function normalizeTransakOrder(order) {
     status,
     failureReason: order.statusReason || order.failureReason || order.statusMessage || null,
   };
+}
+
+/**
+ * Official Get Price API (public quote).
+ * GET /api/v1/pricing/public/quotes
+ *
+ * @param {Object} params
+ * @returns {Promise<Object>}
+ */
+async function fetchPublicQuote(params) {
+  const {
+    amount,
+    fiatCurrency,
+    cryptoCurrency,
+    network,
+    correlationId,
+    fundingOrderId,
+    providerReference,
+    walletAddress = null,
+    countryCode = null,
+    paymentMethod = DEFAULT_PAYMENT_METHOD,
+  } = params;
+
+  const url = `${getPublicApiBaseUrl()}${API_PATHS.GET_PRICE}`;
+  const query = {
+    partnerApiKey: getApiKey(),
+    fiatCurrency,
+    cryptoCurrency,
+    network,
+    isBuyOrSell: "BUY",
+    fiatAmount: Number(amount),
+    paymentMethod,
+  };
+
+  if (walletAddress) {
+    query.walletAddress = walletAddress;
+  }
+  if (countryCode) {
+    query.countryCode = countryCode;
+  }
+
+  validateQuoteRequest(query);
+
+  const response = await transakHttpRequest({
+    method: "get",
+    url,
+    params: query,
+    headers: { "x-api-key": getApiKey() },
+    timeout: REQUEST_TIMEOUT_MS,
+  }, buildHttpContext({
+    errorEvent: "transak.quote.failed",
+    correlationId,
+    fundingOrderId,
+    providerReference,
+  }));
+
+  const quote = response.data?.response;
+  if (!quote?.quoteId) {
+    throw new Error(response.data?.message || "Transak Get Price failed");
+  }
+  return quote;
+}
+
+/**
+ * Official Create Widget URL API.
+ * POST {gateway}/api/v2/auth/session
+ *
+ * @param {Object} params
+ * @returns {Promise<Object>}
+ */
+async function createWidgetSession(params) {
+  const {
+    widgetParams,
+    userAccessToken,
+    correlationId,
+    fundingOrderId,
+    providerReference,
+    userIp,
+  } = params;
+
+  const url = `${getGatewayApiBaseUrl()}${API_PATHS.CREATE_WIDGET_SESSION}`;
+  const headers = {
+    ...buildPartnerHeaders({ userIp }),
+    ...(userAccessToken ? { authorization: userAccessToken } : {}),
+  };
+
+  const response = await transakHttpRequest({
+    method: "post",
+    url,
+    data: { widgetParams },
+    headers,
+    timeout: REQUEST_TIMEOUT_MS,
+  }, buildHttpContext({
+    errorEvent: "transak.initialize.failed",
+    correlationId,
+    fundingOrderId,
+    providerReference,
+  }));
+
+  const session = response.data?.data;
+  if (!session?.widgetUrl) {
+    throw new Error(response.data?.message || "Transak Create Widget URL failed");
+  }
+  return session;
 }
 
 /**
@@ -212,6 +391,7 @@ async function initializePayment(params) {
     transakAccessToken = null,
     callbackUrl = null,
     userIp = null,
+    countryCode = null,
   } = params;
 
   const fiatCurrency = String(currency).toUpperCase();
@@ -219,44 +399,17 @@ async function initializePayment(params) {
   const treasuryWallet = getTreasuryWallet();
   const userAccessToken = transakAccessToken || metadata.transakAccessToken || null;
 
-  const quoteParams = {
-    partnerApiKey: getApiKey(),
+  const quote = await fetchPublicQuote({
+    amount,
     fiatCurrency,
     cryptoCurrency: getDefaultCrypto(),
-    isBuyOrSell: "BUY",
-    fiatAmount: Number(amount),
-    paymentMethod: DEFAULT_PAYMENT_METHOD,
     network: getDefaultNetwork(),
-    partnerOrderId,
-    partnerCustomerId: userId || metadata.userId || partnerOrderId,
-  };
-
-  let quoteResponse;
-  try {
-    quoteResponse = await axios.get(`${getGatewayBaseUrl()}/api/v2/lookup/quote`, {
-      params: quoteParams,
-      timeout: 15000,
-    });
-  } catch (err) {
-    const errorMessage = formatTransakError(err);
-    logger.error("transak.quote.failed", {
-      correlationId,
-      fundingOrderId,
-      providerReference: partnerOrderId,
-      provider: PROVIDER_ID,
-      executionTimeMs: Date.now() - started,
-      error: errorMessage,
-    });
-    const wrapped = new Error(errorMessage);
-    wrapped.cause = err;
-    throw wrapped;
-  }
-
-  const quote = quoteResponse.data?.data || quoteResponse.data;
-  if (!quote?.quoteId) {
-    const message = quoteResponse.data?.message || "Transak quote failed";
-    throw new Error(message);
-  }
+    walletAddress: treasuryWallet,
+    countryCode: countryCode || metadata.countryCode || null,
+    correlationId,
+    fundingOrderId,
+    providerReference: partnerOrderId,
+  });
 
   const widgetParams = {
     apiKey: getApiKey(),
@@ -276,39 +429,14 @@ async function initializePayment(params) {
     redirectURL: callbackUrl || metadata.redirectURL || null,
   };
 
-  const sessionHeaders = {
-    ...buildPartnerHeaders({ userIp }),
-    ...(userAccessToken ? { "access-token": userAccessToken } : {}),
-  };
-
-  let sessionResponse;
-  try {
-    sessionResponse = await axios.post(
-        `${getGatewayBaseUrl()}/api/v2/auth/session`,
-        { widgetParams },
-        { headers: sessionHeaders, timeout: 15000 },
-    );
-  } catch (err) {
-    const errorMessage = formatTransakError(err);
-    logger.error("transak.initialize.failed", {
-      correlationId,
-      fundingOrderId,
-      providerReference: partnerOrderId,
-      provider: PROVIDER_ID,
-      executionTimeMs: Date.now() - started,
-      error: errorMessage,
-    });
-    const wrapped = new Error(errorMessage);
-    wrapped.cause = err;
-    throw wrapped;
-  }
-
-  const session = sessionResponse.data?.data || sessionResponse.data;
-  const checkoutUrl = session?.widgetUrl;
-  if (!checkoutUrl) {
-    const message = sessionResponse.data?.message || "Transak widget session failed";
-    throw new Error(message);
-  }
+  const session = await createWidgetSession({
+    widgetParams,
+    userAccessToken,
+    correlationId,
+    fundingOrderId,
+    providerReference: partnerOrderId,
+    userIp,
+  });
 
   logger.info("transak.initialize.success", {
     correlationId,
@@ -321,7 +449,7 @@ async function initializePayment(params) {
   });
 
   return {
-    checkoutUrl,
+    checkoutUrl: session.widgetUrl,
     providerReference: partnerOrderId,
     providerTransactionId: String(quote.quoteId),
     raw: {
@@ -335,14 +463,89 @@ async function initializePayment(params) {
 }
 
 /**
+ * Official Get Orders API with partnerOrderId filter.
+ * GET /partners/api/v2/orders?filter[partnerOrderId]=...
+ *
+ * @param {string} providerReference
+ * @param {Object} ctx
+ * @returns {Promise<Object|null>}
+ */
+async function fetchOrderByPartnerReference(providerReference, ctx = {}) {
+  const url = `${getPublicApiBaseUrl()}${API_PATHS.GET_ORDERS}`;
+  const headers = buildPartnerHeaders(ctx);
+
+  const response = await transakHttpRequest({
+    method: "get",
+    url,
+    headers,
+    params: {
+      "filter[partnerOrderId]": providerReference,
+      "filter[productsAvailed]": '["BUY"]',
+      limit: 5,
+    },
+    timeout: REQUEST_TIMEOUT_MS,
+  }, buildHttpContext({
+    errorEvent: "transak.verify.failed",
+    correlationId: ctx.correlationId || null,
+    fundingOrderId: ctx.fundingOrderId || null,
+    providerReference,
+  }));
+
+  const items = response.data?.data || [];
+  const list = Array.isArray(items) ? items : [items].filter(Boolean);
+  return list.find((item) =>
+    String(item.partnerOrderId || "") === String(providerReference),
+  ) || list[0] || null;
+}
+
+/**
+ * Official Get Order By ID API.
+ * GET /partners/api/v2/order/{orderId}
+ *
+ * @param {string} orderId
+ * @param {Object} ctx
+ * @returns {Promise<Object|null>}
+ */
+async function fetchOrderById(orderId, ctx = {}) {
+  const url = `${getPublicApiBaseUrl()}${API_PATHS.GET_ORDER_BY_ID(orderId)}`;
+  const headers = buildPartnerHeaders(ctx);
+
+  const response = await transakHttpRequest({
+    method: "get",
+    url,
+    headers,
+    timeout: REQUEST_TIMEOUT_MS,
+  }, buildHttpContext({
+    errorEvent: "transak.verify.failed",
+    correlationId: ctx.correlationId || null,
+    fundingOrderId: ctx.fundingOrderId || null,
+    providerReference: ctx.providerReference || orderId,
+  }));
+
+  return response.data?.data || null;
+}
+
+/**
  * @param {string} providerReference
  * @param {Object} [ctx]
  * @returns {Promise<import("../../../utils/fundingTypes").NormalizedFundingEvent>}
  */
 async function verifyPayment(providerReference, ctx = {}) {
   const started = Date.now();
-  const order = await fetchOrderByPartnerReference(providerReference, ctx);
-  const event = normalizeTransakOrder(order);
+
+  let order = await fetchOrderByPartnerReference(providerReference, ctx);
+  if (!order && ctx.transakOrderId) {
+    order = await fetchOrderById(ctx.transakOrderId, {
+      ...ctx,
+      providerReference,
+    });
+  }
+
+  if (!order) {
+    throw new Error(`Transak order not found for partnerOrderId ${providerReference}`);
+  }
+
+  const event = normalizeTransakOrder(order, providerReference);
 
   logger.info("transak.verify.success", {
     correlationId: ctx.correlationId || null,
@@ -360,52 +563,32 @@ async function verifyPayment(providerReference, ctx = {}) {
 /**
  * @param {string} providerReference
  * @param {Object} [ctx]
- * @returns {Promise<Object>}
- */
-async function fetchOrderByPartnerReference(providerReference, ctx = {}) {
-  const headers = buildPartnerHeaders(ctx);
-
-  let response;
-  try {
-    response = await axios.get(`${getPartnersBaseUrl()}/orders`, {
-      headers,
-      params: {
-        "filter[partnerOrderId]": providerReference,
-      },
-      timeout: 15000,
-    });
-  } catch (err) {
-    logger.error("transak.verify.failed", {
-      correlationId: ctx.correlationId || null,
-      fundingOrderId: ctx.fundingOrderId || null,
-      providerReference,
-      provider: PROVIDER_ID,
-      error: err.message,
-    });
-    throw err;
-  }
-
-  const items = response.data?.data || response.data?.response || [];
-  const list = Array.isArray(items) ? items : [items].filter(Boolean);
-  const order = list.find((item) =>
-    String(item.partnerOrderId || "") === String(providerReference),
-  ) || list[0];
-
-  if (!order) {
-    throw new Error(`Transak order not found for partnerOrderId ${providerReference}`);
-  }
-
-  return order;
-}
-
-/**
- * Alias for verifyPayment — provider-specific status lookup.
- * @param {string} providerReference
- * @param {Object} [ctx]
  * @returns {Promise<import("../../../utils/fundingTypes").NormalizedFundingEvent>}
  */
 async function getFundingStatus(providerReference, ctx = {}) {
   return verifyPayment(providerReference, ctx);
+}
+
+/**
+ * @returns {Object}
+ */
+function getHealthStatus() {
+  return buildHealthStatus(diagnosticsGetters);
+}
+
+/**
+ * @param {string} eventId
+ * @returns {boolean}
+ */
+function isSupportedWebhookEvent(eventId) {
+  if (!eventId) {
+    return true;
+  }
+  const normalized = String(eventId).toUpperCase();
+  if (WEBHOOK_EVENT_IDS.has(normalized)) {
+    return true;
+  }
+  return normalized.startsWith("ORDER_");
 }
 
 /**
@@ -418,7 +601,12 @@ function normalizeWebhook(payload) {
     return null;
   }
 
-  const order = decoded.webhookData || decoded.order || decoded.data || decoded;
+  const eventId = decoded.eventID || decoded.eventId || payload?.eventID || payload?.eventId || null;
+  if (!isSupportedWebhookEvent(eventId)) {
+    return null;
+  }
+
+  const order = decoded.webhookData || decoded.order || null;
   if (!order || (!order.partnerOrderId && !order.id && !order.orderId)) {
     return null;
   }
@@ -491,6 +679,8 @@ function verifyWebhookSignature(req, rawBody) {
   }
 }
 
+logStartupConfiguration(diagnosticsGetters);
+
 const transakProvider = {
   providerId: PROVIDER_ID,
   initializePayment,
@@ -501,6 +691,12 @@ const transakProvider = {
   decodeWebhookPayload,
   normalizeTransakOrder,
   isConfigured,
+  getHealthStatus,
+  PartnerConfigurationError,
+  API_PATHS,
+  getPublicApiBaseUrl,
+  getGatewayApiBaseUrl,
+  diagnosticsGetters,
 };
 
 module.exports = transakProvider;

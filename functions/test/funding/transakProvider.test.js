@@ -4,24 +4,39 @@
 
 jest.mock("axios");
 
-const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
 const transakProvider = require("../../services/funding/providers/transakProvider");
+const { PartnerConfigurationError } = require("../../services/funding/providers/transakDiagnostics");
 const { registerFundingProviders } = require("../../services/funding/fundingProviderInterface");
 const config = require("../../config");
 
 describe("transakProvider", () => {
   const webhookSecret = "transak_partner_access_token";
 
+  /**
+   * transakHttpRequest calls axios(config) directly.
+   * @param {...Object} responses
+   */
+  function mockAxiosResponses(...responses) {
+    for (const response of responses) {
+      if (response?.response) {
+        axios.mockRejectedValueOnce(response);
+      } else {
+        axios.mockResolvedValueOnce(response);
+      }
+    }
+  }
+
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.TRANSAK_API_KEY = "test_api_key";
     process.env.TRANSAK_SECRET_KEY = webhookSecret;
     process.env.TRANSAK_WEBHOOK_SECRET = webhookSecret;
-    process.env.TRANSAK_TREASURY_WALLET = "0xTreasuryWallet";
+    process.env.TRANSAK_TREASURY_WALLET = "TGkPQsmAhRVh51bEj961EUavP3BjZqEnBb";
     process.env.TRANSAK_ENVIRONMENT = "staging";
-    config.transak.treasuryWallet = "0xTreasuryWallet";
+    process.env.TRANSAK_DEFAULT_NETWORK = "tron";
+    config.transak.treasuryWallet = "TGkPQsmAhRVh51bEj961EUavP3BjZqEnBb";
   });
 
   afterEach(() => {
@@ -30,6 +45,7 @@ describe("transakProvider", () => {
     delete process.env.TRANSAK_WEBHOOK_SECRET;
     delete process.env.TRANSAK_TREASURY_WALLET;
     delete process.env.TRANSAK_ENVIRONMENT;
+    delete process.env.TRANSAK_DEFAULT_NETWORK;
     config.transak.treasuryWallet = null;
   });
 
@@ -38,24 +54,27 @@ describe("transakProvider", () => {
     expect(transakProvider.providerId).toBe("transak");
   });
 
-  it("initializes funding with quote + widget session and treasury wallet", async () => {
-    axios.get.mockResolvedValue({
-      data: {
-        data: {
-          quoteId: "quote_123",
-          cryptoAmount: 24.5,
-          fiatCurrency: "USD",
-          cryptoCurrency: "USDT",
+  it("uses official Get Price + Create Widget URL APIs", async () => {
+    mockAxiosResponses(
+        {
+          data: {
+            response: {
+              quoteId: "quote_123",
+              cryptoAmount: 24.5,
+              fiatCurrency: "USD",
+              cryptoCurrency: "USDT",
+              network: "tron",
+            },
+          },
         },
-      },
-    });
-    axios.post.mockResolvedValue({
-      data: {
-        data: {
-          widgetUrl: "https://global-stg.transak.com?sessionId=abc",
+        {
+          data: {
+            data: {
+              widgetUrl: "https://global-stg.transak.com?sessionId=abc",
+            },
+          },
         },
-      },
-    });
+    );
 
     const result = await transakProvider.initializePayment({
       amount: 25,
@@ -71,19 +90,32 @@ describe("transakProvider", () => {
     expect(result.checkoutUrl).toBe("https://global-stg.transak.com?sessionId=abc");
     expect(result.providerReference).toBe("fund_123");
     expect(result.providerTransactionId).toBe("quote_123");
-    expect(result.raw.treasuryWallet).toBe("0xTreasuryWallet");
+    expect(result.raw.treasuryWallet).toBe("TGkPQsmAhRVh51bEj961EUavP3BjZqEnBb");
 
-    const [quoteUrl, quoteOptions] = axios.get.mock.calls[0];
-    expect(quoteUrl).toContain("/api/v2/lookup/quote");
-    expect(quoteOptions.params.partnerOrderId).toBe("fund_123");
-    expect(quoteOptions.params.fiatAmount).toBe(25);
+    const [quoteConfig] = axios.mock.calls[0];
+    expect(quoteConfig.url).toBe("https://api-stg.transak.com/api/v1/pricing/public/quotes");
+    expect(quoteConfig.method).toBe("get");
+    expect(quoteConfig.params).toMatchObject({
+      partnerApiKey: "test_api_key",
+      fiatCurrency: "USD",
+      cryptoCurrency: "USDT",
+      network: "tron",
+      isBuyOrSell: "BUY",
+      fiatAmount: 25,
+      paymentMethod: "credit_debit_card",
+      walletAddress: "TGkPQsmAhRVh51bEj961EUavP3BjZqEnBb",
+    });
+    expect(quoteConfig.headers["x-api-key"]).toBe("test_api_key");
 
-    const [sessionUrl, sessionBody, sessionOptions] = axios.post.mock.calls[0];
-    expect(sessionUrl).toContain("/api/v2/auth/session");
-    expect(sessionBody.widgetParams.walletAddress).toBe("0xTreasuryWallet");
-    expect(sessionBody.widgetParams.partnerOrderId).toBe("fund_123");
-    expect(sessionBody.widgetParams.paymentMethod).toBe("credit_debit_card");
-    expect(sessionOptions.headers["x-api-key"]).toBe("test_api_key");
+    const [sessionConfig] = axios.mock.calls[1];
+    expect(sessionConfig.url).toBe("https://api-gateway-stg.transak.com/api/v2/auth/session");
+    expect(sessionConfig.method).toBe("post");
+    expect(sessionConfig.data.widgetParams.walletAddress).toBe("TGkPQsmAhRVh51bEj961EUavP3BjZqEnBb");
+    expect(sessionConfig.data.widgetParams.partnerOrderId).toBe("fund_123");
+    expect(sessionConfig.data.widgetParams.paymentMethod).toBe("credit_debit_card");
+    expect(sessionConfig.headers["x-api-key"]).toBe("test_api_key");
+    expect(sessionConfig.headers["access-token"]).toBe(webhookSecret);
+    expect(sessionConfig.headers["x-user-ip"]).toBeTruthy();
   });
 
   it("throws when treasury wallet is not configured", async () => {
@@ -92,12 +124,12 @@ describe("transakProvider", () => {
 
     await expect(transakProvider.initializePayment({
       amount: 10,
-      providerReference: "fund_missing_wallet",
+      providerReference: "fund_no_split",
     })).rejects.toThrow("TRANSAK_TREASURY_WALLET");
   });
 
-  it("verifies successful funding by partnerOrderId", async () => {
-    axios.get.mockResolvedValue({
+  it("verifies successful funding via official Get Orders API", async () => {
+    mockAxiosResponses({
       data: {
         data: [{
           id: "order_999",
@@ -123,13 +155,40 @@ describe("transakProvider", () => {
       failureReason: null,
     });
 
-    const [url, options] = axios.get.mock.calls[0];
-    expect(url).toContain("/orders");
-    expect(options.params["filter[partnerOrderId]"]).toBe("fund_123");
+    const [ordersConfig] = axios.mock.calls[0];
+    expect(ordersConfig.url).toBe("https://api-stg.transak.com/partners/api/v2/orders");
+    expect(ordersConfig.params["filter[partnerOrderId]"]).toBe("fund_123");
+    expect(ordersConfig.headers["access-token"]).toBe(webhookSecret);
+  });
+
+  it("falls back to Get Order By ID when partnerOrderId lookup is empty", async () => {
+    mockAxiosResponses(
+        { data: { data: [] } },
+        {
+          data: {
+            data: {
+              id: "order_888",
+              partnerOrderId: "fund_abc",
+              fiatAmount: 10,
+              fiatCurrency: "USD",
+              status: "COMPLETED",
+            },
+          },
+        },
+    );
+
+    const event = await transakProvider.verifyPayment("fund_abc", {
+      transakOrderId: "order_888",
+    });
+
+    expect(event.providerTransactionId).toBe("order_888");
+    expect(axios.mock.calls[1][0].url).toBe(
+        "https://api-stg.transak.com/partners/api/v2/order/order_888",
+    );
   });
 
   it("getFundingStatus aliases verifyPayment", async () => {
-    axios.get.mockResolvedValue({
+    mockAxiosResponses({
       data: {
         data: [{
           id: "order_1",
@@ -153,8 +212,8 @@ describe("transakProvider", () => {
       fiatCurrency: "USD",
       status: "COMPLETED",
     };
-    const token = jwt.sign({ webhookData: order }, webhookSecret);
-    const event = transakProvider.normalizeWebhook({ eventID: "ORDER_COMPLETED", data: token });
+    const token = jwt.sign({ eventID: "ORDER_COMPLETED", webhookData: order }, webhookSecret);
+    const event = transakProvider.normalizeWebhook({ data: token });
 
     expect(event).toEqual({
       providerReference: "fund_abc",
@@ -166,11 +225,27 @@ describe("transakProvider", () => {
     });
   });
 
-  it("returns null for unsupported webhook events", () => {
-    expect(transakProvider.normalizeWebhook({ eventID: "UNKNOWN" })).toBeNull();
+  it("normalizes failed webhook events", () => {
+    const order = {
+      id: "order_fail",
+      partnerOrderId: "fund_fail",
+      fiatAmount: 20,
+      fiatCurrency: "USD",
+      status: "FAILED",
+      statusReason: "Card declined",
+    };
+    const token = jwt.sign({ eventID: "ORDER_FAILED", webhookData: order }, webhookSecret);
+    const event = transakProvider.normalizeWebhook({ data: token });
+
+    expect(event.status).toBe("failed");
+    expect(event.failureReason).toBe("Card declined");
   });
 
-  it("verifies webhook JWT signature", () => {
+  it("returns null for unsupported webhook events", () => {
+    expect(transakProvider.normalizeWebhook({ eventID: "UNKNOWN_EVENT" })).toBeNull();
+  });
+
+  it("verifies webhook JWT signature with Partner Access Token", () => {
     const token = jwt.sign({ webhookData: { partnerOrderId: "fund_1", status: "COMPLETED" } }, webhookSecret);
     const body = JSON.stringify({ eventID: "ORDER_COMPLETED", data: token });
     const req = { get: () => null };
@@ -186,17 +261,63 @@ describe("transakProvider", () => {
     expect(transakProvider.verifyWebhookSignature(req, Buffer.from(body))).toBe(false);
   });
 
-  it("normalizes failed order statuses", () => {
-    const event = transakProvider.normalizeTransakOrder({
-      id: "order_fail",
-      partnerOrderId: "fund_fail",
-      fiatAmount: 20,
-      fiatCurrency: "USD",
-      status: "FAILED",
-      statusReason: "Card declined",
+  it("logs HTTP details on quote failure", async () => {
+    mockAxiosResponses({
+      message: "Request failed with status code 404",
+      response: {
+        status: 404,
+        headers: { "x-request-id": "req_404" },
+        data: { error: { message: "Not found", errorCode: 6005 } },
+      },
+      config: {
+        method: "get",
+        url: "https://api-stg.transak.com/api/v1/pricing/public/quotes",
+      },
     });
 
-    expect(event.status).toBe("failed");
-    expect(event.failureReason).toBe("Card declined");
+    await expect(transakProvider.initializePayment({
+      amount: 10,
+      providerReference: "fund_fail",
+    })).rejects.toThrow("Transak 404");
+  });
+
+  it("throws PartnerConfigurationError for partner account limitations", async () => {
+    mockAxiosResponses({
+      message: "Request failed with status code 400",
+      response: {
+        status: 400,
+        headers: { "x-request-id": "req_400" },
+        data: {
+          message: "There are some limitation in your partner account, Please contact us at support@transak.com.",
+        },
+      },
+      config: {
+        method: "get",
+        url: "https://api-stg.transak.com/api/v1/pricing/public/quotes",
+      },
+    });
+
+    await expect(transakProvider.initializePayment({
+      amount: 10,
+      providerReference: "fund_partner_limit",
+      correlationId: "corr_partner",
+    })).rejects.toBeInstanceOf(PartnerConfigurationError);
+  });
+
+  it("exposes health status without secrets", () => {
+    const health = transakProvider.getHealthStatus();
+
+    expect(health).toMatchObject({
+      configured: true,
+      environment: "staging",
+      baseUrl: "https://api-stg.transak.com",
+      apiKeyPresent: true,
+      secretPresent: true,
+      treasuryWalletPresent: true,
+      quoteEndpoint: "/api/v1/pricing/public/quotes",
+      mode: "Headless",
+    });
+    expect(JSON.stringify(health)).not.toContain(webhookSecret);
+    expect(JSON.stringify(health)).not.toContain("test_api_key");
   });
 });

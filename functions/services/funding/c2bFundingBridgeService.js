@@ -340,6 +340,19 @@ async function initializeProviderCheckout(params) {
       providerReference: order.providerReference,
       provider,
       error: err.message,
+      ...(err.details ? {
+        transakRequest: {
+          method: err.details.httpMethod || null,
+          url: err.details.url || null,
+          params: err.details.requestParams || null,
+          body: err.details.requestBody || null,
+        },
+        transakResponse: {
+          statusCode: err.details.statusCode || null,
+          body: err.details.responseBody || null,
+        },
+        supportReport: err.details.supportReport || null,
+      } : {}),
     });
     throw err;
   }
