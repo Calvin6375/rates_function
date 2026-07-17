@@ -3,6 +3,15 @@
  */
 
 jest.mock("../../services/rateService");
+jest.mock("../../admin", () => ({
+  firestore: jest.fn(() => ({
+    collection: jest.fn(() => ({
+      doc: jest.fn(() => ({
+        get: jest.fn().mockResolvedValue({ exists: false, data: () => ({}) }),
+      })),
+    })),
+  })),
+}));
 
 const rateService = require("../../services/rateService");
 const { convertToKesForPaystack } = require("../../services/funding/c2bFundingFxService");
@@ -10,9 +19,17 @@ const { convertToKesForPaystack } = require("../../services/funding/c2bFundingFx
 describe("c2bFundingFxService", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    rateService.getRates.mockResolvedValue({
-      customerPrice: 130,
-      marketPrice: 128,
+    rateService.getRates.mockImplementation(async (fiat) => {
+      if (fiat === "KES") {
+        return { customerPrice: 130, marketPrice: 128 };
+      }
+      if (fiat === "GBP") {
+        return { customerPrice: 0.79, marketPrice: 0.78 };
+      }
+      if (fiat === "EUR") {
+        return { customerPrice: 0.92, marketPrice: 0.91 };
+      }
+      throw new Error(`No rate for ${fiat}`);
     });
   });
 
@@ -40,11 +57,32 @@ describe("c2bFundingFxService", () => {
     expect(rateService.getRates).toHaveBeenCalledWith("KES", "USDT");
   });
 
-  it("rejects unsupported currencies", async () => {
-    await expect(convertToKesForPaystack(100, "NGN")).rejects.toThrow("USD, KES");
+  it("converts GBP to KES via USDT cross rate", async () => {
+    const result = await convertToKesForPaystack(10, "GBP");
+
+    // 10 GBP * (130 KES/USDT / 0.79 GBP/USDT)
+    expect(result.requestedAmount).toBe(10);
+    expect(result.requestedCurrency).toBe("GBP");
+    expect(result.paystackCurrency).toBe("KES");
+    expect(result.fxRate).toBeCloseTo(130 / 0.79, 5);
+    expect(result.amountKes).toBeCloseTo(round2(10 * (130 / 0.79)), 2);
+    expect(rateService.getRates).toHaveBeenCalledWith("KES", "USDT");
+    expect(rateService.getRates).toHaveBeenCalledWith("GBP", "USDT");
+  });
+
+  it("rejects invalid currency codes", async () => {
+    await expect(convertToKesForPaystack(100, "GB")).rejects.toThrow("Invalid currency");
   });
 
   it("rejects non-positive amounts", async () => {
     await expect(convertToKesForPaystack(0, "KES")).rejects.toThrow("positive number");
   });
 });
+
+/**
+ * @param {number} n
+ * @returns {number}
+ */
+function round2(n) {
+  return Math.round(n * 100) / 100;
+}

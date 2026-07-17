@@ -83,13 +83,12 @@ describe("c2bFundingBridgeService transak", () => {
     config.transak.treasuryWallet = null;
   });
 
-  it("creates USD funding order without Paystack FX conversion", async () => {
-    const response = await c2bFundingBridge.createC2bTopupCheckout({
+  it("creates USD funding order without Paystack FX conversion via Transak helper", async () => {
+    const response = await c2bFundingBridge.createC2bTransakTopupCheckout({
       userId: "user_1",
       amount: 25,
       currency: "USD",
       email: "tourist@example.com",
-      provider: "transak",
       transakAccessToken: "user_access_token",
     });
 
@@ -127,8 +126,8 @@ describe("c2bFundingBridgeService transak", () => {
     );
   });
 
-  it("keeps Paystack path unchanged when provider is paystack", async () => {
-    config.funding.defaultProvider = "paystack";
+  it("routes createC2bTopupCheckout to Paystack even when defaultProvider is transak", async () => {
+    config.funding.defaultProvider = "transak";
     convertToKesForPaystack.mockResolvedValue({
       requestedAmount: 25,
       requestedCurrency: "USD",
@@ -164,7 +163,7 @@ describe("c2bFundingBridgeService transak", () => {
       userId: "user_1",
       amount: 25,
       currency: "USD",
-      provider: "paystack",
+      provider: "transak",
     });
 
     expect(convertToKesForPaystack).toHaveBeenCalledWith(25, "USD");

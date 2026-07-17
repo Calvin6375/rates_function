@@ -180,13 +180,18 @@ async function getBalances(userId) {
 
 /**
  * Dual-write fiat balance to users document (Flutter backward compat).
+ * Supports USD/KES specially, plus other ISO fiats on `wallets.{CCY}` / `{ccy}Balance`.
  * @param {string} userId
- * @param {string} asset USD | KES
+ * @param {string} asset USD | KES | GBP | …
  * @param {number} newBalance
  * @returns {Promise<{ previousBalance: number, newBalance: number }>}
  */
 async function dualWriteFiatBalance(userId, asset, newBalance) {
   const currency = String(asset).toUpperCase();
+  if (!/^[A-Z]{3}$/.test(currency)) {
+    throw new Error(`Unsupported fiat dual-write currency: ${currency}`);
+  }
+
   const userRef = admin.firestore().collection(config.collections.users).doc(userId);
   let result = { previousBalance: 0, newBalance };
 
@@ -196,10 +201,12 @@ async function dualWriteFiatBalance(userId, asset, newBalance) {
       throw new Error(`User ${userId} not found`);
     }
     const data = doc.data();
+    const wallets = (data.wallets && typeof data.wallets === "object") ? {...data.wallets} : {};
 
-    const usdBalance = Number(data.usdBalance ?? data.USD ?? 0);
-    const kesBalance = Number(data.kesBalance ?? data.KES ?? 0);
-    const usdtBalance = Number(data.usdtBalance ?? data.USDT ?? 0);
+    const usdBalance = Number(data.usdBalance ?? data.USD ?? wallets.USD ?? 0);
+    const kesBalance = Number(data.kesBalance ?? data.KES ?? wallets.KES ?? 0);
+    const usdtBalance = Number(data.usdtBalance ?? data.USDT ?? wallets.USDT ?? 0);
+    const balanceField = `${currency.toLowerCase()}Balance`;
 
     let previousBalance = 0;
     const update = { updatedAt: serverTimestamp() };
@@ -209,20 +216,36 @@ async function dualWriteFiatBalance(userId, asset, newBalance) {
       update.usdBalance = newBalance;
       update.USD = newBalance;
       update.fiatBalance = newBalance;
+      wallets.USD = newBalance;
+      wallets.KES = kesBalance;
+      wallets.USDT = usdtBalance;
     } else if (currency === "KES") {
       previousBalance = kesBalance;
       update.kesBalance = newBalance;
       update.KES = newBalance;
+      wallets.USD = usdBalance;
+      wallets.KES = newBalance;
+      wallets.USDT = usdtBalance;
+    } else if (currency === "USDT") {
+      previousBalance = usdtBalance;
+      update.usdtBalance = newBalance;
+      update.USDT = newBalance;
+      wallets.USD = usdBalance;
+      wallets.KES = kesBalance;
+      wallets.USDT = newBalance;
     } else {
-      throw new Error(`Unsupported fiat dual-write currency: ${currency}`);
+      previousBalance = Number(
+          data[balanceField] ?? data[currency] ?? wallets[currency] ?? 0,
+      );
+      update[balanceField] = newBalance;
+      update[currency] = newBalance;
+      wallets.USD = usdBalance;
+      wallets.KES = kesBalance;
+      wallets.USDT = usdtBalance;
+      wallets[currency] = newBalance;
     }
 
-    update.wallets = {
-      USD: currency === "USD" ? newBalance : usdBalance,
-      KES: currency === "KES" ? newBalance : kesBalance,
-      USDT: usdtBalance,
-    };
-
+    update.wallets = wallets;
     result = { previousBalance, newBalance };
     tx.update(userRef, update);
   });

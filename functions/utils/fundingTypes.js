@@ -50,7 +50,7 @@ const FUNDING_CURRENCY = "USD";
 /** C2B Paystack checkout charge currency (Kenya merchant default). */
 const C2B_PAYSTACK_CURRENCY = "KES";
 
-const FIAT_ASSETS = Object.freeze(["USD", "KES", "NGN", "GHS", "USDT"]);
+const FIAT_ASSETS = Object.freeze(["USD", "KES", "NGN", "GHS", "GBP", "EUR", "USDT"]);
 
 const MERCHANT_PAYMENT_STATUSES = Object.freeze({
   pending: "pending",

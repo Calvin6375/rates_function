@@ -7,7 +7,7 @@
 
 const { ref } = require("../../libs/realtime");
 
-const FIAT_RTDB_ASSETS = new Set(["USD", "KES", "NGN", "GHS", "USDT", "TZS", "ETB"]);
+const FIAT_RTDB_ASSETS = new Set(["USD", "KES", "NGN", "GHS", "USDT", "TZS", "ETB", "GBP", "EUR"]);
 
 /**
  * Project a Firestore-derived balance to RTDB (read-only cache for Flutter).

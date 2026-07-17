@@ -358,6 +358,18 @@ async function completeFundingOrder(params) {
 
   const referenceId = `fund_${fundingOrder.provider}_${verifiedEvent.providerTransactionId || verifiedEvent.providerReference}`;
 
+  const meta = fundingOrder.metadata && typeof fundingOrder.metadata === "object" ?
+    fundingOrder.metadata :
+    {};
+  const requestedAmount = Number(meta.requestedAmount);
+  const requestedCurrency = meta.requestedCurrency ?
+    String(meta.requestedCurrency).toUpperCase() :
+    null;
+  const creditAmount = Number.isFinite(requestedAmount) && requestedAmount > 0 ?
+    requestedAmount :
+    fundingOrder.amount;
+  const creditCurrency = requestedCurrency || fundingOrder.currency;
+
   await fundingOrderService.updateFundingOrder(fundingOrder.id, {
     status: FUNDING_STATUSES.processing,
     providerTransactionId: verifiedEvent.providerTransactionId || fundingOrder.providerTransactionId,
@@ -367,8 +379,8 @@ async function completeFundingOrder(params) {
     const { transactionId } = await createTransactionRecord({
       type: TRANSACTION_TYPES.funding,
       userId: fundingOrder.userId,
-      amount: fundingOrder.amount,
-      currency: fundingOrder.currency,
+      amount: creditAmount,
+      currency: creditCurrency,
       status: STATUSES.processing,
       metadata: {
         fundingOrderId: fundingOrder.id,
@@ -376,14 +388,18 @@ async function completeFundingOrder(params) {
         providerReference: fundingOrder.providerReference,
         providerTransactionId: verifiedEvent.providerTransactionId,
         product: fundingOrder.metadata?.product || "tourist_payments",
+        chargeAmount: fundingOrder.amount,
+        chargeCurrency: fundingOrder.currency,
+        requestedAmount: creditAmount,
+        requestedCurrency: creditCurrency,
       },
       logLegacy: false,
     });
 
     const creditResult = await walletService.creditUserFiat(
         fundingOrder.userId,
-        fundingOrder.amount,
-        fundingOrder.currency,
+        creditAmount,
+        creditCurrency,
         {
           referenceId,
           type: "funding",
@@ -392,6 +408,8 @@ async function completeFundingOrder(params) {
           transactionRecordId: transactionId,
           metadata: {
             providerReference: fundingOrder.providerReference,
+            chargeAmount: fundingOrder.amount,
+            chargeCurrency: fundingOrder.currency,
           },
         },
     );
@@ -416,12 +434,12 @@ async function completeFundingOrder(params) {
       await logTransaction(
           fundingOrder.userId,
           TRANSACTION_TYPES.funding,
-          fundingOrder.amount,
+          creditAmount,
           STATUSES.completed,
           creditResult.previousBalance,
           creditResult.newBalance,
           {
-            currency: fundingOrder.currency,
+            currency: creditCurrency,
             fundingOrderId: fundingOrder.id,
             provider: fundingOrder.provider,
           },

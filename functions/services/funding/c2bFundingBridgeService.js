@@ -24,6 +24,9 @@ const {
 const logger = createLogger({ service: "c2bFundingBridge" });
 
 /**
+ * Resolve provider for non-C2B callers (e.g. response mapping).
+ * C2B `createPayment` always uses Paystack — see createC2bTopupCheckout.
+ * @param {string|null} [explicitProvider]
  * @returns {string}
  */
 function resolveFundingProvider(explicitProvider = null) {
@@ -31,8 +34,10 @@ function resolveFundingProvider(explicitProvider = null) {
 }
 
 /**
- * Create a checkout for C2B tourist wallet top-up.
+ * Create a checkout for C2B tourist wallet top-up via Paystack.
  * Response matches the legacy `createPayment` callable shape for Flutter compatibility.
+ * Always routes to Paystack (ignores FUNDING_DEFAULT_PROVIDER and client `provider`).
+ * Transak remains available via REST `POST /funding/orders` with provider=transak.
  *
  * @param {Object} params
  * @param {string} params.userId
@@ -42,16 +47,10 @@ function resolveFundingProvider(explicitProvider = null) {
  * @param {string} [params.callbackUrl]
  * @param {string} [params.idempotencyKey]
  * @param {string} [params.correlationId]
- * @param {string} [params.provider]
- * @param {string} [params.transakAccessToken]
  * @param {Object} [params.metadata]
  * @returns {Promise<Object>}
  */
 async function createC2bTopupCheckout(params) {
-  const provider = resolveFundingProvider(params.provider);
-  if (provider === FUNDING_PROVIDERS.transak) {
-    return createC2bTransakTopupCheckout(params);
-  }
   return createC2bPaystackTopupCheckout(params);
 }
 

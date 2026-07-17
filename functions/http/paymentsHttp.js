@@ -88,7 +88,7 @@ function assertNoLegacyIntaSendClientCheckout(data, userId) {
 
 /**
  * Callable function: Create Payment Order (C2B tourist card top-up via Paystack).
- * Initializes Paystack checkout server-side and returns the legacy response shape
+ * Always uses Paystack (not Transak). Returns the legacy response shape
  * expected by the Flutter app (`orderId`, `invoiceId`, `checkoutUrl`, …).
  */
 exports.createPayment = onCall(

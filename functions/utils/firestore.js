@@ -250,10 +250,18 @@ async function syncBalanceToRealtimeDatabase(userId, currency = "USD") {
     const kesBalance = Number(userData.kesBalance || userData.KES || 0);
     const tzsBalance = Number(userData.tzsBalance || userData.TZS || 0);
     const etbBalance = Number(userData.etbBalance || userData.ETB || 0);
+    const gbpBalance = Number(
+        userData.gbpBalance || userData.GBP || (userData.wallets && userData.wallets.GBP) || 0,
+    );
+    const eurBalance = Number(
+        userData.eurBalance || userData.EUR || (userData.wallets && userData.wallets.EUR) || 0,
+    );
     await walletRef.child("fiat/USD").set(usdBalance);
     await walletRef.child("fiat/KES").set(kesBalance);
     await walletRef.child("fiat/TZS").set(tzsBalance);
     await walletRef.child("fiat/ETB").set(etbBalance);
+    await walletRef.child("fiat/GBP").set(gbpBalance);
+    await walletRef.child("fiat/EUR").set(eurBalance);
 
     // Sync crypto balances
     const usdtBalance = Number(userData.usdtBalance || userData.USDT || userData.cryptoBalance || 0);
@@ -276,6 +284,8 @@ async function syncBalanceToRealtimeDatabase(userId, currency = "USD") {
       KES: kesBalance,
       TZS: tzsBalance,
       ETB: etbBalance,
+      GBP: gbpBalance,
+      EUR: eurBalance,
       USDT: usdtBalance,
       USDC: usdcBalance,
     });
