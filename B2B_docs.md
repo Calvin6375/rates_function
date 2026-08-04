@@ -304,7 +304,9 @@ Creates a partner and issues an **API key** (shown **only here**).
 
 #### `GET /platform/partners/:partnerId`
 
-Single partner detail (no raw `apiKey`; includes `apiKeyMasked` where applicable).
+Single partner detail (includes `apiKey` for platform admins where applicable).
+
+Also includes **`onboardingOwner`**: contact from the org admin’s `onboarding/{orgAdminUid}.owner` map (`fullName`, `phone`, `role` / job title). Distinct from member role `"owner"`. `null` if no org admin or no owner contact saved.
 
 **Errors** `404` not found.
 
@@ -461,6 +463,42 @@ Org admin must have **`partnerRole: org_admin`** and matching **`partnerId`** in
 **Response** `200` — `{ "success": true, "message": "Dashboard profile ensured" }`
 
 **Errors** `401` if token missing/invalid.
+
+#### `POST /portal/send-verification-email`
+
+**Any authenticated user**. Generates a Firebase email-verification link, rewrites it to **`GET /public/verify-email`**, and sends a TruePay-branded Zoho email (From address = Secret Manager `SMTP_USER`).
+
+**Click flow:** user opens link → backend applies `oobCode` → **HTTP 302** to the B2B dashboard (`https://theadmin.truepay.live/` by default, or `continueUrl`) with `?emailVerified=1`.
+
+**Required client change:** stop calling Firebase Auth `sendEmailVerification()` / `currentUser.sendEmailVerification()`. Use this endpoint (or the callable below) only.
+
+**Body (JSON, optional)**
+
+| Field | Description |
+|-------|-------------|
+| `continueUrl` | Post-verify dashboard URL (default **`B2B_DASHBOARD_URL`** / `https://theadmin.truepay.live`). Must be an allowed host. |
+| `canHandleCodeInApp` | `true` for mobile deep-link handling |
+
+**Response** `200`
+
+```json
+{
+  "success": true,
+  "data": {
+    "alreadyVerified": false,
+    "email": "user@example.com",
+    "continueUrl": "https://theadmin.truepay.live/"
+  }
+}
+```
+
+**Errors** `401` unauthenticated · `400` bad `continueUrl` · `503` SMTP not configured
+
+#### `GET /public/verify-email`
+
+**Unauthenticated.** Email click target. Query: `oobCode`, `continueUrl`, `mode`. Applies verification then redirects to the dashboard. Do not call from app JS — users hit this from the email link.
+
+Callable equivalent: **`sendEmailVerification`** (same payload; requires Auth).
 
 #### `GET /portal/me`
 

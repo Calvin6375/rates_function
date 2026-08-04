@@ -17,7 +17,6 @@ const transactionsHttp = require("./http/transactionsHttp");
 const notificationsHttp = require("./http/notificationsHttp");
 const b2bPortalHttp = require("./http/b2bPortalHttp");
 const customerAuthHttp = require("./http/customerAuthHttp");
-const smtpSmokeTestHttp = require("./http/smtpSmokeTestHttp");
 const cryptoApi = require("./http/cryptoApi");
 const circleWebhookHttp = require("./http/circleWebhookHttp");
 const paystackWebhookHttp = require("./http/paystackWebhookHttp");
@@ -90,8 +89,6 @@ exports.onAuthUserDeleted = authUserCleanup.onAuthUserDeleted;
 exports.requestPasswordReset = customerAuthHttp.requestPasswordReset;
 // Authenticated: Zoho SMTP branded verification (secrets SMTP_USER / SMTP_PASS)
 exports.sendEmailVerification = customerAuthHttp.sendEmailVerification;
-// Temporary QA only — remove after SMTP verification testing
-exports.smtpSmokeTest = smtpSmokeTestHttp.smtpSmokeTest;
 
 // Export migration functions
 exports.migrateExistingUsers = migrateUsersHttp.migrateExistingUsers;

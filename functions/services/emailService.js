@@ -182,7 +182,7 @@ function getTransporter() {
   if (cachedTransporter) {
     return cachedTransporter;
   }
-  const user = process.env.SMTP_USER || config.smtp?.user || "";
+  const user = process.env.SMTP_USER || "";
   const pass = process.env.SMTP_PASS || "";
   if (!user || !pass) {
     throw new Error(
@@ -322,8 +322,12 @@ async function sendEmailVerificationForUid(uid, opts = {}) {
   );
   const verifyUrl = toDashboardVerificationLink(firebaseLink, continueUrl);
 
-  const fromAddress =
-    process.env.SMTP_USER || config.smtp?.user || "noreply@truepay.live";
+  const fromAddress = process.env.SMTP_USER;
+  if (!fromAddress) {
+    throw new Error(
+        "SMTP is not configured (set secrets SMTP_USER and SMTP_PASS)",
+    );
+  }
   const fromName = config.smtp?.fromName || "TruePay";
   const content = buildVerificationEmail({
     verifyUrl,

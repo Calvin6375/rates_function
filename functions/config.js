@@ -63,12 +63,13 @@ const config = {
   firebaseWebApiKey: getEnv("FIREBASE_WEB_API_KEY") || null,
 
   /**
-   * Zoho SMTP (non-secret connection settings). Auth via secrets SMTP_USER / SMTP_PASS.
+   * Zoho SMTP connection settings (non-secret).
+   * Username/password MUST come from Secret Manager (SMTP_USER / SMTP_PASS) at runtime —
+   * do not hardcode mailbox credentials in source.
    */
   smtp: {
     host: getEnv("SMTP_HOST", "smtp.zoho.com"),
     port: Number(getEnv("SMTP_PORT", "465")),
-    user: getEnv("SMTP_USER", "noreply@truepay.live"),
     fromName: getEnv("SMTP_FROM_NAME", "TruePay"),
   },
 
