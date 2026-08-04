@@ -1,10 +1,15 @@
 /**
- * @fileoverview Customer app authentication callables (password reset, etc.)
+ * @fileoverview Customer app authentication callables (password reset, email verification).
  */
 
 const {onCall, HttpsError} = require("firebase-functions/v2/https");
+const {defineSecret} = require("firebase-functions/params");
 const axios = require("axios");
 const config = require("../config");
+const emailService = require("../services/emailService");
+
+const smtpUser = defineSecret(config.secrets.smtpUser);
+const smtpPass = defineSecret(config.secrets.smtpPass);
 
 const SEND_OOB_URL = "https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode";
 
@@ -127,5 +132,71 @@ exports.requestPasswordReset = onCall(
       }
 
       return {success: true};
+    },
+);
+
+/**
+ * Callable: send a TruePay-branded email verification message via Zoho SMTP.
+ * Authenticated. Uses Admin SDK `generateEmailVerificationLink` + Nodemailer.
+ *
+ * Request data:
+ * - `continueUrl` (string, optional) — must be an allowed TruePay / localhost host
+ * - `canHandleCodeInApp` (boolean, optional)
+ *
+ * Requires secrets `SMTP_USER` and `SMTP_PASS` bound to this function.
+ */
+exports.sendEmailVerification = onCall(
+    {
+      region: config.region,
+      cpu: config.resources.cpu,
+      memory: config.resources.memory,
+      enforceAppCheck: false,
+      secrets: [smtpUser, smtpPass],
+    },
+    async (request) => {
+      if (!request.auth || !request.auth.uid) {
+        throw new HttpsError("unauthenticated", "Authentication required");
+      }
+      const body = request.data || {};
+      try {
+        const continueUrl =
+          body.continueUrl && typeof body.continueUrl === "string" ?
+            body.continueUrl :
+            emailService.defaultContinueUrl();
+        const result = await emailService.sendEmailVerificationForUid(
+            request.auth.uid,
+            {
+              continueUrl,
+              canHandleCodeInApp: body.canHandleCodeInApp === true,
+            },
+        );
+        return {
+          success: true,
+          alreadyVerified: result.alreadyVerified === true,
+          email: result.email,
+          continueUrl: result.continueUrl || continueUrl,
+        };
+      } catch (err) {
+        const msg = err && err.message ? String(err.message) : "Unknown error";
+        if (
+          msg.includes("continueUrl") ||
+          msg.includes("no email") ||
+          msg.includes("Invalid")
+        ) {
+          throw new HttpsError("invalid-argument", msg);
+        }
+        if (msg.includes("SMTP is not configured")) {
+          console.error("sendEmailVerification:", msg);
+          throw new HttpsError(
+              "failed-precondition",
+              "Email sending is not configured on the server.",
+          );
+        }
+        console.error("sendEmailVerification:", msg);
+        throw new HttpsError(
+            "internal",
+            "Unable to send verification email. Please try again later.",
+        );
+      }
     },
 );

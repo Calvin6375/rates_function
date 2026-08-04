@@ -27,6 +27,9 @@ const { logAdminAction } = require("../utils/transactions");
 
 const intaSendPublishableKey = defineSecret(config.secrets.intaSendPublishableKey);
 const intaSendSecretKey = defineSecret(config.secrets.intaSendSecretKey);
+const smtpUser = defineSecret(config.secrets.smtpUser);
+const smtpPass = defineSecret(config.secrets.smtpPass);
+const emailService = require("../services/emailService");
 
 const {
   parseAccessFromToken,
@@ -400,7 +403,35 @@ app.get("/platform/partners/:partnerId", loadFirebaseUser, requirePlatformAdmin,
       res.status(404).json({ success: false, error: "Partner not found" });
       return;
     }
-    res.status(200).json({ success: true, data: partner });
+    /** Onboarding contact (fullName / phone / job title) — distinct from member role `owner`. */
+    let onboardingOwner = null;
+    const orgAdminUid =
+      typeof partner.orgAdminUid === "string" ? partner.orgAdminUid.trim() : "";
+    if (orgAdminUid) {
+      try {
+        const onboarding = await b2bOnboardingService.getOnboarding(orgAdminUid);
+        const owner = onboarding?.owner;
+        if (owner && typeof owner === "object") {
+          onboardingOwner = {
+            fullName: typeof owner.fullName === "string" ? owner.fullName : "",
+            phone: typeof owner.phone === "string" ? owner.phone : "",
+            role: typeof owner.role === "string" ? owner.role : "",
+          };
+        }
+      } catch (ownerErr) {
+        console.error(
+            "b2bPortal GET /platform/partners/:id onboarding owner:",
+            ownerErr.message,
+        );
+      }
+    }
+    res.status(200).json({
+      success: true,
+      data: {
+        ...partner,
+        onboardingOwner,
+      },
+    });
   } catch (err) {
     console.error("b2bPortal GET /platform/partners/:id:", err.message);
     res.status(500).json({ success: false, error: err.message });
@@ -742,6 +773,50 @@ app.get("/platform/me", loadFirebaseUser, requirePlatformAdmin, async (req, res)
   } catch (err) {
     console.error("b2bPortal GET /platform/me:", err.message);
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * Send TruePay-branded email verification via Zoho SMTP (replaces client sendEmailVerification).
+ * Body (optional): `{ continueUrl?, canHandleCodeInApp? }`
+ * Default continueUrl = B2B dashboard (`config.b2bDashboardUrl`). Clicking the email link
+ * hits GET /public/verify-email which verifies then 302-redirects to the dashboard.
+ */
+app.post("/portal/send-verification-email", loadFirebaseUser, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const continueUrl =
+      typeof body.continueUrl === "string" && body.continueUrl.trim() ?
+        body.continueUrl.trim() :
+        emailService.defaultContinueUrl();
+    const result = await emailService.sendEmailVerificationForUid(req.userId, {
+      continueUrl,
+      canHandleCodeInApp: body.canHandleCodeInApp === true,
+    });
+    res.status(200).json({
+      success: true,
+      data: {
+        alreadyVerified: result.alreadyVerified === true,
+        email: result.email,
+        continueUrl: result.continueUrl || continueUrl,
+      },
+    });
+  } catch (err) {
+    const msg = err && err.message ? String(err.message) : "Unknown error";
+    console.error("b2bPortal POST /portal/send-verification-email:", msg);
+    if (
+      msg.includes("continueUrl") ||
+      msg.includes("no email") ||
+      msg.includes("Invalid")
+    ) {
+      res.status(400).json({success: false, error: msg});
+      return;
+    }
+    if (msg.includes("SMTP is not configured")) {
+      res.status(503).json({success: false, error: msg});
+      return;
+    }
+    res.status(500).json({success: false, error: "Unable to send verification email"});
   }
 });
 
@@ -1311,6 +1386,53 @@ app.get("/l/:linkId", (req, res) => {
   ));
 });
 
+/**
+ * Public email-verification click target (no auth).
+ * Applies Firebase oobCode via Identity Toolkit, then 302-redirects to the B2B dashboard.
+ * Query: mode, oobCode, continueUrl
+ */
+app.get("/public/verify-email", async (req, res) => {
+  const oobCode =
+    typeof req.query.oobCode === "string" ? req.query.oobCode.trim() : "";
+  const apiKey =
+    typeof req.query.apiKey === "string" ? req.query.apiKey.trim() : "";
+  let continueUrl;
+  try {
+    continueUrl = emailService.resolveContinueUrl(
+        typeof req.query.continueUrl === "string" ? req.query.continueUrl : "",
+    );
+  } catch (_e) {
+    continueUrl = emailService.defaultContinueUrl();
+  }
+
+  if (!oobCode) {
+    res.redirect(
+        302,
+        emailService.withQueryParams(continueUrl, {verifyError: "missing_code"}),
+    );
+    return;
+  }
+
+  try {
+    await emailService.applyEmailVerificationOobCode(oobCode, apiKey);
+    res.redirect(
+        302,
+        emailService.withQueryParams(continueUrl, {emailVerified: "1"}),
+    );
+  } catch (err) {
+    const code = (err && (err.code || err.message)) ?
+      String(err.code || err.message) :
+      "verify_failed";
+    console.error("b2bPortal GET /public/verify-email:", code);
+    res.redirect(
+        302,
+        emailService.withQueryParams(continueUrl, {
+          verifyError: code.slice(0, 64),
+        }),
+    );
+  }
+});
+
 /** Public payer read for hosted checkout — no auth */
 app.get("/public/payment-links/:linkId", async (req, res) => {
   try {
@@ -1450,7 +1572,7 @@ exports.b2bPortal = onRequest(
     region: config.region,
     cpu: config.resources.cpu,
     memory: config.resources.memory,
-    secrets: [intaSendPublishableKey, intaSendSecretKey],
+    secrets: [intaSendPublishableKey, intaSendSecretKey, smtpUser, smtpPass],
   },
   app,
 );

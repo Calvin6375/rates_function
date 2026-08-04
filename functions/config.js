@@ -51,6 +51,9 @@ const config = {
     darajaConsumerKey: "DARAJA_CONSUMER_KEY",
     darajaConsumerSecret: "DARAJA_CONSUMER_SECRET",
     darajaInitiatorPassword: "DARAJA_INITIATOR_PASSWORD",
+    /** Zoho SMTP (email verification / transactional mail) */
+    smtpUser: "SMTP_USER",
+    smtpPass: "SMTP_PASS",
   },
 
   /**
@@ -58,6 +61,31 @@ const config = {
    * Used by `requestPasswordReset` to call Identity Toolkit `sendOobCode` server-side.
    */
   firebaseWebApiKey: getEnv("FIREBASE_WEB_API_KEY") || null,
+
+  /**
+   * Zoho SMTP (non-secret connection settings). Auth via secrets SMTP_USER / SMTP_PASS.
+   */
+  smtp: {
+    host: getEnv("SMTP_HOST", "smtp.zoho.com"),
+    port: Number(getEnv("SMTP_PORT", "465")),
+    user: getEnv("SMTP_USER", "noreply@truepay.live"),
+    fromName: getEnv("SMTP_FROM_NAME", "TruePay"),
+  },
+
+  /**
+   * B2B dashboard URL used as the post-email-verification redirect (continueUrl).
+   * Override with B2B_DASHBOARD_URL in production if the host changes.
+   */
+  b2bDashboardUrl:
+    getEnv("B2B_DASHBOARD_URL", "https://theadmin.truepay.live") ||
+    "https://theadmin.truepay.live",
+
+  /**
+   * Public Cloud Function path that applies the oobCode then 302s to the dashboard.
+   * Full URL is built at send-time from GCLOUD_PROJECT + region unless overridden.
+   */
+  emailVerificationHandlerPath: "/public/verify-email",
+  emailVerificationHandlerBaseUrl: getEnv("EMAIL_VERIFICATION_HANDLER_BASE_URL") || null,
 
   // Feature flags
   features: {
