@@ -12,6 +12,7 @@ const {
   normalizePartnerRole,
   legacyPartnerRoleFromNormalized,
 } = require("../utils/accessControl");
+const b2bWalletBalanceSync = require("./b2bWalletBalanceSync");
 
 const MAX_PAGE = 100;
 const ONBOARDING_COL = "onboarding";
@@ -116,9 +117,28 @@ async function enrichUsersWithPartnerContext(users) {
     }
   }
 
+  const walletByPartnerId =
+    await b2bWalletBalanceSync.loadPartnerWalletBalancesByIds(partnerIds);
+
   return users.map((user, index) => {
     const ctx = contexts[index];
     const { partnerId, partnerRole, userType, role } = ctx;
+    const isB2b = b2bWalletBalanceSync.isB2bDashboardUser(user);
+    const partnerBalances = partnerId ? walletByPartnerId[partnerId] : null;
+    // Enterprise (B2B) tab must show partner org wallet — same source as GET /portal/wallet.
+    const USD = isB2b && partnerBalances ? partnerBalances.USD : (user.USD ?? 0);
+    const KES = isB2b && partnerBalances ? partnerBalances.KES : (user.KES ?? 0);
+    const USDT = isB2b && partnerBalances ? partnerBalances.USDT : (user.USDT ?? 0);
+    // If partner wallet is empty but users doc still has legacy credit, show legacy
+    // until GET /portal/wallet migrates it (so admin still sees the 50k).
+    const legacyKes = Number(user.KES ?? 0) || 0;
+    const legacyUsd = Number(user.USD ?? 0) || 0;
+    const legacyUsdt = Number(user.USDT ?? 0) || 0;
+    const useLegacyOverlay = isB2b && partnerBalances &&
+      partnerBalances.KES === 0 && partnerBalances.USD === 0 &&
+      partnerBalances.USDT === 0 &&
+      (legacyKes > 0 || legacyUsd > 0 || legacyUsdt > 0);
+
     return {
       ...user,
       userType: userType || user.userType || null,
@@ -126,6 +146,12 @@ async function enrichUsersWithPartnerContext(users) {
       partnerId,
       partnerRole,
       partnerName: partnerId ? (nameByPartnerId[partnerId] ?? null) : null,
+      USD: useLegacyOverlay ? legacyUsd : USD,
+      KES: useLegacyOverlay ? legacyKes : KES,
+      USDT: useLegacyOverlay ? legacyUsdt : USDT,
+      walletSource: isB2b ?
+        (useLegacyOverlay ? "users_legacy" : "partner_wallet") :
+        "user",
     };
   });
 }
@@ -136,6 +162,7 @@ async function enrichUsersWithPartnerContext(users) {
  */
 function serializeConsumerUserSummary(doc) {
   const d = doc.data();
+  const userBalances = b2bWalletBalanceSync.readUserCurrencyBalances(d || {});
   return {
     userId: doc.id,
     email: d.email ?? null,
@@ -147,6 +174,10 @@ function serializeConsumerUserSummary(doc) {
     fiatBalance: d.fiatBalance != null ? Number(d.fiatBalance) : null,
     cryptoBalance: d.cryptoBalance != null ? Number(d.cryptoBalance) : null,
     currency: d.currency ?? null,
+    /** Per-currency balances (users doc; B2B list may overlay partner wallet). */
+    USD: userBalances.USD,
+    KES: userBalances.KES,
+    USDT: userBalances.USDT,
     institution: d.institution ?? null,
     channel: d.channel ?? null,
     createdAt: d.createdAt?.toDate?.()?.toISOString() ?? null,

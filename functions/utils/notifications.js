@@ -15,6 +15,12 @@ const NOTIFICATION_TYPES = {
   /** Customer requested a manual / bank payout (ops settles outside app) */
   DIRECT_PAYOUT_REQUESTED: "direct_payout_requested",
   DIRECT_PAYOUT_ADMIN_ALERT: "direct_payout_admin_alert",
+  /** B2B partner requested go-live review from platform super admin */
+  GO_LIVE_REQUESTED: "go_live_requested",
+  GO_LIVE_REQUEST_ADMIN_ALERT: "go_live_request_admin_alert",
+  /** B2B partner submitted a Send / payout for ops fulfillment */
+  B2B_SEND_REQUESTED: "b2b_send_requested",
+  B2B_SEND_ADMIN_ALERT: "b2b_send_admin_alert",
   WALLET_CREDITED: "wallet_credited",
   WALLET_DEBITED: "wallet_debited",
   TRANSACTION_COMPLETED: "transaction_completed",
@@ -459,11 +465,140 @@ async function getUserNotifications(userId, limit = 50) {
   }
 }
 
+/**
+ * Collect platform admin UIDs for push (platformAdmins + config/directTopup + master email).
+ * @returns {Promise<string[]>}
+ */
+async function resolvePlatformAdminUserIds() {
+  /** @type {Set<string>} */
+  const ids = new Set();
+
+  try {
+    const snap = await firestore.collection(config.collections.platformAdmins).get();
+    for (const doc of snap.docs) {
+      if (doc.id && typeof doc.id === "string") {
+        ids.add(doc.id);
+      }
+    }
+  } catch (err) {
+    console.warn("⚠️ Could not list platformAdmins:", err.message);
+  }
+
+  try {
+    const cfgSnap = await firestore
+        .collection(config.collections.config)
+        .doc("directTopup")
+        .get();
+    if (cfgSnap.exists) {
+      const raw = cfgSnap.data().adminUserIds;
+      if (Array.isArray(raw)) {
+        for (const id of raw) {
+          if (typeof id === "string" && id.trim()) {
+            ids.add(id.trim());
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("⚠️ Could not read config/directTopup adminUserIds:", err.message);
+  }
+
+  try {
+    const masterEmail = (
+      process.env.MASTER_ADMIN_EMAIL || "calvinrumba8@gmail.com"
+    ).trim().toLowerCase();
+    if (masterEmail) {
+      const user = await admin.auth().getUserByEmail(masterEmail);
+      if (user?.uid) {
+        ids.add(user.uid);
+      }
+    }
+  } catch (err) {
+    // Master may not exist in Auth yet — non-fatal.
+    if (err.code !== "auth/user-not-found") {
+      console.warn("⚠️ Could not resolve master admin UID:", err.message);
+    }
+  }
+
+  return [...ids];
+}
+
+/**
+ * Notify platform super admins that a B2B partner requested go-live.
+ *
+ * @param {Object} params
+ * @param {string} params.partnerId
+ * @param {string} params.partnerName
+ * @param {string} params.requestedByUid
+ * @param {string|null} [params.requestedByEmail]
+ * @param {string|null} [params.ownerName]
+ * @returns {Promise<{ notificationId: string|null, pushCount: number }>}
+ */
+async function notifyGoLiveRequestAdmins(params) {
+  const {
+    partnerId,
+    partnerName,
+    requestedByUid,
+    requestedByEmail = null,
+    ownerName = null,
+  } = params;
+
+  const title = "Go-live request";
+  const who = ownerName || requestedByEmail || requestedByUid;
+  const message = `${partnerName || partnerId} requested to go live · ${who}`;
+
+  const meta = {
+    partnerId: String(partnerId),
+    partnerName: partnerName || "",
+    requestedByUid: String(requestedByUid),
+    requestedByEmail: requestedByEmail || "",
+    ownerName: ownerName || "",
+    action: "go_live_request",
+  };
+
+  let notificationId = null;
+  try {
+    const created = await createNotification({
+      userId: null,
+      type: NOTIFICATION_TYPES.GO_LIVE_REQUEST_ADMIN_ALERT,
+      title,
+      message,
+      actionUrl: `/dashboard/partners/${partnerId}`,
+      metadata: meta,
+      sendPush: false,
+    });
+    notificationId = created.notificationId;
+  } catch (err) {
+    console.warn("⚠️ Failed to save go-live admin notification:", err.message);
+  }
+
+  const adminUserIds = await resolvePlatformAdminUserIds();
+  let pushCount = 0;
+  for (const adminId of adminUserIds) {
+    try {
+      await sendPushNotification(adminId, {
+        notificationId: notificationId || "",
+        type: NOTIFICATION_TYPES.GO_LIVE_REQUEST_ADMIN_ALERT,
+        title,
+        message,
+        data: meta,
+      });
+      pushCount += 1;
+    } catch (pushErr) {
+      console.warn(`⚠️ Go-live admin push failed for ${adminId}:`, pushErr.message);
+    }
+  }
+
+  return {notificationId, pushCount};
+}
+
 module.exports = {
   createNotification,
   sendPushNotification,
   notifyDirectTopupAdmins,
   notifyDirectPayoutAdmins,
+  notifyGoLiveRequestAdmins,
+  resolvePlatformAdminUserIds,
   markNotificationAsRead,
   getNotificationById,
   getUserNotifications,

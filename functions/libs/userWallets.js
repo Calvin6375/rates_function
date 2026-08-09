@@ -294,6 +294,44 @@ async function creditCustomerWallet(id, amount, description = "Wallet credit", c
     const userRef = db.collection(config.collections.users).doc(id);
     const userData = userDoc.data();
 
+    // B2B Partner Dashboard users: credit the partner org wallet (what GET /portal/wallet reads),
+    // not users/{uid}.*Balance — that mismatch showed 50k in Enterprise but 0 on Send.
+    try {
+      const b2bWalletBalanceSync = require("../services/b2bWalletBalanceSync");
+      const partnerWalletAdminService = require("../services/partnerWalletAdminService");
+      const partnerId = await b2bWalletBalanceSync.resolvePartnerIdForB2bUser(id, userData);
+      if (partnerId) {
+        // Move any prior stranded users.* balances first, then apply this credit.
+        await b2bWalletBalanceSync.migrateLegacyUserBalancesToPartnerWallet(id, partnerId);
+        const result = await partnerWalletAdminService.creditPartnerWallet({
+          partnerId,
+          amount: Number(amount),
+          currency: String(currency || "USD").toUpperCase(),
+          description: description || "Admin wallet top-up",
+          actorUid: id,
+        });
+        return {
+          wallet: {
+            id,
+            customerId: id,
+            partnerId,
+            ...result.wallet.balances,
+            balances: result.wallet.balances,
+            status: "active",
+          },
+          transaction: result.transaction,
+        };
+      }
+    } catch (b2bErr) {
+      if (b2bErr.statusCode && b2bErr.statusCode < 500) {
+        throw b2bErr;
+      }
+      console.warn(
+          "creditCustomerWallet B2B partner-wallet path failed, falling back to users doc:",
+          b2bErr.message,
+      );
+    }
+
     // Update currency-specific balance using Firestore transaction
     await db.runTransaction(async (transaction) => {
       const doc = await transaction.get(userRef);
@@ -493,6 +531,42 @@ async function debitCustomerWallet(id, amount, description = "Wallet debit", cur
   if (userDoc.exists) {
     const userRef = db.collection(config.collections.users).doc(id);
     const userData = userDoc.data();
+
+    // B2B Partner Dashboard: debit partner org wallet (same store as Send / portal wallet).
+    try {
+      const b2bWalletBalanceSync = require("../services/b2bWalletBalanceSync");
+      const partnerWalletAdminService = require("../services/partnerWalletAdminService");
+      const partnerId = await b2bWalletBalanceSync.resolvePartnerIdForB2bUser(id, userData);
+      if (partnerId) {
+        await b2bWalletBalanceSync.migrateLegacyUserBalancesToPartnerWallet(id, partnerId);
+        const result = await partnerWalletAdminService.debitPartnerWallet({
+          partnerId,
+          amount: Number(amount),
+          currency: String(currency || "USD").toUpperCase(),
+          description: description || "Admin wallet debit",
+          actorUid: id,
+        });
+        return {
+          wallet: {
+            id,
+            customerId: id,
+            partnerId,
+            ...result.wallet.balances,
+            balances: result.wallet.balances,
+            status: "active",
+          },
+          transaction: result.transaction,
+        };
+      }
+    } catch (b2bErr) {
+      if (b2bErr.statusCode && b2bErr.statusCode < 500) {
+        throw b2bErr;
+      }
+      console.warn(
+          "debitCustomerWallet B2B partner-wallet path failed, falling back to users doc:",
+          b2bErr.message,
+      );
+    }
 
     // Get current balance for the specific currency
     const currentBalance = currency === "USD"

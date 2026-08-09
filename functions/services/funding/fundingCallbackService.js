@@ -1,12 +1,14 @@
 /**
- * @fileoverview Paystack callback URL helpers for C2B external-browser checkout.
- * Default: Paystack redirects to hosted page on `api`, which deep-links back to the Flutter app.
+ * @fileoverview Paystack callback URL helpers for C2B external-browser checkout
+ * and B2B partner dashboard Add Money return.
+ * Default C2B: Paystack redirects to hosted page on `api`, which deep-links back to the Flutter app.
  */
 
 const config = require("../../config");
 
 const DEFAULT_DEEP_LINK = "truepay://payment/callback";
 const PAYMENT_RETURN_PATH = "/funding/payment-return";
+const DEFAULT_B2B_RETURN_PATH = "/dashboard/pay";
 
 /**
  * @returns {string}
@@ -88,11 +90,46 @@ function buildAppReturnDeepLink(reference, extra = {}) {
   return `${base}${sep}${query}`;
 }
 
+/**
+ * Default Paystack callback for B2B partner self-topup — returns to the dashboard Pay page.
+ *
+ * @returns {string}
+ */
+function buildDefaultB2bPaystackCallbackUrl() {
+  const base = String(config.b2bDashboardUrl || "https://theadmin.truepay.live")
+      .trim()
+      .replace(/\/+$/, "");
+  return `${base}${DEFAULT_B2B_RETURN_PATH}?funding=return`;
+}
+
+/**
+ * Resolve callback URL for B2B Add Money (never falls back to C2B Flutter return page
+ * unless explicitly configured via PAYSTACK_B2B_CALLBACK_URL).
+ *
+ * @param {string} [explicit]
+ * @returns {string}
+ */
+function resolveB2bPaystackCallbackUrl(explicit = null) {
+  if (explicit && String(explicit).trim()) {
+    return String(explicit).trim();
+  }
+  if (process.env.PAYSTACK_B2B_CALLBACK_URL) {
+    return String(process.env.PAYSTACK_B2B_CALLBACK_URL).trim();
+  }
+  if (config.paystack.b2bCallbackUrl) {
+    return String(config.paystack.b2bCallbackUrl).trim();
+  }
+  return buildDefaultB2bPaystackCallbackUrl();
+}
+
 module.exports = {
   PAYMENT_RETURN_PATH,
   DEFAULT_DEEP_LINK,
+  DEFAULT_B2B_RETURN_PATH,
   apiBaseUrl,
   buildDefaultPaystackCallbackUrl,
   resolvePaystackCallbackUrl,
   buildAppReturnDeepLink,
+  buildDefaultB2bPaystackCallbackUrl,
+  resolveB2bPaystackCallbackUrl,
 };

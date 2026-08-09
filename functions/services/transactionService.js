@@ -10,7 +10,7 @@ const { logTransaction, generateTransactionId } = require("../utils/transactions
 const ledgerService = require("./ledgerService");
 const walletService = require("./walletService");
 const fundingOrderService = require("./funding/fundingOrderService");
-const { FUNDING_STATUSES } = require("../utils/fundingTypes");
+const { FUNDING_STATUSES, B2B_SELF_TOPUP_PRODUCT } = require("../utils/fundingTypes");
 
 /** Transaction types supported by the engine */
 const TRANSACTION_TYPES = Object.freeze({
@@ -19,6 +19,9 @@ const TRANSACTION_TYPES = Object.freeze({
   crypto_onramp: "crypto_onramp",
   crypto_offramp: "crypto_offramp",
   b2b_payment: "b2b_payment",
+  b2b_funding: "b2b_funding",
+  b2b_send: "b2b_send",
+  b2b_admin_topup: "b2b_admin_topup",
   settlement: "settlement",
   funding: "funding",
   merchant_payment: "merchant_payment",
@@ -182,7 +185,7 @@ function isFirestoreIndexUnavailable(err) {
 
 /** Transaction types grouped for platform dashboard channel filter */
 const CHANNEL_TYPES = Object.freeze({
-  b2b: ["b2b_payment"],
+  b2b: ["b2b_payment", "b2b_funding", "b2b_send", "b2b_admin_topup"],
   c2b: ["topup", "withdrawal", "crypto_onramp", "crypto_offramp", "funding", "merchant_payment"],
 });
 
@@ -345,6 +348,94 @@ async function listTransactionRecords({
  * @param {import("../utils/fundingTypes").NormalizedFundingEvent} params.verifiedEvent
  * @returns {Promise<{ success: boolean, duplicate?: boolean, transactionRecordId?: string, error?: string }>}
  */
+/**
+ * @param {Object} fundingOrder
+ * @returns {boolean}
+ */
+function isB2bSelfTopupOrder(fundingOrder) {
+  const product = String(fundingOrder?.metadata?.product || "").toLowerCase();
+  return product === B2B_SELF_TOPUP_PRODUCT || product === "b2b";
+}
+
+/**
+ * Credit partner wallet for B2B Add Money (Paystack KES self-topup).
+ *
+ * @param {Object} params
+ * @param {Object} params.fundingOrder
+ * @param {import("../utils/fundingTypes").NormalizedFundingEvent} params.verifiedEvent
+ * @returns {Promise<{ success: boolean, duplicate?: boolean, transactionRecordId?: string, error?: string }>}
+ */
+async function completeB2bSelfTopupOrder(params) {
+  const { fundingOrder, verifiedEvent } = params;
+  const meta = fundingOrder.metadata && typeof fundingOrder.metadata === "object" ?
+    fundingOrder.metadata :
+    {};
+  const partnerId = meta.partnerId ? String(meta.partnerId) : null;
+  if (!partnerId) {
+    return { success: false, error: "B2B funding order missing partnerId" };
+  }
+
+  const creditAmount = Number.isFinite(Number(meta.requestedAmount)) && Number(meta.requestedAmount) > 0 ?
+    Number(meta.requestedAmount) :
+    fundingOrder.amount;
+  const creditCurrency = String(meta.requestedCurrency || fundingOrder.currency || "KES").toUpperCase();
+
+  await fundingOrderService.updateFundingOrder(fundingOrder.id, {
+    status: FUNDING_STATUSES.processing,
+    providerTransactionId: verifiedEvent.providerTransactionId || fundingOrder.providerTransactionId,
+  });
+
+  try {
+    await walletService.getOrCreatePartnerWallet(partnerId);
+    const { previousBalance, newBalance } = await walletService.updatePartnerWalletBalance(
+        partnerId,
+        creditCurrency,
+        creditAmount,
+    );
+
+    const { transactionId } = await createTransactionRecord({
+      type: TRANSACTION_TYPES.b2b_funding,
+      partnerId,
+      userId: fundingOrder.userId || null,
+      amount: creditAmount,
+      currency: creditCurrency,
+      status: STATUSES.completed,
+      metadata: {
+        fundingOrderId: fundingOrder.id,
+        provider: fundingOrder.provider,
+        providerReference: fundingOrder.providerReference,
+        providerTransactionId: verifiedEvent.providerTransactionId,
+        product: B2B_SELF_TOPUP_PRODUCT,
+        source: "paystack",
+        rail: "paystack",
+        previousBalance,
+        newBalance,
+        chargeAmount: fundingOrder.amount,
+        chargeCurrency: fundingOrder.currency,
+      },
+      logLegacy: false,
+    });
+
+    await fundingOrderService.updateFundingOrder(fundingOrder.id, {
+      status: FUNDING_STATUSES.completed,
+      transactionRecordId: transactionId,
+      providerTransactionId: verifiedEvent.providerTransactionId || fundingOrder.providerTransactionId,
+    });
+
+    return {
+      success: true,
+      duplicate: false,
+      transactionRecordId: transactionId,
+    };
+  } catch (err) {
+    await fundingOrderService.updateFundingOrder(fundingOrder.id, {
+      status: FUNDING_STATUSES.failed,
+      failureReason: err.message,
+    });
+    return { success: false, error: err.message };
+  }
+}
+
 async function completeFundingOrder(params) {
   const { fundingOrder, verifiedEvent } = params;
 
@@ -354,6 +445,10 @@ async function completeFundingOrder(params) {
 
   if (fundingOrder.status === FUNDING_STATUSES.completed) {
     return { success: true, duplicate: true, transactionRecordId: fundingOrder.transactionRecordId };
+  }
+
+  if (isB2bSelfTopupOrder(fundingOrder)) {
+    return completeB2bSelfTopupOrder(params);
   }
 
   const referenceId = `fund_${fundingOrder.provider}_${verifiedEvent.providerTransactionId || verifiedEvent.providerReference}`;
@@ -474,4 +569,6 @@ module.exports = {
   resolveChannelTypes,
   generateTransactionRecordId,
   completeFundingOrder,
+  completeB2bSelfTopupOrder,
+  isB2bSelfTopupOrder,
 };

@@ -8,7 +8,12 @@ const axios = require("axios");
 const config = require("../../../config");
 const { createLogger } = require("../../../utils/paymentOpsLogger");
 const { resolvePaystackCallbackUrl } = require("../fundingCallbackService");
-const { FUNDING_PROVIDERS, FUNDING_CURRENCY, C2B_PAYSTACK_CURRENCY } = require("../../../utils/fundingTypes");
+const {
+  FUNDING_PROVIDERS,
+  FUNDING_CURRENCY,
+  C2B_PAYSTACK_CURRENCY,
+  B2B_SELF_TOPUP_PRODUCT,
+} = require("../../../utils/fundingTypes");
 
 const PROVIDER_ID = FUNDING_PROVIDERS.paystack;
 const PAYSTACK_CHARGE_CURRENCIES = Object.freeze([FUNDING_CURRENCY, C2B_PAYSTACK_CURRENCY]);
@@ -35,6 +40,30 @@ function getWebhookSecret() {
  */
 function getSplitCode() {
   return process.env.PAYSTACK_SPLIT_CODE || config.paystack.splitCode || null;
+}
+
+/**
+ * @returns {string|null}
+ */
+function getB2bSplitCode() {
+  return process.env.PAYSTACK_B2B_SPLIT_CODE ||
+    config.paystack.b2bSplitCode ||
+    getSplitCode();
+}
+
+/**
+ * Resolve split code for a product. Tourist requires a split; B2B prefers B2B split
+ * then tourist split; omits split when none configured for B2B.
+ *
+ * @param {string} [product]
+ * @returns {{ splitCode: string|null, required: boolean }}
+ */
+function resolveSplitForProduct(product) {
+  const normalized = String(product || "tourist").toLowerCase();
+  if (normalized === B2B_SELF_TOPUP_PRODUCT || normalized === "b2b") {
+    return { splitCode: getB2bSplitCode(), required: false };
+  }
+  return { splitCode: getSplitCode(), required: true };
 }
 
 /**
@@ -108,9 +137,9 @@ async function initializePayment(params) {
     `tp_${Date.now()}_${Math.random().toString(36).substr(2, 8)}`;
 
   const resolvedCallbackUrl = resolvePaystackCallbackUrl(callbackUrl);
-
-  const splitCode = getSplitCode();
-  if (!splitCode) {
+  const product = metadata.product || "tourist";
+  const { splitCode, required: splitRequired } = resolveSplitForProduct(product);
+  if (splitRequired && !splitCode) {
     throw new Error(
         "Paystack split is not configured (PAYSTACK_SPLIT_CODE). " +
         "Set the Transaction Split code from your Paystack dashboard (e.g. SPL_…).",
@@ -128,7 +157,7 @@ async function initializePayment(params) {
       correlationId: correlationId || metadata.correlationId || null,
       userId: userId || metadata.userId || null,
       fundingProvider: PROVIDER_ID,
-      product: metadata.product || "tourist",
+      product,
       environment: metadata.environment || process.env.GCLOUD_PROJECT || "local",
     },
   };
@@ -137,7 +166,9 @@ async function initializePayment(params) {
     payload.callback_url = resolvedCallbackUrl;
   }
 
-  payload.split_code = splitCode;
+  if (splitCode) {
+    payload.split_code = splitCode;
+  }
 
   let response;
   try {

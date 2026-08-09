@@ -21,8 +21,10 @@ describe("paystackProvider", () => {
   afterEach(() => {
     delete process.env.PAYSTACK_SECRET_KEY;
     delete process.env.PAYSTACK_SPLIT_CODE;
+    delete process.env.PAYSTACK_B2B_SPLIT_CODE;
     delete process.env.PAYSTACK_CALLBACK_URL;
     config.paystack.splitCode = null;
+    config.paystack.b2bSplitCode = null;
   });
 
   it("implements the Funding Provider interface", () => {
@@ -83,6 +85,60 @@ describe("paystackProvider", () => {
       amount: 10,
       providerReference: "fund_no_split",
     })).rejects.toThrow("PAYSTACK_SPLIT_CODE");
+  });
+
+  it("allows B2B self-topup without split when none configured", async () => {
+    delete process.env.PAYSTACK_SPLIT_CODE;
+    delete process.env.PAYSTACK_B2B_SPLIT_CODE;
+    config.paystack.splitCode = null;
+    config.paystack.b2bSplitCode = null;
+
+    axios.post.mockResolvedValue({
+      data: {
+        status: true,
+        data: {
+          authorization_url: "https://checkout.paystack.com/b2b",
+          reference: "fund_b2b",
+          access_code: "access_b2b",
+        },
+      },
+    });
+
+    await paystackProvider.initializePayment({
+      amount: 5000,
+      currency: "KES",
+      providerReference: "fund_b2b",
+      metadata: { product: "b2b_self_topup" },
+    });
+
+    const payload = axios.post.mock.calls[0][1];
+    expect(payload.split_code).toBeUndefined();
+    expect(payload.metadata.product).toBe("b2b_self_topup");
+  });
+
+  it("uses PAYSTACK_B2B_SPLIT_CODE for B2B self-topup when set", async () => {
+    process.env.PAYSTACK_B2B_SPLIT_CODE = "SPL_b2b_only";
+    config.paystack.b2bSplitCode = "SPL_b2b_only";
+
+    axios.post.mockResolvedValue({
+      data: {
+        status: true,
+        data: {
+          authorization_url: "https://checkout.paystack.com/b2b",
+          reference: "fund_b2b2",
+          access_code: "access_b2b2",
+        },
+      },
+    });
+
+    await paystackProvider.initializePayment({
+      amount: 1000,
+      currency: "KES",
+      providerReference: "fund_b2b2",
+      metadata: { product: "b2b_self_topup" },
+    });
+
+    expect(axios.post.mock.calls[0][1].split_code).toBe("SPL_b2b_only");
   });
 
   it("throws when initialize fails", async () => {

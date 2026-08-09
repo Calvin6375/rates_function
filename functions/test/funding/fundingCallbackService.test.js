@@ -10,6 +10,7 @@ describe("fundingCallbackService", () => {
   beforeEach(() => {
     process.env = { ...originalEnv, GCLOUD_PROJECT: "truepay-72060" };
     delete process.env.PAYSTACK_CALLBACK_URL;
+    delete process.env.PAYSTACK_B2B_CALLBACK_URL;
     delete process.env.C2B_API_BASE_URL;
     delete process.env.C2B_APP_DEEP_LINK;
   });
@@ -47,6 +48,19 @@ describe("fundingCallbackService", () => {
     process.env.C2B_APP_DEEP_LINK = "truepay://topup/done";
     expect(fundingCallbackService.buildAppReturnDeepLink("ref_1")).toBe(
         "truepay://topup/done?reference=ref_1",
+    );
+  });
+
+  it("builds default B2B dashboard callback URL", () => {
+    expect(fundingCallbackService.buildDefaultB2bPaystackCallbackUrl()).toBe(
+        "https://theadmin.truepay.live/dashboard/pay?funding=return",
+    );
+  });
+
+  it("uses PAYSTACK_B2B_CALLBACK_URL when set", () => {
+    process.env.PAYSTACK_B2B_CALLBACK_URL = "https://theadmin.truepay.live/pay/return";
+    expect(fundingCallbackService.resolveB2bPaystackCallbackUrl()).toBe(
+        "https://theadmin.truepay.live/pay/return",
     );
   });
 });

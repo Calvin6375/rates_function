@@ -42,7 +42,9 @@ const config = {
     paystackSecretKey: "PAYSTACK_SECRET_KEY",
     paystackPublicKey: "PAYSTACK_PUBLIC_KEY",
     paystackSplitCode: "PAYSTACK_SPLIT_CODE",
+    paystackB2bSplitCode: "PAYSTACK_B2B_SPLIT_CODE",
     paystackCallbackUrl: "PAYSTACK_CALLBACK_URL",
+    paystackB2bCallbackUrl: "PAYSTACK_B2B_CALLBACK_URL",
     paystackWebhookSecret: "PAYSTACK_WEBHOOK_SECRET",
     transakApiKey: "TRANSAK_API_KEY",
     transakSecretKey: "TRANSAK_SECRET_KEY",
@@ -170,6 +172,10 @@ const config = {
     opsMetricsDaily: "opsMetricsDaily",
     /** Admin payment audit trail */
     paymentAuditLog: "paymentAuditLog",
+    /** B2B Send — saved merchants/recipients per partner */
+    partnerRecipients: "partnerRecipients",
+    /** B2B Send — outbound partner → merchant payments */
+    partnerSendPayments: "partnerSendPayments",
   },
 
   paymentLinks: {
@@ -191,7 +197,11 @@ const config = {
     secretKey: getEnv("PAYSTACK_SECRET_KEY", null),
     publicKey: getEnv("PAYSTACK_PUBLIC_KEY", null),
     splitCode: getEnv("PAYSTACK_SPLIT_CODE", null),
+    /** Optional B2B self-topup split; falls back to splitCode when unset */
+    b2bSplitCode: getEnv("PAYSTACK_B2B_SPLIT_CODE", null),
     callbackUrl: getEnv("PAYSTACK_CALLBACK_URL", null),
+    /** Dashboard return URL after Paystack checkout (B2B Add Money) */
+    b2bCallbackUrl: getEnv("PAYSTACK_B2B_CALLBACK_URL", null),
     webhookSecret: getEnv("PAYSTACK_WEBHOOK_SECRET", null),
     baseUrl: getEnv("PAYSTACK_API_BASE_URL", "https://api.paystack.co"),
   },

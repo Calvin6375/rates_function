@@ -119,6 +119,25 @@ async function getFundingOrderForUser(userId, fundingOrderId) {
 }
 
 /**
+ * Load a funding order owned by a B2B partner (metadata.partnerId).
+ *
+ * @param {string} partnerId
+ * @param {string} fundingOrderId
+ * @returns {Promise<Object|null>}
+ */
+async function getFundingOrderForPartner(partnerId, fundingOrderId) {
+  const order = await getFundingOrder(fundingOrderId);
+  if (!order) return null;
+  const orderPartnerId = order.metadata?.partnerId ?
+    String(order.metadata.partnerId) :
+    null;
+  if (!orderPartnerId || orderPartnerId !== String(partnerId)) {
+    return null;
+  }
+  return order;
+}
+
+/**
  * @param {string} provider
  * @param {string} providerReference
  * @returns {Promise<Object|null>}
@@ -167,6 +186,7 @@ module.exports = {
   updateFundingOrder,
   getFundingOrder,
   getFundingOrderForUser,
+  getFundingOrderForPartner,
   findByProviderReference,
   serializeFundingOrder,
 };

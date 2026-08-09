@@ -50,6 +50,12 @@ const FUNDING_CURRENCY = "USD";
 /** C2B Paystack checkout charge currency (Kenya merchant default). */
 const C2B_PAYSTACK_CURRENCY = "KES";
 
+/** B2B partner self-topup product marker on fundingOrders.metadata.product */
+const B2B_SELF_TOPUP_PRODUCT = "b2b_self_topup";
+
+/** B2B Paystack collection currency (KES-only merchant). */
+const B2B_PAYSTACK_CURRENCY = "KES";
+
 const FIAT_ASSETS = Object.freeze(["USD", "KES", "NGN", "GHS", "GBP", "EUR", "USDT"]);
 
 const MERCHANT_PAYMENT_STATUSES = Object.freeze({
@@ -123,6 +129,8 @@ module.exports = {
   FUNDING_STATUSES,
   FUNDING_CURRENCY,
   C2B_PAYSTACK_CURRENCY,
+  B2B_SELF_TOPUP_PRODUCT,
+  B2B_PAYSTACK_CURRENCY,
   FIAT_ASSETS,
   MERCHANT_PAYMENT_STATUSES,
   SETTLEMENT_JOB_STATUSES,

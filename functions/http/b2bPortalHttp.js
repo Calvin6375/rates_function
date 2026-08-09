@@ -29,7 +29,18 @@ const intaSendPublishableKey = defineSecret(config.secrets.intaSendPublishableKe
 const intaSendSecretKey = defineSecret(config.secrets.intaSendSecretKey);
 const smtpUser = defineSecret(config.secrets.smtpUser);
 const smtpPass = defineSecret(config.secrets.smtpPass);
+const paystackSecretKey = defineSecret(config.secrets.paystackSecretKey);
+const paystackSplitCode = defineSecret(config.secrets.paystackSplitCode);
 const emailService = require("../services/emailService");
+const accountPasswordService = require("../services/accountPasswordService");
+const b2bFundingBridgeService = require("../services/funding/b2bFundingBridgeService");
+const fundingOrderService = require("../services/funding/fundingOrderService");
+const fundingWebhookService = require("../services/funding/fundingWebhookService");
+const partnerRecipientService = require("../services/partnerRecipientService");
+const b2bSendService = require("../services/b2bSendService");
+const partnerWalletAdminService = require("../services/partnerWalletAdminService");
+const b2bWalletBalanceSync = require("../services/b2bWalletBalanceSync");
+const { correlationFromRequest } = require("../utils/paymentContext");
 
 const {
   parseAccessFromToken,
@@ -97,7 +108,7 @@ app.use((req, res, next) => {
 
   res.set("Access-Control-Allow-Origin", allowedOrigin);
   res.set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
-  res.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.set("Access-Control-Allow-Headers", "Content-Type, Authorization, Idempotency-Key");
   if (allowedOrigin !== "*") {
     res.set("Access-Control-Allow-Credentials", "true");
   }
@@ -464,6 +475,128 @@ app.patch("/platform/partners/:partnerId", loadFirebaseUser, requirePlatformAdmi
 });
 
 /**
+ * GET /platform/partners/:partnerId/wallet
+ * Platform admin: read partner wallet balances (same shape as GET /portal/wallet).
+ */
+app.get("/platform/partners/:partnerId/wallet", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+  try {
+    const data = await partnerWalletAdminService.getPartnerWalletForAdmin(req.params.partnerId);
+    // Absorb legacy users/{orgAdminUid} balances credited via C2B customer-wallets UI.
+    if (data.partnerId) {
+      const partner = await partnerService.getPartner(data.partnerId);
+      const orgAdminUid = partner?.orgAdminUid ? String(partner.orgAdminUid) : null;
+      if (orgAdminUid) {
+        const synced = await b2bWalletBalanceSync.getPartnerWalletAfterLegacySync(
+            data.partnerId,
+            orgAdminUid,
+        );
+        data.walletId = synced.walletId;
+        data.balances = synced.balances;
+        if (synced.migration) {
+          data.migration = synced.migration;
+        }
+      }
+    }
+    res.status(200).json({success: true, data});
+  } catch (err) {
+    const status = err.statusCode || 500;
+    console.error("b2bPortal GET /platform/partners/:id/wallet:", err.message);
+    res.status(status).json({
+      success: false,
+      error: err.code || "WALLET_FETCH_FAILED",
+      message: err.message,
+    });
+  }
+});
+
+/**
+ * POST /platform/partners/:partnerId/wallet/credit
+ * Platform admin manual top-up (mirrors C2B POST /customer-wallets/:id/credit).
+ * Body: { amount, currency?, description? }
+ */
+app.post("/platform/partners/:partnerId/wallet/credit", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const result = await partnerWalletAdminService.creditPartnerWallet({
+      partnerId: req.params.partnerId,
+      amount: body.amount,
+      currency: body.currency || "KES",
+      description: body.description || "Admin wallet top-up",
+      actorUid: req.userId,
+    });
+    try {
+      await logAdminAction(
+          req.userId,
+          req.params.partnerId,
+          "partnerWalletCredit",
+          {balance: result.transaction.previousBalance},
+          {
+            amount: result.transaction.amount,
+            currency: result.transaction.currency,
+            newBalance: result.transaction.newBalance,
+            transactionId: result.transaction.transactionId,
+            description: result.transaction.description,
+          },
+      );
+    } catch (logErr) {
+      console.warn("logAdminAction partnerWalletCredit:", logErr.message);
+    }
+    res.status(200).json({success: true, data: result});
+  } catch (err) {
+    const status = err.statusCode || 500;
+    console.error("b2bPortal POST /platform/partners/:id/wallet/credit:", err.message);
+    res.status(status).json({
+      success: false,
+      error: err.code || "WALLET_CREDIT_FAILED",
+      message: err.message,
+    });
+  }
+});
+
+/**
+ * POST /platform/partners/:partnerId/wallet/debit
+ * Platform admin manual debit (mirrors C2B customer wallet debit).
+ */
+app.post("/platform/partners/:partnerId/wallet/debit", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const result = await partnerWalletAdminService.debitPartnerWallet({
+      partnerId: req.params.partnerId,
+      amount: body.amount,
+      currency: body.currency || "KES",
+      description: body.description || "Admin wallet debit",
+      actorUid: req.userId,
+    });
+    try {
+      await logAdminAction(
+          req.userId,
+          req.params.partnerId,
+          "partnerWalletDebit",
+          {balance: result.transaction.previousBalance},
+          {
+            amount: result.transaction.amount,
+            currency: result.transaction.currency,
+            newBalance: result.transaction.newBalance,
+            transactionId: result.transaction.transactionId,
+            description: result.transaction.description,
+          },
+      );
+    } catch (logErr) {
+      console.warn("logAdminAction partnerWalletDebit:", logErr.message);
+    }
+    res.status(200).json({success: true, data: result});
+  } catch (err) {
+    const status = err.statusCode || 500;
+    console.error("b2bPortal POST /platform/partners/:id/wallet/debit:", err.message);
+    res.status(status).json({
+      success: false,
+      error: err.code || "WALLET_DEBIT_FAILED",
+      message: err.message,
+    });
+  }
+});
+
+/**
  * DELETE /platform/partners/:partnerId
  * Platform master admin: delete partner org, clear member claims, remove payment links.
  */
@@ -782,6 +915,60 @@ app.get("/platform/me", loadFirebaseUser, requirePlatformAdmin, async (req, res)
  * Default continueUrl = B2B dashboard (`config.b2bDashboardUrl`). Clicking the email link
  * hits GET /public/verify-email which verifies then 302-redirects to the dashboard.
  */
+/**
+ * POST /portal/account/change-password — Account Settings → Update Password.
+ * Body: { currentPassword, newPassword, confirmPassword? }
+ * Requires Bearer Firebase ID token. Email/password accounts only (not Google-only).
+ */
+app.post("/portal/account/change-password", loadFirebaseUser, async (req, res) => {
+  try {
+    const body = req.body || {};
+    await accountPasswordService.changePassword(req.userId, {
+      currentPassword: body.currentPassword,
+      newPassword: body.newPassword,
+      confirmPassword: body.confirmPassword,
+    });
+    res.status(200).json({
+      success: true,
+      message: "Password updated. Sign in again on other devices if needed.",
+    });
+  } catch (err) {
+    const status = err.statusCode || 500;
+    console.error("b2bPortal POST /portal/account/change-password:", err.message);
+    res.status(status >= 400 && status < 600 ? status : 500).json({
+      success: false,
+      error: err.code || "PASSWORD_CHANGE_FAILED",
+      message: err.message || "Unable to update password",
+    });
+  }
+});
+
+/**
+ * POST /portal/account/request-password-reset — forgot-password email (public).
+ * Body: { email, continueUrl? }. Always returns success for unknown emails.
+ */
+app.post("/portal/account/request-password-reset", async (req, res) => {
+  try {
+    const body = req.body || {};
+    await accountPasswordService.requestPasswordResetEmail({
+      email: body.email,
+      continueUrl: body.continueUrl,
+    });
+    res.status(200).json({
+      success: true,
+      message: "If an account exists for that email, a reset link has been sent.",
+    });
+  } catch (err) {
+    const status = err.statusCode || 500;
+    console.error("b2bPortal POST /portal/account/request-password-reset:", err.message);
+    res.status(status >= 400 && status < 600 ? status : 500).json({
+      success: false,
+      error: err.code || "PASSWORD_RESET_FAILED",
+      message: err.message || "Unable to send reset email",
+    });
+  }
+});
+
 app.post("/portal/send-verification-email", loadFirebaseUser, async (req, res) => {
   try {
     const body = req.body || {};
@@ -858,17 +1045,24 @@ app.post("/portal/ensure-dashboard-profile", loadFirebaseUser, async (req, res) 
         );
       }
     }
+    const claimsNeedRefresh = Boolean(
+        partnerOrg &&
+        (partnerOrg.claimsNeedRefresh === true || partnerOrg.alreadyRegistered !== true),
+    );
     res.status(200).json({
       success: true,
       message: "Dashboard profile ensured",
-      data: partnerOrg ? {
-        partnerOrg: {
-          partnerId: partnerOrg.partnerId,
-          orgAdminUid: partnerOrg.orgAdminUid,
-          alreadyRegistered: partnerOrg.alreadyRegistered === true,
-          ...(partnerOrg.apiKey ? {apiKey: partnerOrg.apiKey} : {}),
-        },
-      } : undefined,
+      data: {
+        ...(partnerOrg ? {
+          partnerOrg: {
+            partnerId: partnerOrg.partnerId,
+            orgAdminUid: partnerOrg.orgAdminUid,
+            alreadyRegistered: partnerOrg.alreadyRegistered === true,
+            ...(partnerOrg.apiKey ? {apiKey: partnerOrg.apiKey} : {}),
+          },
+        } : {}),
+        claimsNeedRefresh,
+      },
     });
   } catch (err) {
     console.error("b2bPortal POST /portal/ensure-dashboard-profile:", err.message);
@@ -920,11 +1114,17 @@ app.get("/portal/onboarding", loadFirebaseUser, async (req, res) => {
           goLiveDone,
         },
       };
+    const claimsNeedRefresh = Boolean(
+        partnerOrg &&
+        (partnerOrg.claimsNeedRefresh === true ||
+          (partnerOrg.alreadyRegistered !== true && !dt.partnerId)),
+    );
     res.status(200).json({
       success: true,
       data: {
         onboarding: mergedOnboarding,
         emailVerified: dt.email_verified === true,
+        claimsNeedRefresh,
         partnerOrg: partnerOrg ? {
           partnerId: partnerOrg.partnerId,
           orgAdminUid: partnerOrg.orgAdminUid,
@@ -1062,11 +1262,40 @@ app.post("/portal/onboarding/complete", loadFirebaseUser, async (req, res) => {
   }
 });
 
+/**
+ * POST /portal/onboarding/request-go-live — partner asks super admin to activate live API.
+ * Creates a system notification + FCM to platform admins. Idempotent if already requested.
+ */
+app.post("/portal/onboarding/request-go-live", loadFirebaseUser, async (req, res) => {
+  try {
+    const dt = req.decodedToken || {};
+    const out = await b2bOnboardingService.requestGoLive(req.userId, {
+      emailVerified: dt.email_verified === true,
+      email: dt.email || null,
+      note: req.body?.note != null ? String(req.body.note) : null,
+    });
+    res.status(out.alreadyRequested || out.alreadyLive ? 200 : 201).json({
+      success: true,
+      data: out,
+      message: out.message,
+    });
+  } catch (err) {
+    const status = err.statusCode || 400;
+    console.error("b2bPortal POST /portal/onboarding/request-go-live:", err.message);
+    res.status(status >= 400 && status < 600 ? status : 500).json({
+      success: false,
+      error: err.code || "GO_LIVE_REQUEST_FAILED",
+      message: err.message,
+    });
+  }
+});
+
 // --- Partner portal (org admin) ---
 
 /**
- * GET /portal/me — partner session, or platform admin without B2B claims.
- * Master admin dashboards often call this path; allow admin + no partnerId (403 was wrong).
+ * GET /portal/me — partner session, platform admin, or mid-onboarding dashboard user.
+ * Google signup users are email_verified immediately; partner claims may exist on Auth
+ * but not yet on the current ID token — never blank the dashboard with a hard 403.
  */
 app.get("/portal/me", loadFirebaseUser, async (req, res) => {
   try {
@@ -1087,15 +1316,63 @@ app.get("/portal/me", loadFirebaseUser, async (req, res) => {
           partnerRole: null,
           roleLegacy: null,
           partner: null,
+          emailVerified: dt.email_verified === true,
+          claimsNeedRefresh: false,
+          onboardingIncomplete: false,
         },
       });
       return;
     }
 
     if (!resolved || !isKnownPartnerRole(resolved.role)) {
-      res.status(403).json({
-        success: false,
-        error: "Not a B2B partner user (missing partner claims)",
+      let partnerOrg = null;
+      if (dt.email_verified === true) {
+        try {
+          partnerOrg = await b2bOnboardingService.ensurePartnerOrgOnEmailVerified(
+              req.userId,
+              {
+                emailVerified: true,
+                email: dt.email || null,
+              },
+          );
+        } catch (ensureErr) {
+          console.error("b2bPortal GET /portal/me partner org:", ensureErr.message);
+        }
+      }
+
+      const onboarding = await b2bOnboardingService.getOnboarding(req.userId);
+      const partnerId =
+        partnerOrg?.partnerId ||
+        (onboarding?.registeredPartnerId ?
+          String(onboarding.registeredPartnerId) :
+          null);
+      let partner = null;
+      if (partnerId) {
+        partner = await partnerService.getPartner(partnerId);
+      }
+
+      const claimsNeedRefresh = Boolean(partnerId);
+      res.status(200).json({
+        success: true,
+        data: {
+          userId: req.userId,
+          userType: partnerId ? USER_TYPE_PARTNER : null,
+          role: null,
+          admin: platformAdmin,
+          partnerId,
+          partnerRole: null,
+          roleLegacy: null,
+          partner: partner || (partnerId ? {id: partnerId} : null),
+          email: dt.email || null,
+          emailVerified: dt.email_verified === true,
+          onboardingStatus: onboarding?.onboardingStatus || null,
+          owner: onboarding?.owner || null,
+          claimsNeedRefresh,
+          onboardingIncomplete: !partnerId,
+          message: claimsNeedRefresh ?
+            "Partner org is ready — refresh your ID token (getIdToken(true)) to load partner claims." :
+            "Complete onboarding to obtain partner claims.",
+        },
       });
       return;
     }
@@ -1112,6 +1389,9 @@ app.get("/portal/me", loadFirebaseUser, async (req, res) => {
         partnerRole: legacyPartnerRoleFromNormalized(resolved.role),
         roleLegacy: legacyPartnerRoleFromNormalized(resolved.role),
         partner: partner || { id: resolved.partnerId },
+        emailVerified: dt.email_verified === true,
+        claimsNeedRefresh: false,
+        onboardingIncomplete: false,
       },
     });
   } catch (err) {
@@ -1309,14 +1589,363 @@ app.delete("/portal/payment-links/:linkId", loadFirebaseUser, attachPartnerConte
 /** Partner wallet balances (Firebase Bearer; no API key in browser). */
 app.get("/portal/wallet", loadFirebaseUser, attachPartnerContext, async (req, res) => {
   try {
-    let wallet = await walletService.getPartnerWallet(req.partnerId);
-    if (!wallet) {
-      wallet = await walletService.getOrCreatePartnerWallet(req.partnerId);
-    }
-    res.status(200).json({ success: true, data: wallet });
+    // Migrates stranded users/{uid} balances (from C2B-style admin credit) into partner wallet once.
+    const wallet = await b2bWalletBalanceSync.getPartnerWalletAfterLegacySync(
+        req.partnerId,
+        req.userId,
+    );
+    res.status(200).json({
+      success: true,
+      data: {
+        walletId: wallet.walletId,
+        balances: wallet.balances,
+        ...(wallet.migration ? {migration: wallet.migration} : {}),
+      },
+    });
   } catch (err) {
     console.error("b2bPortal GET /portal/wallet:", err.message);
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// --- B2B Send (recipients, quote, payments) ---
+
+/** List saved recipients for the partner. Query: ?currency=AED&limit=50 */
+app.get("/portal/send/recipients", loadFirebaseUser, attachPartnerContext, async (req, res) => {
+  try {
+    const data = await partnerRecipientService.listRecipients(req.partnerId, {
+      currency: req.query.currency || null,
+      limit: parseInt(String(req.query.limit || "50"), 10) || 50,
+    });
+    res.status(200).json({success: true, data});
+  } catch (err) {
+    console.error("b2bPortal GET /portal/send/recipients:", err.message);
+    res.status(500).json({success: false, error: err.message});
+  }
+});
+
+/** Create a saved recipient (merchant bank account). */
+app.post("/portal/send/recipients", loadFirebaseUser, attachPartnerContext, async (req, res) => {
+  try {
+    const recipient = await partnerRecipientService.createRecipient(
+        req.partnerId,
+        req.body || {},
+        req.userId,
+    );
+    res.status(201).json({success: true, data: {recipient}});
+  } catch (err) {
+    const status = err.statusCode || 500;
+    console.error("b2bPortal POST /portal/send/recipients:", err.message);
+    res.status(status).json({
+      success: false,
+      error: err.code || "RECIPIENT_CREATE_FAILED",
+      message: err.message,
+    });
+  }
+});
+
+app.get("/portal/send/recipients/:recipientId", loadFirebaseUser, attachPartnerContext, async (req, res) => {
+  try {
+    const recipient = await partnerRecipientService.getRecipient(
+        req.partnerId,
+        req.params.recipientId,
+    );
+    if (!recipient) {
+      res.status(404).json({success: false, error: "Recipient not found"});
+      return;
+    }
+    res.status(200).json({success: true, data: {recipient}});
+  } catch (err) {
+    console.error("b2bPortal GET /portal/send/recipients/:id:", err.message);
+    res.status(500).json({success: false, error: err.message});
+  }
+});
+
+app.patch("/portal/send/recipients/:recipientId", loadFirebaseUser, attachPartnerContext, async (req, res) => {
+  try {
+    const recipient = await partnerRecipientService.updateRecipient(
+        req.partnerId,
+        req.params.recipientId,
+        req.body || {},
+        req.userId,
+    );
+    res.status(200).json({success: true, data: {recipient}});
+  } catch (err) {
+    const status = err.statusCode || 500;
+    console.error("b2bPortal PATCH /portal/send/recipients/:id:", err.message);
+    res.status(status).json({
+      success: false,
+      error: err.code || "RECIPIENT_UPDATE_FAILED",
+      message: err.message,
+    });
+  }
+});
+
+app.delete("/portal/send/recipients/:recipientId", loadFirebaseUser, attachPartnerContext, async (req, res) => {
+  try {
+    const data = await partnerRecipientService.deleteRecipient(
+        req.partnerId,
+        req.params.recipientId,
+    );
+    res.status(200).json({success: true, data});
+  } catch (err) {
+    const status = err.statusCode || 500;
+    console.error("b2bPortal DELETE /portal/send/recipients/:id:", err.message);
+    res.status(status).json({
+      success: false,
+      error: err.code || "RECIPIENT_DELETE_FAILED",
+      message: err.message,
+    });
+  }
+});
+
+/**
+ * Quote a send corridor (rate + fee breakdown for Payment summary).
+ * Body or query: amount, fromCurrency, toCurrency, rail?
+ */
+app.post("/portal/send/quote", loadFirebaseUser, attachPartnerContext, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const quote = await b2bSendService.quoteSend({
+      partnerId: req.partnerId,
+      amount: body.amount != null ? body.amount : req.query.amount,
+      fromCurrency: body.fromCurrency || body.from || req.query.fromCurrency || "KES",
+      toCurrency: body.toCurrency || body.to || req.query.toCurrency || "AED",
+      rail: body.rail || req.query.rail || "bank_transfer",
+    });
+    res.status(200).json({success: true, data: {quote}});
+  } catch (err) {
+    const status = err.statusCode || 500;
+    console.error("b2bPortal POST /portal/send/quote:", err.message);
+    res.status(status).json({
+      success: false,
+      error: err.code || "QUOTE_FAILED",
+      message: err.message,
+    });
+  }
+});
+
+/** List corridor catalog (rates/fees) available for Send. */
+app.get("/portal/send/corridors", loadFirebaseUser, attachPartnerContext, async (req, res) => {
+  try {
+    const cfg = await b2bSendService.loadSendConfig();
+    const corridors = Object.entries(cfg.corridors).map(([key, c]) => ({
+      key,
+      fromCurrency: c.fromCurrency,
+      toCurrency: c.toCurrency,
+      rail: c.rail || "bank_transfer",
+      rate: Number(c.rate),
+      ourFeeFlat: Number(c.ourFeeFlat) || 0,
+      ourFeePercent: Number(c.ourFeePercent) || 0,
+      paymentFeeFlat: Number(c.paymentFeeFlat) || 0,
+      paymentFeePercent: Number(c.paymentFeePercent) || 0,
+      estimatedDelivery: c.estimatedDelivery || "Within minutes",
+    }));
+    res.status(200).json({
+      success: true,
+      data: {corridors, source: cfg.source},
+    });
+  } catch (err) {
+    console.error("b2bPortal GET /portal/send/corridors:", err.message);
+    res.status(500).json({success: false, error: err.message});
+  }
+});
+
+/**
+ * Create Send payment (Review & Confirm).
+ * Debits partner wallet, notifies super admin, status=pending until ops fulfills.
+ */
+app.post("/portal/send/payments", loadFirebaseUser, attachPartnerContext, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const result = await b2bSendService.createSendPayment({
+      partnerId: req.partnerId,
+      actorUid: req.userId,
+      amount: body.amount,
+      fromCurrency: body.fromCurrency || body.from,
+      toCurrency: body.toCurrency || body.to,
+      rail: body.rail || "bank_transfer",
+      paymentReference: body.paymentReference || body.reference || null,
+      recipientId: body.recipientId || null,
+      recipient: body.recipient || null,
+      saveRecipient: body.saveRecipient === true,
+    });
+    res.status(201).json({
+      success: true,
+      data: result,
+      message: "Payment submitted. Platform admin has been notified.",
+    });
+  } catch (err) {
+    const status = err.statusCode || 500;
+    console.error("b2bPortal POST /portal/send/payments:", err.message);
+    res.status(status).json({
+      success: false,
+      error: err.code || "SEND_PAYMENT_FAILED",
+      message: err.message,
+    });
+  }
+});
+
+app.get("/portal/send/payments", loadFirebaseUser, attachPartnerContext, async (req, res) => {
+  try {
+    const data = await b2bSendService.listSendPayments(req.partnerId, {
+      limit: parseInt(String(req.query.limit || "50"), 10) || 50,
+      status: req.query.status || null,
+    });
+    res.status(200).json({success: true, data});
+  } catch (err) {
+    console.error("b2bPortal GET /portal/send/payments:", err.message);
+    res.status(500).json({success: false, error: err.message});
+  }
+});
+
+app.get("/portal/send/payments/:paymentId", loadFirebaseUser, attachPartnerContext, async (req, res) => {
+  try {
+    const payment = await b2bSendService.getSendPayment(
+        req.partnerId,
+        req.params.paymentId,
+    );
+    if (!payment) {
+      res.status(404).json({success: false, error: "Payment not found"});
+      return;
+    }
+    res.status(200).json({success: true, data: {payment}});
+  } catch (err) {
+    console.error("b2bPortal GET /portal/send/payments/:id:", err.message);
+    res.status(500).json({success: false, error: err.message});
+  }
+});
+
+/** Super-admin: list pending (or filtered) send payments across partners. */
+app.get("/platform/send/payments", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+  try {
+    const data = await b2bSendService.listPlatformSendPayments({
+      limit: parseInt(String(req.query.limit || "50"), 10) || 50,
+      status: req.query.status || "pending",
+    });
+    res.status(200).json({success: true, data});
+  } catch (err) {
+    console.error("b2bPortal GET /platform/send/payments:", err.message);
+    res.status(500).json({success: false, error: err.message});
+  }
+});
+
+/**
+ * POST /portal/funding/checkout — B2B Add Money (Paystack KES hosted checkout).
+ * Credits partner KES wallet after Paystack webhook verify.
+ */
+app.post("/portal/funding/checkout", loadFirebaseUser, attachPartnerContext, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const amount = Number(body.amount);
+    const currency = String(body.currency || "KES").toUpperCase();
+    const email =
+      body.email ||
+      req.decodedToken?.email ||
+      null;
+    const callbackUrl = body.callbackUrl || body.redirectUrl || null;
+    const idempotencyKey =
+      req.get("Idempotency-Key") ||
+      body.idempotencyKey ||
+      null;
+    const correlationId = correlationFromRequest(req) || body.correlationId || null;
+
+    const data = await b2bFundingBridgeService.createB2bSelfTopupCheckout({
+      partnerId: req.partnerId,
+      actorUid: req.userId,
+      amount,
+      currency,
+      email,
+      callbackUrl,
+      idempotencyKey,
+      correlationId,
+      metadata: body.metadata && typeof body.metadata === "object" ? body.metadata : {},
+    });
+
+    res.status(data.duplicate ? 200 : 201).json({ success: true, data });
+  } catch (err) {
+    const status = err.statusCode || (String(err.message || "").includes("supports KES") ? 400 : 500);
+    console.error("b2bPortal POST /portal/funding/checkout:", err.message);
+    res.status(status >= 400 && status < 600 ? status : 500).json({
+      success: false,
+      error: err.message || "Checkout failed",
+    });
+  }
+});
+
+/**
+ * GET /portal/funding/orders/:orderId — poll Add Money order status.
+ */
+app.get("/portal/funding/orders/:orderId", loadFirebaseUser, attachPartnerContext, async (req, res) => {
+  try {
+    const order = await fundingOrderService.getFundingOrderForPartner(
+        req.partnerId,
+        req.params.orderId,
+    );
+    if (!order) {
+      res.status(404).json({ success: false, error: "Funding order not found" });
+      return;
+    }
+    res.status(200).json({
+      success: true,
+      data: {
+        orderId: order.id,
+        invoiceId: order.providerReference || order.id,
+        status: order.status,
+        amount: order.metadata?.requestedAmount ?? order.amount,
+        currency: order.metadata?.requestedCurrency ?? order.currency,
+        checkoutUrl: order.checkoutUrl,
+        provider: order.provider,
+        failureReason: order.failureReason,
+        createdAt: order.createdAt,
+        completedAt: order.completedAt,
+      },
+    });
+  } catch (err) {
+    console.error("b2bPortal GET /portal/funding/orders/:orderId:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /portal/funding/confirm — verify + complete if webhook is slow (return-from-Paystack).
+ * Body: { orderId } or { invoiceId } (Paystack reference).
+ */
+app.post("/portal/funding/confirm", loadFirebaseUser, attachPartnerContext, async (req, res) => {
+  try {
+    const body = req.body || {};
+    let orderId = body.orderId || body.fundingOrderId || null;
+    const invoiceId = body.invoiceId || body.reference || body.trxref || null;
+
+    if (!orderId && invoiceId) {
+      const byRef = await fundingOrderService.findByProviderReference("paystack", String(invoiceId));
+      if (byRef && String(byRef.metadata?.partnerId || "") === String(req.partnerId)) {
+        orderId = byRef.id;
+      }
+    }
+
+    if (!orderId) {
+      res.status(400).json({ success: false, error: "orderId or invoiceId is required" });
+      return;
+    }
+
+    const result = await fundingWebhookService.confirmB2bFundingOrder(req.partnerId, String(orderId));
+    const order = await fundingOrderService.getFundingOrderForPartner(req.partnerId, String(orderId));
+    res.status(200).json({
+      success: Boolean(result.success),
+      data: {
+        orderId: order?.id || orderId,
+        status: order?.status || null,
+        duplicate: Boolean(result.duplicate),
+        amount: order?.metadata?.requestedAmount ?? order?.amount ?? null,
+        currency: order?.metadata?.requestedCurrency ?? order?.currency ?? null,
+        error: result.error || null,
+      },
+    });
+  } catch (err) {
+    const status = err.statusCode || 500;
+    console.error("b2bPortal POST /portal/funding/confirm:", err.message);
+    res.status(status).json({ success: false, error: err.message });
   }
 });
 
@@ -1572,7 +2201,14 @@ exports.b2bPortal = onRequest(
     region: config.region,
     cpu: config.resources.cpu,
     memory: config.resources.memory,
-    secrets: [intaSendPublishableKey, intaSendSecretKey, smtpUser, smtpPass],
+    secrets: [
+      intaSendPublishableKey,
+      intaSendSecretKey,
+      smtpUser,
+      smtpPass,
+      paystackSecretKey,
+      paystackSplitCode,
+    ],
   },
   app,
 );

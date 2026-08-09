@@ -10,8 +10,22 @@ const webhookReceiptService = require("../ops/webhookReceiptService");
 const { recordEvent } = require("../ops/paymentTimelineService");
 const opsMetrics = require("../ops/opsMetricsService");
 const paymentNotifications = require("../ops/paymentNotificationService");
-const { FUNDING_STATUSES, WEBHOOK_RECEIPT_STATUSES, TIMELINE_EVENT_TYPES } = require("../../utils/fundingTypes");
+const {
+  FUNDING_STATUSES,
+  WEBHOOK_RECEIPT_STATUSES,
+  TIMELINE_EVENT_TYPES,
+  B2B_SELF_TOPUP_PRODUCT,
+} = require("../../utils/fundingTypes");
 const { createLogger } = require("../../utils/paymentOpsLogger");
+
+/**
+ * @param {Object} fundingOrder
+ * @returns {boolean}
+ */
+function isB2bSelfTopup(fundingOrder) {
+  const product = String(fundingOrder?.metadata?.product || "").toLowerCase();
+  return product === B2B_SELF_TOPUP_PRODUCT || product === "b2b";
+}
 
 const logger = createLogger({ service: "fundingWebhook" });
 
@@ -112,12 +126,14 @@ async function processFundingEvent(params) {
       status: FUNDING_STATUSES.failed,
       metadata: { reason: event.failureReason },
     });
-    await paymentNotifications.notifyFundingFailed({
-      userId: fundingOrder.userId,
-      fundingOrderId: fundingOrder.id,
-      reason: event.failureReason,
-      correlationId,
-    });
+    if (!isB2bSelfTopup(fundingOrder)) {
+      await paymentNotifications.notifyFundingFailed({
+        userId: fundingOrder.userId,
+        fundingOrderId: fundingOrder.id,
+        reason: event.failureReason,
+        correlationId,
+      });
+    }
     await opsMetrics.increment("funding.failed", 1);
     if (webhookEventId) {
       await recordWebhookEvent(provider, webhookEventId, event, {
@@ -164,13 +180,15 @@ async function processFundingEvent(params) {
     });
     await opsMetrics.recordFundingVolume(fundingOrder.amount);
     await opsMetrics.increment("funding.completed", 1);
-    await paymentNotifications.notifyFundingCompleted({
-      userId: fundingOrder.userId,
-      fundingOrderId: fundingOrder.id,
-      amount: fundingOrder.amount,
-      currency: fundingOrder.currency,
-      correlationId,
-    });
+    if (!isB2bSelfTopup(fundingOrder)) {
+      await paymentNotifications.notifyFundingCompleted({
+        userId: fundingOrder.userId,
+        fundingOrderId: fundingOrder.id,
+        amount: fundingOrder.amount,
+        currency: fundingOrder.currency,
+        correlationId,
+      });
+    }
   }
 
   await recordEvent({
@@ -239,9 +257,36 @@ async function confirmFundingOrder(userId, fundingOrderId) {
   });
 }
 
+/**
+ * Confirm a B2B self-topup funding order (dashboard redirect fallback).
+ *
+ * @param {string} partnerId
+ * @param {string} fundingOrderId
+ * @returns {Promise<Object>}
+ */
+async function confirmB2bFundingOrder(partnerId, fundingOrderId) {
+  const order = await fundingOrderService.getFundingOrderForPartner(partnerId, fundingOrderId);
+  if (!order) {
+    const err = new Error("Funding order not found");
+    err.statusCode = 404;
+    throw err;
+  }
+
+  if (order.status === FUNDING_STATUSES.completed) {
+    return { success: true, duplicate: true, fundingOrder: order };
+  }
+
+  const verified = await fundingRailService.verifyPayment(order.provider, order.providerReference);
+  return processFundingEvent({
+    provider: order.provider,
+    event: verified,
+  });
+}
+
 module.exports = {
   isWebhookDuplicate,
   recordWebhookEvent,
   processFundingEvent,
   confirmFundingOrder,
+  confirmB2bFundingOrder,
 };

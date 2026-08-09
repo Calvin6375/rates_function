@@ -4,6 +4,7 @@
  * PUT .../org-admin.
  */
 
+const admin = require("../admin");
 const {collection, serverTimestamp} = require("../libs/firestore");
 const {getCustomClaims} = require("../utils/customClaimsMerge");
 const {
@@ -11,6 +12,7 @@ const {
   isPartnerOwnerRole,
 } = require("../utils/accessControl");
 const {deepMerge} = require("../utils/objectDeepMerge");
+const {notifyGoLiveRequestAdmins} = require("../utils/notifications");
 const partnerService = require("./partnerService");
 const b2bMemberService = require("./b2bMemberService");
 
@@ -218,7 +220,12 @@ async function registerSelfServePartner(uid, input) {
       throw new Error("Partner org admin mismatch; contact support.");
     }
     await mergeRegisteredPartnerIntoOnboarding(uid, claimPid);
-    return {partnerId: claimPid, orgAdminUid: uid, alreadyRegistered: true};
+    return {
+      partnerId: claimPid,
+      orgAdminUid: uid,
+      alreadyRegistered: true,
+      claimsNeedRefresh: false,
+    };
   }
 
   const obSnap = await onboardingRef(uid).get();
@@ -238,7 +245,12 @@ async function registerSelfServePartner(uid, input) {
         existingReg, uid, uid, {selfServe: true},
     );
     await mergeRegisteredPartnerIntoOnboarding(uid, existingReg);
-    return {partnerId: existingReg, orgAdminUid: uid, alreadyRegistered: true};
+    return {
+      partnerId: existingReg,
+      orgAdminUid: uid,
+      alreadyRegistered: true,
+      claimsNeedRefresh: true,
+    };
   }
 
   const settlementCurrency =
@@ -260,12 +272,16 @@ async function registerSelfServePartner(uid, input) {
       created.partnerId, uid, uid, {selfServe: true},
   );
 
+  const nextStatus = resolveOnboardingStatusPatch(
+      ob && ob.onboardingStatus ? ob.onboardingStatus : "draft",
+      "email_verified",
+  );
   await onboardingRef(uid).set(
       {
         registeredPartnerId: created.partnerId,
-        onboardingStatus: "email_verified",
+        onboardingStatus: nextStatus,
         updatedAt: serverTimestamp(),
-        createdAt: serverTimestamp(),
+        ...(obSnap.exists ? {} : {createdAt: serverTimestamp()}),
       },
       {merge: true},
   );
@@ -275,6 +291,7 @@ async function registerSelfServePartner(uid, input) {
     apiKey: created.apiKey,
     orgAdminUid: uid,
     alreadyRegistered: false,
+    claimsNeedRefresh: true,
   };
 }
 
@@ -516,16 +533,154 @@ async function ensurePartnerOrgOnEmailVerified(uid, opts = {}) {
   }
 
   const out = await registerSelfServePartner(uid, {name: partnerName});
+  // Do not force onboardingStatus here — registerSelfServePartner advances at most
+  // to email_verified and never downgrades (e.g. credentials_ready from Google signup).
+  return {
+    ...out,
+    claimsNeedRefresh: out.alreadyRegistered !== true || out.claimsNeedRefresh === true,
+  };
+}
+
+/**
+ * Partner requests platform review to go live. Notifies super admins.
+ * Idempotent when already requested and still pending.
+ *
+ * @param {string} uid
+ * @param {{ emailVerified?: boolean, email?: string|null, note?: string|null }} [opts]
+ * @return {Promise<Object>}
+ */
+async function requestGoLive(uid, opts = {}) {
+  if (opts.emailVerified !== true) {
+    const err = new Error("Verify your email before requesting go-live.");
+    err.code = "EMAIL_NOT_VERIFIED";
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const claims = await getCustomClaims(uid);
+  const claimRole = normalizePartnerRole(claims.role || claims.partnerRole);
+  if (claimRole && !isPartnerOwnerRole(claimRole)) {
+    const err = new Error("Only the partner owner can request go-live.");
+    err.code = "FORBIDDEN";
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const obSnap = await onboardingRef(uid).get();
+  const onboarding = obSnap.exists ? obSnap.data() || {} : {};
+
+  let partnerId =
+    typeof claims.partnerId === "string" && claims.partnerId.trim() ?
+      claims.partnerId.trim() :
+      null;
+  if (!partnerId && onboarding.registeredPartnerId) {
+    partnerId = String(onboarding.registeredPartnerId).trim();
+  }
+  if (!partnerId) {
+    const err = new Error(
+        "Register your partner organization first (Generate API Credentials).",
+    );
+    err.code = "PARTNER_NOT_REGISTERED";
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const partner = await partnerService.getPartner(partnerId);
+  if (!partner) {
+    const err = new Error("Partner organization not found.");
+    err.code = "PARTNER_NOT_FOUND";
+    err.statusCode = 404;
+    throw err;
+  }
+  if (partner.orgAdminUid && partner.orgAdminUid !== uid) {
+    const err = new Error("Only the partner owner can request go-live.");
+    err.code = "FORBIDDEN";
+    err.statusCode = 403;
+    throw err;
+  }
+
+  if (String(partner.status || "").toLowerCase() === "active" ||
+      onboarding.progress?.goLiveDone === true) {
+    return {
+      partnerId,
+      alreadyLive: true,
+      alreadyRequested: true,
+      goLiveRequested: true,
+      goLiveDone: true,
+      status: partner.status,
+    };
+  }
+
+  const alreadyRequested = onboarding.progress?.goLiveRequested === true;
+  const nextStatus = resolveOnboardingStatusPatch(
+      onboarding.onboardingStatus || "draft",
+      "submitted",
+  );
+
+  const progress = {
+    ...(onboarding.progress || {}),
+    goLiveRequested: true,
+    goLiveRequestedAt: serverTimestamp(),
+  };
 
   await onboardingRef(uid).set(
       {
-        onboardingStatus: "email_verified",
+        progress,
+        onboardingStatus: nextStatus,
+        updatedAt: serverTimestamp(),
+        ...(obSnap.exists ? {} : {createdAt: serverTimestamp()}),
+      },
+      {merge: true},
+  );
+
+  await collection("partners").doc(partnerId).set(
+      {
+        goLiveRequestedAt: serverTimestamp(),
+        goLiveRequestedByUid: uid,
         updatedAt: serverTimestamp(),
       },
       {merge: true},
   );
 
-  return out;
+  let notificationId = null;
+  if (!alreadyRequested) {
+    const ownerName =
+      onboarding.owner && typeof onboarding.owner === "object" && onboarding.owner.fullName ?
+        String(onboarding.owner.fullName).trim() :
+        null;
+    let requestedByEmail = opts.email ? String(opts.email).trim() : null;
+    if (!requestedByEmail) {
+      try {
+        const userRecord = await admin.auth().getUser(uid);
+        requestedByEmail = userRecord.email || null;
+      } catch (_e) {
+        requestedByEmail = null;
+      }
+    }
+
+    const notified = await notifyGoLiveRequestAdmins({
+      partnerId,
+      partnerName: partner.name || derivePartnerName(onboarding, null, requestedByEmail),
+      requestedByUid: uid,
+      requestedByEmail,
+      ownerName,
+    });
+    notificationId = notified.notificationId;
+  }
+
+  return {
+    partnerId,
+    alreadyLive: false,
+    alreadyRequested,
+    goLiveRequested: true,
+    goLiveDone: false,
+    status: partner.status,
+    onboardingStatus: nextStatus,
+    notificationId,
+    message: alreadyRequested ?
+      "Go-live request already submitted. Platform admin will review." :
+      "Go-live request sent to platform admin for review.",
+  };
 }
 
 module.exports = {
@@ -538,7 +693,9 @@ module.exports = {
   completeOnboarding,
   resolveGoLiveDone,
   markGoLiveDoneForPartner,
+  requestGoLive,
   serializeOnboardingDoc,
   derivePartnerName,
   ensurePartnerOrgOnEmailVerified,
+  resolveOnboardingStatusPatch,
 };
