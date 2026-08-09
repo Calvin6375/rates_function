@@ -596,8 +596,9 @@ After **`--apply`**, affected users must **sign out and sign in** so **`partnerI
 | # | Action | Endpoint |
 |---|--------|----------|
 | 0 | Ensure dashboard user doc (every login) | `POST /b2bPortal/portal/ensure-dashboard-profile` |
-| 1 | Create partner + receive API key | `POST /b2bPortal/platform/partners` **or** checklist / self-serve `POST /b2bPortal/portal/onboarding/register-partner` |
-| 2 | Assign org admin (`uid`) | `PUT /b2bPortal/platform/partners/{partnerId}/org-admin` (not needed if self-serve register assigned you) |
+| 1 | Create partner + receive API key | `POST /b2bPortal/platform/partners` (optional `email` + `temporaryPassword` provisions org admin) **or** checklist / self-serve `POST /b2bPortal/portal/onboarding/register-partner` |
+| 1b | First login set PIN (platform-provisioned) | If `GET /portal/me` → `redirectTo: "set_pin"`, call `POST /portal/account/set-pin` (verifies email) |
+| 2 | Assign org admin (`uid`) | `PUT /b2bPortal/platform/partners/{partnerId}/org-admin` (skip if create included email, or self-serve register assigned you) |
 | 3 | Wizard / KYB fields | `PATCH /b2bPortal/portal/onboarding` |
 | 4 | Terms + submit (legacy / compliance) | `POST /b2bPortal/portal/onboarding/complete` |
 | 5 | Confirm partner session | `GET /b2bPortal/portal/me` |

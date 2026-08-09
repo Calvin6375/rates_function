@@ -276,7 +276,8 @@ List all B2B partners (API keys **masked** in list items).
 
 #### `POST /platform/partners`
 
-Creates a partner and issues an **API key** (shown **only here**).
+Creates a partner and issues an **API key** (shown **only here**).  
+Optionally provisions the **org admin** Firebase user with email + temporary password (Create partner modal).
 
 **Body (JSON)**
 
@@ -285,8 +286,11 @@ Creates a partner and issues an **API key** (shown **only here**).
 | `name` | string | Yes |
 | `settlementCurrency` | string | No (default `KES`) |
 | `webhookUrl` | string | No |
+| `email` | string | No — if set, creates/assigns org admin |
+| `temporaryPassword` | string | Required when `email` is set (min 8). Alias: `password` |
+| `displayName` | string | No |
 
-**Response** `201`
+**Response** `201` (with org admin)
 
 ```json
 {
@@ -294,11 +298,21 @@ Creates a partner and issues an **API key** (shown **only here**).
   "data": {
     "partnerId": "...",
     "apiKey": "<store securely>",
-    "partner": { "id": "...", "name": "...", "orgAdminUid": null }
-  },
-  "message": "Store apiKey securely; it is only shown once. Assign org admin with PUT .../org-admin"
+    "partner": { "id": "...", "name": "...", "orgAdminUid": "…" },
+    "orgAdmin": {
+      "userId": "…",
+      "email": "client@hotel.com",
+      "mustChangePassword": true,
+      "emailVerified": false,
+      "redirectTo": "set_pin"
+    }
+  }
 }
 ```
+
+Share **email + temporary password** with the client. On first login, `GET /portal/me` returns `mustChangePassword: true` and `redirectTo: "set_pin"`. They call `POST /portal/account/set-pin` to set a new password; backend marks **`emailVerified: true`**.
+
+Without `email`, behavior is unchanged — assign later with `PUT .../org-admin`.
 
 ---
 
@@ -481,7 +495,7 @@ Org admin must have **`partnerRole: org_admin`** and matching **`partnerId`** in
 | `400` | `NO_PASSWORD_PROVIDER` | Google-only (or other OAuth) account — no password to change |
 | `400` | `WEAK_PASSWORD` / `PASSWORD_MISMATCH` / `PASSWORD_UNCHANGED` | Validation |
 | `401` | `INVALID_CURRENT_PASSWORD` | Wrong current password |
-| `503` | `FAILED_PRECONDITION` | `FIREBASE_WEB_API_KEY` not configured on the function |
+| `503` | `FAILED_PRECONDITION` | `WEB_API_KEY` secret not configured on the function |
 
 #### `POST /portal/account/request-password-reset`
 

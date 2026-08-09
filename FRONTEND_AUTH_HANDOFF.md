@@ -41,6 +41,30 @@ Content-Type: application/json
 - `NO_PASSWORD_PROVIDER` (400): Google-only account — hide the form or show “Use Google sign-in / set a password via forgot-password after linking email”.
 - `INVALID_CURRENT_PASSWORD` (401): wrong current password.
 
+### Platform-created partners — first login → set PIN
+
+Super admin **Create partner** may include `email` + `temporaryPassword`. That user signs in on the partner dashboard; then:
+
+1. Call `GET /b2bPortal/portal/me`
+2. If `data.mustChangePassword === true` (or `redirectTo === "set_pin"`), route to the **set new PIN** page (do not enter the main app)
+3. Submit:
+
+```http
+POST /b2bPortal/portal/account/set-pin
+Authorization: Bearer <idToken>
+Content-Type: application/json
+
+{
+  "temporaryPassword": "<temp from admin>",
+  "newPassword": "<new pin/password>",
+  "confirmPassword": "<same>"
+}
+```
+
+4. On success: `emailVerified` becomes **true**, `mustChangePassword` clears. Call `getIdToken(true)`, then continue onboarding / dashboard.
+
+Aliases accepted: `currentPassword`, `pin` / `newPin`, `confirmPin`.
+
 **Forgot password** (login page, no token):
 
 ```http
@@ -50,7 +74,7 @@ Content-Type: application/json
 { "email": "ops@hotel.com", "continueUrl": "https://theadmin.truepay.live/login" }
 ```
 
-Requires server env `FIREBASE_WEB_API_KEY` (same as client Firebase web API key).
+Requires server secret `WEB_API_KEY` (same as client Firebase web API key).
 
 ### Email verification — use TruePay backend only
 
