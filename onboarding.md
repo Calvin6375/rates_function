@@ -98,7 +98,8 @@ Firebase **`updateProfile(displayName)`** runs **client-side only** — not a ba
 
 **Email/password signup**
 
-- Email from the form (work or personal); verification email sent client-side  
+- Email from the form (work or personal)
+- Verification: call **`POST /b2bPortal/portal/send-verification-email`** (Bearer token) or callable **`sendEmailVerification`** — Zoho SMTP branded mail (not Firebase’s default template). Email link hits **`GET /public/verify-email`**, which verifies and **redirects to the B2B dashboard** (`theadmin.truepay.live`).
 - Then `ensure-dashboard-profile` → owner PATCH (above)
 
 **Google signup**
@@ -106,6 +107,8 @@ Firebase **`updateProfile(displayName)`** runs **client-side only** — not a ba
 - First name, last name, phone required on the form **before** the Google popup  
 - Email from the Google account (`firebaseUser.email`), not a form field  
 - Then `ensure-dashboard-profile` → owner PATCH (above)
+- Google accounts are usually **`email_verified: true` immediately**, so `ensure-dashboard-profile` / `GET /portal/onboarding` / `GET /portal/me` may **auto-create** the partner org and set Auth claims in the same request.
+- **Required frontend step:** if the response has `claimsNeedRefresh: true` (or `data.partnerOrg` / `data.partnerId` while the token still lacks `partnerId`), call **`getIdToken(true)`** before relying on partner-gated routes. Do **not** treat a missing partner claim as a hard failure — `GET /portal/me` returns **200** with `onboardingIncomplete` / `owner` / `onboardingStatus` so the checklist can render.
 
 **Normal post-signup onboarding doc state**
 
@@ -266,7 +269,43 @@ Frontend polls `GET /portal/onboarding` until `progress.testTransactionDone` or 
 
 ---
 
-### 6. Go live (unchanged)
+### 6. Go live
+
+#### Request go-live (partner → super admin notification)
+
+**Endpoint:** `POST /b2bPortal/portal/onboarding/request-go-live`  
+**Auth:** Bearer Firebase ID token (partner owner)  
+**When:** Checklist “Request Go Live” CTA after profile / KYC / credentials / test payment / verified email.
+
+**Backend:**
+
+- Requires `email_verified` on token (403 `EMAIL_NOT_VERIFIED`)
+- Requires `registeredPartnerId` / partner org (400 `PARTNER_NOT_REGISTERED`)
+- Owner only (403 `FORBIDDEN` for non-owners)
+- Sets `progress.goLiveRequested: true` (+ timestamp), advances `onboardingStatus` at most to `submitted`
+- Stamps `partners/{id}.goLiveRequestedAt`
+- Creates **system** notification `go_live_request_admin_alert` for super-admin dashboard + FCM to `platformAdmins` / master admin
+- Idempotent if already requested (no duplicate notification)
+
+**Response** `201` (first request) / `200` (already requested or already live)
+
+```json
+{
+  "success": true,
+  "data": {
+    "partnerId": "partner_…",
+    "goLiveRequested": true,
+    "alreadyRequested": false,
+    "alreadyLive": false,
+    "notificationId": "…"
+  },
+  "message": "Go-live request sent to platform admin for review."
+}
+```
+
+Dashboard should poll `GET /portal/onboarding` — `progress.goLiveRequested` / `progress.goLiveDone`.
+
+#### Terms complete (legacy)
 
 **Endpoint:** `POST /b2bPortal/portal/onboarding/complete`  
 **When:** Terms/AML formally submitted (legacy wizard terms step; may be wired from compliance flows).
@@ -281,8 +320,7 @@ Frontend polls `GET /portal/onboarding` until `progress.testTransactionDone` or 
 
 - Set `progress.goLiveDone` or partner `status: active` via `PATCH /platform/partners/{partnerId}`  
 - Frontend treats partner **`active`** as go-live done via `GET /portal/me` / `GET /portal/onboarding`
-
-Frontend **Request Go Live** eligibility (profile + KYC + API key + test + email) is UI-only; backend enforcement should match for production hardening.
+- Super-admin sees the request under **system** notifications (`type: go_live_request_admin_alert`)
 
 ---
 

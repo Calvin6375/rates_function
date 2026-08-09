@@ -252,7 +252,8 @@ Configured with `firebase functions:secrets:set` or deployment env — **correct
 | `INTASEND_SECRET`, `INTASEND_CHALLENGE`, `INTASEND_SECRET_KEY`, `INTASEND_PUBLISHABLE_KEY` | Payments / webhooks |
 | `TRANSFI_WEBHOOK_SECRET` | TransFi webhooks |
 | `CIRCLE_API_KEY`, `CIRCLE_ENTITY_SECRET` | Circle wallet / webhooks |
-| `FIREBASE_WEB_API_KEY` | Server-side password reset (`requestPasswordReset`) |
+| `FIREBASE_WEB_API_KEY` | Password reset / change (`requestPasswordReset`, `POST /portal/account/change-password`, `POST /portal/account/request-password-reset`) |
+| `SMTP_USER`, `SMTP_PASS` | Zoho SMTP for branded verification (`sendEmailVerification`, `POST /portal/send-verification-email`) |
 | `B2B_SANDBOX_PUBLIC_API_KEY` | Override sandbox API key |
 | `MASTER_ADMIN_EMAIL` | Override super-admin email |
 

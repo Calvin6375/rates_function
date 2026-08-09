@@ -330,13 +330,37 @@ Deploy **`b2bPortal`**, **`handleTopUpWebhook`**, and **Firestore indexes** (`fi
 
 ---
 
-## 8. Consumer Flutter app
+## 8. Send / Pay (recipients, quote, payments)
+
+See **[`B2B_SEND.md`](./B2B_SEND.md)**:
+
+- Recipients: `GET/POST /portal/send/recipients`
+- Quote (rate + fees): `POST /portal/send/quote`
+- Submit: `POST /portal/send/payments` (debits wallet, notifies super admin)
+
+---
+
+## 8b. Add Money (partner KES self-topup)
+
+Partners fund their own **KES** wallet via Paystack from the Pay → Add Money modal.
+
+See **[`B2B_ADD_MONEY.md`](./B2B_ADD_MONEY.md)** for the full dashboard contract:
+
+- `POST /b2bPortal/portal/funding/checkout` → open `checkoutUrl`
+- Return to `/dashboard/pay?funding=return&reference=…`
+- `POST /portal/funding/confirm` + `GET /portal/wallet`
+
+Do **not** call consumer `createPayment` for Add Money.
+
+---
+
+## 9. Consumer Flutter app
 
 **No changes required** for B2B payment links. Do not call `createPayment` for hosted B2B links — that path credits **consumer** wallets.
 
 ---
 
-## 9. QA checklist
+## 10. QA checklist
 
 - [ ] Create payment link **without** guest name → open `data.url`.
 - [ ] Enter payer name on hosted page → **Continue to payment** → IntaSend → complete test payment.
@@ -350,7 +374,7 @@ Deploy **`b2bPortal`**, **`handleTopUpWebhook`**, and **Firestore indexes** (`fi
 
 ---
 
-## 10. Related code
+## 11. Related code
 
 | File | Role |
 |------|------|

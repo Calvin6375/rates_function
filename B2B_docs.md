@@ -456,6 +456,43 @@ Lists all members under **`partners/{partnerId}/members`**.
 
 Org admin must have **`partnerRole: org_admin`** and matching **`partnerId`** in the ID token.
 
+#### `POST /portal/account/change-password`
+
+**Account Settings → Password & Security → Update Password.** Any authenticated Firebase user (Bearer ID token).
+
+**Body (JSON)**
+
+| Field | Required | Notes |
+|-------|----------|--------|
+| `currentPassword` | Yes | Min 8 characters |
+| `newPassword` | Yes | Min 8; must differ from current |
+| `confirmPassword` | No | If sent, must equal `newPassword` |
+
+**Response** `200`
+
+```json
+{ "success": true, "message": "Password updated. Sign in again on other devices if needed." }
+```
+
+**Errors**
+
+| HTTP | `error` | When |
+|------|---------|------|
+| `400` | `NO_PASSWORD_PROVIDER` | Google-only (or other OAuth) account — no password to change |
+| `400` | `WEAK_PASSWORD` / `PASSWORD_MISMATCH` / `PASSWORD_UNCHANGED` | Validation |
+| `401` | `INVALID_CURRENT_PASSWORD` | Wrong current password |
+| `503` | `FAILED_PRECONDITION` | `FIREBASE_WEB_API_KEY` not configured on the function |
+
+#### `POST /portal/account/request-password-reset`
+
+**Forgot password** (public — no auth). Sends Firebase Auth reset email. Unknown emails still return success.
+
+**Body:** `{ "email": "ops@hotel.com", "continueUrl?": "https://theadmin.truepay.live/login" }`
+
+**Response** `200` — `{ "success": true, "message": "If an account exists…" }`
+
+Callable equivalent (consumer app): **`requestPasswordReset`**.
+
 #### `POST /portal/ensure-dashboard-profile`
 
 **Any authenticated user** (Bearer Firebase ID token). Idempotently creates or patches the Firestore **`users/{uid}`** document (same shape as `userBootstrap`). Use this **immediately after** email/password sign-in if the dashboard loads profile data from the `users` collection (including queries by email). Does not require B2B partner claims.
@@ -502,9 +539,11 @@ Callable equivalent: **`sendEmailVerification`** (same payload; requires Auth).
 
 #### `GET /portal/me`
 
-Any B2B user with valid **`partnerId`** + **`partnerRole`** (including institutional roles below).
+- Partner users with **`partnerId` + role** on the token: full partner session.
+- Platform admins without partner claims: admin session (`partnerId: null`).
+- **Mid-onboarding** (common after **Google signup**): **200** with `partnerId` (if org was auto-provisioned), `owner`, `onboardingStatus`, `claimsNeedRefresh`, `onboardingIncomplete` — **not** 403. Refresh the ID token when `claimsNeedRefresh` is true.
 
-**Response** `200`
+**Response** `200` (partner session)
 
 ```json
 {
@@ -518,7 +557,23 @@ Any B2B user with valid **`partnerId`** + **`partnerRole`** (including instituti
 }
 ```
 
-**Errors** `403` if token lacks partner claims.
+**Response** `200` (mid-onboarding / claims not on token yet)
+
+```json
+{
+  "success": true,
+  "data": {
+    "userId": "...",
+    "partnerId": "partner_… or null",
+    "partnerRole": null,
+    "emailVerified": true,
+    "onboardingStatus": "credentials_ready",
+    "owner": { "fullName": "…", "phone": "…", "role": "Founder" },
+    "claimsNeedRefresh": true,
+    "onboardingIncomplete": false
+  }
+}
+```
 
 ---
 
@@ -634,6 +689,78 @@ Typical HTTP status codes:
 
 ---
 
+#### `POST /portal/onboarding/request-go-live`
+
+Partner owner asks platform super admin to activate the live Partner API.
+
+**Auth:** Bearer Firebase ID token · **email verified** · partner owner
+
+**Body (optional):** `{ "note": "Ready for production" }`
+
+**Response** `201` / `200`
+
+```json
+{
+  "success": true,
+  "data": {
+    "partnerId": "partner_…",
+    "goLiveRequested": true,
+    "alreadyRequested": false,
+    "alreadyLive": false,
+    "notificationId": "…"
+  }
+}
+```
+
+Creates a **system** notification (`go_live_request_admin_alert`) visible to super admins via `notificationsApi` with `userId=system`. Ops then `PATCH /platform/partners/{id}` `{ "status": "active" }`.
+
+---
+
+### Platform admin — partner wallet credit / debit
+
+Manual top-up (same idea as C2B `POST /api/customer-wallets/:id/credit`):
+
+| Method | Path |
+|--------|------|
+| `GET` | `/platform/partners/:partnerId/wallet` |
+| `POST` | `/platform/partners/:partnerId/wallet/credit` |
+| `POST` | `/platform/partners/:partnerId/wallet/debit` |
+
+Frontend handoff: [`B2B_ADMIN_WALLET.md`](./B2B_ADMIN_WALLET.md).
+
+---
+
+## 5b. Send / Pay (outbound)
+
+Partner Send UI: recipients, corridor quote, create payment.
+
+| Method | Path |
+|--------|------|
+| `GET/POST` | `/portal/send/recipients` |
+| `GET/PATCH/DELETE` | `/portal/send/recipients/:recipientId` |
+| `POST` | `/portal/send/quote` |
+| `GET` | `/portal/send/corridors` |
+| `POST/GET` | `/portal/send/payments` |
+| `GET` | `/platform/send/payments` (super admin) |
+
+Full contract: [`B2B_SEND.md`](./B2B_SEND.md).
+
+---
+
+## 5c. Add Money — partner KES self-topup (Paystack)
+
+Dashboard **Pay → Add Money** funds the partner **KES** wallet via Paystack hosted checkout.
+
+| Method | Path |
+|--------|------|
+| `POST` | `/portal/funding/checkout` |
+| `GET` | `/portal/funding/orders/:orderId` |
+| `POST` | `/portal/funding/confirm` |
+
+Full frontend contract: [`B2B_ADD_MONEY.md`](./B2B_ADD_MONEY.md).
+
+---
+
 ## 6. Related code (for backend maintainers)
 
 | Area | Path |
@@ -642,6 +769,7 @@ Typical HTTP status codes:
 | Partner sandbox HTTP app | `functions/http/partnerSandboxHttp.js` |
 | Sandbox in-memory logic | `functions/services/b2bSandboxPartnerService.js` |
 | B2B portal HTTP app | `functions/http/b2bPortalHttp.js` |
+| B2B Add Money bridge | `functions/services/funding/b2bFundingBridgeService.js` |
 | API key verification | `functions/libs/auth.js` (`verifyPartnerRequest`) |
 | Partner Firestore CRUD | `functions/services/partnerService.js` |
 | Members / org admin / institutional roles | `functions/services/b2bMemberService.js` |

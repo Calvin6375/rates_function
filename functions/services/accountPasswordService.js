@@ -39,9 +39,13 @@ function isValidEmailShape(email) {
  * @returns {string}
  */
 function requireWebApiKey() {
-  const key = config.firebaseWebApiKey;
+  // Prefer live env (Secret Manager injects WEB_API_KEY at runtime).
+  const key =
+    process.env.WEB_API_KEY ||
+    process.env.FIREBASE_WEB_API_KEY ||
+    config.firebaseWebApiKey;
   if (!key || !String(key).trim()) {
-    const err = new Error("Password change is not configured (FIREBASE_WEB_API_KEY)");
+    const err = new Error("Password change is not configured (WEB_API_KEY)");
     err.code = "FAILED_PRECONDITION";
     err.statusCode = 503;
     throw err;

@@ -31,6 +31,7 @@ const smtpUser = defineSecret(config.secrets.smtpUser);
 const smtpPass = defineSecret(config.secrets.smtpPass);
 const paystackSecretKey = defineSecret(config.secrets.paystackSecretKey);
 const paystackSplitCode = defineSecret(config.secrets.paystackSplitCode);
+const firebaseWebApiKey = defineSecret(config.secrets.firebaseWebApiKey);
 const emailService = require("../services/emailService");
 const accountPasswordService = require("../services/accountPasswordService");
 const b2bFundingBridgeService = require("../services/funding/b2bFundingBridgeService");
@@ -40,6 +41,7 @@ const partnerRecipientService = require("../services/partnerRecipientService");
 const b2bSendService = require("../services/b2bSendService");
 const partnerWalletAdminService = require("../services/partnerWalletAdminService");
 const b2bWalletBalanceSync = require("../services/b2bWalletBalanceSync");
+const partnerAdminProvisioningService = require("../services/partnerAdminProvisioningService");
 const { correlationFromRequest } = require("../utils/paymentContext");
 
 const {
@@ -331,30 +333,51 @@ app.get("/platform/partners", loadFirebaseUser, requirePlatformAdmin, async (req
   }
 });
 
+/**
+ * Create partner. Optional org admin: email + temporaryPassword (Create partner modal).
+ * Org admin must sign in, then follow redirectTo=set_pin to set a new password (verifies email).
+ */
 app.post("/platform/partners", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
   try {
-    const { name, settlementCurrency, webhookUrl } = req.body || {};
+    const body = req.body || {};
+    const {name, settlementCurrency, webhookUrl, email, temporaryPassword, password, displayName} =
+      body;
     if (!name || typeof name !== "string") {
-      res.status(400).json({ success: false, error: "name is required" });
+      res.status(400).json({success: false, error: "name is required"});
       return;
     }
-    const created = await partnerService.createPartner({
+    const created = await partnerAdminProvisioningService.createPartnerWithOrgAdmin({
       name: name.trim(),
       settlementCurrency: settlementCurrency || "KES",
       webhookUrl: webhookUrl || null,
+      email: email || null,
+      temporaryPassword: temporaryPassword || password || null,
+      displayName: displayName || null,
+      actorUid: req.userId,
     });
+    const hasOrgAdmin = Boolean(created.orgAdmin);
     res.status(201).json({
       success: true,
       data: {
         partnerId: created.partnerId,
         apiKey: created.apiKey,
-        partner: { id: created.partnerId, name: created.partner.name, orgAdminUid: null },
+        partner: created.partner,
+        orgAdmin: created.orgAdmin,
       },
-      message: "Store apiKey securely; it is only shown once. Assign org admin with PUT .../org-admin",
+      message: hasOrgAdmin ?
+        "Store apiKey securely (shown once). Share email + temporary password with the client — " +
+        "on first login they must set a new PIN/password (email becomes verified)." :
+        "Store apiKey securely; it is only shown once. Assign org admin with PUT .../org-admin " +
+        "or recreate with email + temporaryPassword.",
     });
   } catch (err) {
+    const status = err.statusCode || 500;
     console.error("b2bPortal POST /platform/partners:", err.message);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(status >= 400 && status < 600 ? status : 500).json({
+      success: false,
+      error: err.code || "CREATE_PARTNER_FAILED",
+      message: err.message,
+    });
   }
 });
 
@@ -944,6 +967,40 @@ app.post("/portal/account/change-password", loadFirebaseUser, async (req, res) =
 });
 
 /**
+ * POST /portal/account/set-pin — first login after platform-provisioned temp password.
+ * Body: { temporaryPassword, newPassword, confirmPassword? }
+ * Sets new password, marks emailVerified=true, clears mustChangePassword.
+ * Alias path kept for UI naming ("set new pin").
+ */
+app.post("/portal/account/set-pin", loadFirebaseUser, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const result = await partnerAdminProvisioningService.completeFirstLoginSetPassword(
+        req.userId,
+        {
+          temporaryPassword: body.temporaryPassword || body.currentPassword,
+          newPassword: body.newPassword || body.pin || body.newPin,
+          confirmPassword: body.confirmPassword || body.confirmPin,
+        },
+    );
+    res.status(200).json({
+      success: true,
+      data: result,
+      message:
+        "PIN/password updated and email verified. Refresh your ID token (getIdToken(true)).",
+    });
+  } catch (err) {
+    const status = err.statusCode || 500;
+    console.error("b2bPortal POST /portal/account/set-pin:", err.message);
+    res.status(status >= 400 && status < 600 ? status : 500).json({
+      success: false,
+      error: err.code || "SET_PIN_FAILED",
+      message: err.message || "Unable to set PIN/password",
+    });
+  }
+});
+
+/**
  * POST /portal/account/request-password-reset — forgot-password email (public).
  * Body: { email, continueUrl? }. Always returns success for unknown emails.
  */
@@ -1302,6 +1359,8 @@ app.get("/portal/me", loadFirebaseUser, async (req, res) => {
     const dt = req.decodedToken || {};
     const platformAdmin = await isPlatformAdmin(dt, req.userId);
     const resolved = resolvePartnerAccess(dt);
+    const firstLogin =
+      await partnerAdminProvisioningService.firstLoginSessionHints(req.userId, dt);
 
     if (platformAdmin && !resolved) {
       const access = parseAccessFromToken(dt);
@@ -1319,6 +1378,7 @@ app.get("/portal/me", loadFirebaseUser, async (req, res) => {
           emailVerified: dt.email_verified === true,
           claimsNeedRefresh: false,
           onboardingIncomplete: false,
+          ...firstLogin,
         },
       });
       return;
@@ -1350,6 +1410,8 @@ app.get("/portal/me", loadFirebaseUser, async (req, res) => {
       if (partnerId) {
         partner = await partnerService.getPartner(partnerId);
       }
+      const greetingName =
+        await b2bOnboardingService.resolveGreetingName(req.userId, partner);
 
       const claimsNeedRefresh = Boolean(partnerId);
       res.status(200).json({
@@ -1363,21 +1425,27 @@ app.get("/portal/me", loadFirebaseUser, async (req, res) => {
           partnerRole: null,
           roleLegacy: null,
           partner: partner || (partnerId ? {id: partnerId} : null),
+          greetingName,
           email: dt.email || null,
           emailVerified: dt.email_verified === true,
           onboardingStatus: onboarding?.onboardingStatus || null,
           owner: onboarding?.owner || null,
           claimsNeedRefresh,
           onboardingIncomplete: !partnerId,
-          message: claimsNeedRefresh ?
-            "Partner org is ready — refresh your ID token (getIdToken(true)) to load partner claims." :
-            "Complete onboarding to obtain partner claims.",
+          ...firstLogin,
+          message: firstLogin.mustChangePassword ?
+            "First login — set a new PIN/password at /set-pin before continuing." :
+            (claimsNeedRefresh ?
+              "Partner org is ready — refresh your ID token (getIdToken(true)) to load partner claims." :
+              "Complete onboarding to obtain partner claims."),
         },
       });
       return;
     }
 
     const partner = await partnerService.getPartner(resolved.partnerId);
+    const greetingName =
+      await b2bOnboardingService.resolveGreetingName(req.userId, partner);
     res.status(200).json({
       success: true,
       data: {
@@ -1389,9 +1457,14 @@ app.get("/portal/me", loadFirebaseUser, async (req, res) => {
         partnerRole: legacyPartnerRoleFromNormalized(resolved.role),
         roleLegacy: legacyPartnerRoleFromNormalized(resolved.role),
         partner: partner || { id: resolved.partnerId },
+        greetingName,
         emailVerified: dt.email_verified === true,
-        claimsNeedRefresh: false,
+        claimsNeedRefresh: firstLogin.mustChangePassword,
         onboardingIncomplete: false,
+        ...firstLogin,
+        ...(firstLogin.mustChangePassword ? {
+          message: "First login — set a new PIN/password at /set-pin before continuing.",
+        } : {}),
       },
     });
   } catch (err) {
@@ -2208,6 +2281,7 @@ exports.b2bPortal = onRequest(
       smtpPass,
       paystackSecretKey,
       paystackSplitCode,
+      firebaseWebApiKey,
     ],
   },
   app,

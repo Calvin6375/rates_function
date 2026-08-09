@@ -21,6 +21,100 @@ Firebase Authentication — single IdP for consumer app, partner dashboard, and 
    - Flutter: `user.getIdToken(true)`
    - Web: `user.getIdToken(true)` then retry API calls
 
+### Password — Account Settings (B2B web)
+
+**Update password** (logged in — matches Current / New / Confirm form):
+
+```http
+POST /b2bPortal/portal/account/change-password
+Authorization: Bearer <idToken>
+Content-Type: application/json
+
+{
+  "currentPassword": "…",
+  "newPassword": "…",
+  "confirmPassword": "…"
+}
+```
+
+- On success: toast + clear the form. Optionally re-auth or `signOut` other devices is not required server-side.
+- `NO_PASSWORD_PROVIDER` (400): Google-only account — hide the form or show “Use Google sign-in / set a password via forgot-password after linking email”.
+- `INVALID_CURRENT_PASSWORD` (401): wrong current password.
+
+**Forgot password** (login page, no token):
+
+```http
+POST /b2bPortal/portal/account/request-password-reset
+Content-Type: application/json
+
+{ "email": "ops@hotel.com", "continueUrl": "https://theadmin.truepay.live/login" }
+```
+
+Requires server env `FIREBASE_WEB_API_KEY` (same as client Firebase web API key).
+
+### Email verification — use TruePay backend only
+
+**Do not** call Firebase’s built-in mailer anywhere (Flutter or web):
+
+```dart
+// ❌ Do not use — sends Firebase’s default template
+await FirebaseAuth.instance.currentUser!.sendEmailVerification();
+```
+
+```js
+// ❌ Do not use
+await sendEmailVerification(auth.currentUser);
+```
+
+Instead, call our backend (authenticated). It verifies the caller, generates the link with the Admin SDK, and sends a TruePay-branded email via Zoho SMTP.
+
+| Client | Call |
+|--------|------|
+| **B2B / Admin web** | `POST /b2bPortal/portal/send-verification-email` with `Authorization: Bearer <idToken>` |
+| **Flutter / any Firebase client** | Callable `sendEmailVerification` |
+
+**Default `continueUrl`:** `https://theadmin.truepay.live/` (B2B dashboard). Override only if needed.
+
+**Click → dashboard (backend handles this):** the email link hits `GET /b2bPortal/public/verify-email`, which applies the code and **302-redirects** to the dashboard with `?emailVerified=1`. No Firebase interstitial page.
+
+**B2B web — after landing with `?emailVerified=1`:** refresh the Auth session so gated APIs see `email_verified`:
+
+```js
+if (new URLSearchParams(location.search).get("emailVerified") === "1") {
+  if (auth.currentUser) {
+    await auth.currentUser.reload();
+    await auth.currentUser.getIdToken(true);
+  }
+  // optionally strip the query param and continue onboarding / dashboard
+}
+```
+
+**Flutter example**
+
+```dart
+await FirebaseFunctions.instance
+    .httpsCallable('sendEmailVerification')
+    .call(<String, dynamic>{
+      // optional — defaults to B2B dashboard
+      'continueUrl': 'https://theadmin.truepay.live/',
+    });
+```
+
+**Web (B2B portal) example**
+
+```js
+await fetch(`${B2B_PORTAL_BASE}/portal/send-verification-email`, {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${await user.getIdToken()}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({}), // continueUrl defaults to dashboard
+});
+```
+
+After the user clicks the link, they land on the dashboard automatically. Force-refresh the ID token before calling gated APIs (e.g. `register-partner`).
+
 ### Claim shapes (new — preferred)
 
 | User type | Claims on ID token |
@@ -202,6 +296,8 @@ Only **`super_admin`** can grant/revoke platform admin roles (`setAdminClaim` ca
 }
 ```
 
+**Google / mid-onboarding:** If the token has no `partnerId` yet, this returns **200** (not 403) with `owner`, `onboardingStatus`, `claimsNeedRefresh`, and possibly `partnerId` after auto-provision. When `claimsNeedRefresh` is true, call `getIdToken(true)` then retry. Use `GET /portal/onboarding` for the checklist; never block the whole shell on a hard 403 from `/portal/me`.
+
 **Admin — `GET /platform/me`**
 
 ```json
@@ -248,6 +344,7 @@ Then set password in Firebase Console → Authentication and rotate on first log
 - [ ] Update role pickers to new partner role list
 - [ ] Admin UI: feature-gate by `role` (not only `admin: true`)
 - [ ] Remove any hardcoded super-admin passwords from docs, env samples, or tests
+- [ ] Replace all `sendEmailVerification()` / client Auth mailers with `sendEmailVerification` callable or `POST /portal/send-verification-email`
 
 ---
 

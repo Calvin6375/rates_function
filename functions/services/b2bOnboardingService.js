@@ -140,6 +140,62 @@ async function getOnboarding(uid) {
 }
 
 /**
+ * Business name from onboarding (frontend uses businessName; some paths use name).
+ *
+ * @param {Object|null|undefined} onboarding
+ * @returns {string}
+ */
+function readBusinessName(onboarding) {
+  const business = onboarding?.business;
+  if (!business || typeof business !== "object") {
+    return "";
+  }
+  const raw = business.businessName ?? business.name ?? business.legalName ?? "";
+  return raw && String(raw).trim() ? String(raw).trim() : "";
+}
+
+/**
+ * Keep partners.name in sync with saved KYB business name (dashboard greeting).
+ *
+ * @param {string} uid
+ * @param {Object|null|undefined} onboarding
+ * @returns {Promise<string|null>} partnerId when synced
+ */
+async function syncPartnerNameFromBusiness(uid, onboarding) {
+  const businessName = readBusinessName(onboarding);
+  if (!businessName) {
+    return null;
+  }
+
+  let partnerId =
+    onboarding?.registeredPartnerId && String(onboarding.registeredPartnerId).trim() ?
+      String(onboarding.registeredPartnerId).trim() :
+      null;
+  if (!partnerId) {
+    try {
+      const claims = await getCustomClaims(uid);
+      if (claims.partnerId && typeof claims.partnerId === "string") {
+        partnerId = claims.partnerId.trim();
+      }
+    } catch (_e) {
+      // ignore
+    }
+  }
+  if (!partnerId) {
+    return null;
+  }
+
+  const partner = await partnerService.getPartner(partnerId);
+  if (!partner) {
+    return null;
+  }
+  if (partner.name !== businessName) {
+    await partnerService.updatePartner(partnerId, {name: businessName});
+  }
+  return partnerId;
+}
+
+/**
  * Deep-merge allowed section keys into onboarding/{uid}.
  *
  * @param {string} uid
@@ -179,7 +235,15 @@ async function patchOnboarding(uid, partial) {
   }
   await ref.set(updates, {merge: true});
   const out = await ref.get();
-  return serializeOnboardingDoc(out.data()) || {};
+  const serialized = serializeOnboardingDoc(out.data()) || {};
+  if (Object.prototype.hasOwnProperty.call(partial, "business")) {
+    try {
+      await syncPartnerNameFromBusiness(uid, out.data() || {});
+    } catch (syncErr) {
+      console.warn("patchOnboarding sync partner name:", syncErr.message);
+    }
+  }
+  return serialized;
 }
 
 /**
@@ -375,10 +439,7 @@ async function completeOnboarding(uid, attestation) {
       {merge: true},
   );
 
-  const businessName =
-    ob.business && typeof ob.business === "object" && ob.business.name ?
-      String(ob.business.name).trim() :
-      "";
+  const businessName = readBusinessName(ob);
   if (businessName && partner.name !== businessName) {
     await partnerService.updatePartner(partnerId, {name: businessName});
   }
@@ -457,11 +518,12 @@ async function markGoLiveDoneForPartner(partnerId) {
  * @return {string|null}
  */
 function derivePartnerName(onboarding, userData, email) {
+  const fromBusiness = readBusinessName(onboarding);
+  if (fromBusiness) {
+    return fromBusiness;
+  }
   const business = onboarding?.business;
   if (business && typeof business === "object") {
-    if (business.name && String(business.name).trim()) {
-      return String(business.name).trim();
-    }
     if (business.legalName && String(business.legalName).trim()) {
       return String(business.legalName).trim();
     }
@@ -683,6 +745,40 @@ async function requestGoLive(uid, opts = {}) {
   };
 }
 
+/**
+ * Dashboard "Good morning, X" label.
+ * Prefer saved business name; else creation display name; else Auth displayName; else partner.name.
+ *
+ * @param {string} uid
+ * @param {Object|null|undefined} [partner]
+ * @returns {Promise<string|null>}
+ */
+async function resolveGreetingName(uid, partner = null) {
+  const onboarding = await getOnboarding(uid);
+  const businessName = readBusinessName(onboarding);
+  if (businessName) {
+    return businessName;
+  }
+
+  if (partner?.greetingDisplayName && String(partner.greetingDisplayName).trim()) {
+    return String(partner.greetingDisplayName).trim();
+  }
+
+  try {
+    const userRecord = await admin.auth().getUser(uid);
+    if (userRecord.displayName && String(userRecord.displayName).trim()) {
+      return String(userRecord.displayName).trim();
+    }
+  } catch (_e) {
+    // ignore
+  }
+
+  if (partner?.name && String(partner.name).trim()) {
+    return String(partner.name).trim();
+  }
+  return null;
+}
+
 module.exports = {
   ONBOARDING_COL,
   PATCHABLE_KEYS,
@@ -698,4 +794,7 @@ module.exports = {
   derivePartnerName,
   ensurePartnerOrgOnEmailVerified,
   resolveOnboardingStatusPatch,
+  readBusinessName,
+  resolveGreetingName,
+  syncPartnerNameFromBusiness,
 };

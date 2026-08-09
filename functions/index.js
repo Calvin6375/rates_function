@@ -85,7 +85,7 @@ exports.onUserCreated = usersTrigger.onUserCreated;
 exports.userBootstrap = userBootstrap.userBootstrap;
 exports.onAuthUserDeleted = authUserCleanup.onAuthUserDeleted;
 
-// Customer app: password reset email (Identity Toolkit; requires FIREBASE_WEB_API_KEY)
+// Customer app: password reset email (Identity Toolkit; requires WEB_API_KEY)
 exports.requestPasswordReset = customerAuthHttp.requestPasswordReset;
 // Authenticated: Zoho SMTP branded verification (secrets SMTP_USER / SMTP_PASS)
 exports.sendEmailVerification = customerAuthHttp.sendEmailVerification;

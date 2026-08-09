@@ -98,18 +98,18 @@ Flutter sends `amount` (and optional `email`). When `FUNDING_DEFAULT_PROVIDER=tr
 3. Creates a widget session targeting `TRANSAK_TREASURY_WALLET`
 4. Returns the legacy response shape:
 
-| Field | Value |
-|-------|-------|
-| `orderId` | Funding order ID (`fund_…`) |
-| `invoiceId` | `partnerOrderId` (= funding order ID) |
-| `paymentId` | Same as `invoiceId` |
-| `checkoutUrl` | Transak `widgetUrl` — **open this URL** |
-| `amount` | Requested USD amount |
-| `currency` | `USD` |
-| `paystackAmount` | Same as `amount` (legacy field name) |
-| `paystackCurrency` | `USD` |
-| `status` | `pending` |
-| `provider` | `transak` |
+| Field              | Value                                   |
+|--------------------|-----------------------------------------|
+| `orderId`          | Funding order ID (`fund_…`)             |
+| `invoiceId`        | `partnerOrderId` (= funding order ID)   |
+| `paymentId`        | Same as `invoiceId`                     |
+| `checkoutUrl`      | Transak `widgetUrl` — **open this URL** |
+| `amount`           | Requested USD amount                    |
+| `currency`         | `USD`                                   |
+| `paystackAmount`   | Same as `amount` (legacy field name)    |
+| `paystackCurrency` | `USD`                                   |
+| `status`           | `pending`                               |
+| `provider`         | `transak`                               |
 
 Optional: pass `transakAccessToken` if the Flutter app completed Transak OTP/KYC beforehand.
 

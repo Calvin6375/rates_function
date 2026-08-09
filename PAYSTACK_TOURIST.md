@@ -219,7 +219,7 @@ Set via Firebase Functions secrets / environment:
 ## What was not changed
 
 - **Settlement / Daraja** — merchant payouts unchanged
-- **B2B IntaSend** — payment links and partner checkout unchanged
+- **B2B IntaSend** — payment links unchanged; partner **Add Money** self-topup is a separate Paystack path (`B2B_ADD_MONEY.md`)
 - **Legacy `handleTopUpWebhook`** — still serves legacy IntaSend webhooks if configured; C2B app no longer uses this path
 
 ## Key files

@@ -24,6 +24,7 @@ function generateApiKey() {
  * @param {string} [params.apiKey] - If not provided, one is generated
  * @param {string} [params.status='active'] - e.g. active | pending_review (self-serve before go-live)
  * @param {string} [params.onboardingSource] - optional audit: "self" | "platform"
+ * @param {string} [params.greetingDisplayName] - shown in dashboard greeting until business name is set
  * @returns {Promise<{ partnerId: string, apiKey: string, partner: Object }>}
  */
 async function createPartner({
@@ -33,6 +34,7 @@ async function createPartner({
   apiKey = null,
   status = "active",
   onboardingSource = null,
+  greetingDisplayName = null,
 }) {
   const col = collection("partners");
   const partnerId = `partner_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -51,6 +53,13 @@ async function createPartner({
   };
   if (onboardingSource) {
     data.onboardingSource = String(onboardingSource);
+  }
+  const greet =
+    greetingDisplayName != null && String(greetingDisplayName).trim() ?
+      String(greetingDisplayName).trim() :
+      null;
+  if (greet) {
+    data.greetingDisplayName = greet;
   }
   await col.doc(partnerId).set(data);
   return {
@@ -168,7 +177,14 @@ async function updatePartner(partnerId, updates) {
   const ref = collection("partners").doc(partnerId);
   const doc = await ref.get();
   if (!doc.exists) throw new Error("Partner not found");
-  const allowed = ["name", "settlementCurrency", "webhookUrl", "status", "settlementAccount"];
+  const allowed = [
+    "name",
+    "settlementCurrency",
+    "webhookUrl",
+    "status",
+    "settlementAccount",
+    "greetingDisplayName",
+  ];
   const data = { updatedAt: serverTimestamp() };
   for (const k of allowed) {
     if (updates[k] !== undefined) data[k] = updates[k];

@@ -56,13 +56,21 @@ const config = {
     /** Zoho SMTP (email verification / transactional mail) */
     smtpUser: "SMTP_USER",
     smtpPass: "SMTP_PASS",
+    /**
+     * Firebase Web API key (Console → Project settings → General → Web API Key).
+     * Bound on b2bPortal for Identity Toolkit signInWithPassword / sendOobCode
+     * (change-password, set-pin, forgot-password).
+     * NOTE: Secret Manager forbids names starting with FIREBASE_ — use WEB_API_KEY.
+     */
+    firebaseWebApiKey: "WEB_API_KEY",
   },
 
   /**
    * Firebase Web API key (Console → Project settings → General).
-   * Used by `requestPasswordReset` to call Identity Toolkit `sendOobCode` server-side.
+   * Used by password/set-pin flows to call Identity Toolkit server-side.
+   * Prefer `process.env.WEB_API_KEY` at call time once the secret is bound.
    */
-  firebaseWebApiKey: getEnv("FIREBASE_WEB_API_KEY") || null,
+  firebaseWebApiKey: getEnv("WEB_API_KEY") || getEnv("FIREBASE_WEB_API_KEY") || null,
 
   /**
    * Zoho SMTP connection settings (non-secret).

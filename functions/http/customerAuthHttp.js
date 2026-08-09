@@ -44,7 +44,7 @@ function isValidEmailShape(email) {
  * - `continueUrl` (string, optional) — must be allowed in Firebase Console → Auth → Authorized domains
  * - `canHandleCodeInApp` (boolean, optional) — set true for mobile deep-link handling
  *
- * Requires `FIREBASE_WEB_API_KEY` on the function (same value as in your client Firebase config).
+ * Requires `WEB_API_KEY` on the function (same value as in your client Firebase config).
  */
 exports.requestPasswordReset = onCall(
     {
@@ -64,7 +64,7 @@ exports.requestPasswordReset = onCall(
 
       const webApiKey = config.firebaseWebApiKey;
       if (!webApiKey) {
-        console.error("requestPasswordReset: FIREBASE_WEB_API_KEY is not set");
+        console.error("requestPasswordReset: WEB_API_KEY is not set");
         throw new HttpsError(
             "failed-precondition",
             "Password reset is not configured on the server.",
