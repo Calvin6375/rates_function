@@ -176,7 +176,7 @@ Exports live in `functions/index.js`. Business logic sits in **`services/`**; HT
 - **Centralized config** — `config.js` (region, collections, feature flags, sandbox keys, Circle env)
 - **Backward compatibility** — consumer app APIs preserved across refactors
 
-See [`functions/BACKEND_ARCHITECTURE.md`](./functions/BACKEND_ARCHITECTURE.md) for service-level detail.
+See [`BACKEND_ARCHITECTURE.md`](./BACKEND_ARCHITECTURE.md) for service-level detail.
 
 ---
 
@@ -425,8 +425,8 @@ functions/
 | [`B2B_SANDBOX_DASHBOARD_FRONTEND.md`](./B2B_SANDBOX_DASHBOARD_FRONTEND.md) | B2B dashboard UI | Onboarding checklist + sandbox transactions |
 | [`B2B_FRONTEND_INSTRUCTIONS.md`](./B2B_FRONTEND_INSTRUCTIONS.md) | B2B dashboard UI | Payment links, portal transactions |
 | [`onboarding.md`](./onboarding.md) | B2B ops / partners | Ordered onboarding steps and endpoints |
-| [`functions/BACKEND_ARCHITECTURE.md`](./functions/BACKEND_ARCHITECTURE.md) | Backend maintainers | Services, ledger, data model |
-| [`AGENTS.md`](./AGENTS.md) | Contributors | Repo conventions and commands |
+| [`BACKEND_ARCHITECTURE.md`](./BACKEND_ARCHITECTURE.md) | Backend maintainers | Services, ledger, data model |
+| [`AGENTS.md`](../AGENTS.md) | Contributors | Repo conventions and commands |
 | [`TRANSACTIONS_API.md`](./TRANSACTIONS_API.md) | Consumer frontend | Transactions REST API |
 
 ---

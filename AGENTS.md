@@ -10,7 +10,7 @@ TruePay is a Firebase-based cryptocurrency exchange backend built with Node.js 2
 - **`functions/jobs/`**: Scheduled tasks (e.g., `rateUpdater.js`).
 - **`functions/utils/`**: General-purpose utilities (logging, validation).
 
-The root directory contains Firebase configuration files (`firebase.json`, `firestore.rules`) and extensive documentation in Markdown format.
+The root directory contains Firebase configuration files (`firebase.json`, `firestore.rules`). Markdown documentation is in **`docs/`** (index: [`docs/INDEX.md`](docs/INDEX.md)).
 
 ## Build, Test, and Development Commands
 Commands should be executed within the `functions/` directory unless otherwise specified.
@@ -33,7 +33,7 @@ Commands should be executed within the `functions/` directory unless otherwise s
 ## Testing Guidelines
 - **Local Testing**: Use `node test-functions.js` from the root directory to verify HTTP endpoints. Ensure emulators are running via `npm run serve`.
 - **Framework**: `firebase-functions-test` is available for unit and integration testing.
-- **Backwards Compatibility**: Ensure that changes do not break existing consumer app APIs (documented in `README_HIGH_LEVEL.md`).
+- **Backwards Compatibility**: Ensure that changes do not break existing consumer app APIs (documented in `docs/README_HIGH_LEVEL.md`).
 
 ## Commit & Pull Request Guidelines
 While previous history uses generic messages (e.g., "updates"), contributors should follow descriptive conventions:

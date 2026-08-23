@@ -641,4 +641,4 @@ Register the webhook URL in Circle Console after deploy. The `reconcileCircleLed
 - [Circle Developer-Controlled Wallets](https://developers.circle.com/wallets/dev-controlled)
 - [Circle Webhook Notifications](https://developers.circle.com/wallets/webhook-notifications)
 - [`README_HIGH_LEVEL.md`](./README_HIGH_LEVEL.md) — TruePay system overview
-- [`functions/BACKEND_ARCHITECTURE.md`](./functions/BACKEND_ARCHITECTURE.md) — Service layer conventions
+- [`BACKEND_ARCHITECTURE.md`](./BACKEND_ARCHITECTURE.md) — Service layer conventions

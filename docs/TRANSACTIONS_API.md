@@ -132,8 +132,14 @@ final nextPage = await getTransactionHistory(
       {
         "id": "tx_1234567890_abc123",
         "userId": "user123",
-        "type": "credit",
+        "type": "funding",
         "amount": 1000,
+        "signedAmount": 1000,
+        "direction": "credit",
+        "displayName": "Wallet top-up (Paystack)",
+        "title": "Wallet top-up (Paystack)",
+        "label": "Wallet top-up (Paystack)",
+        "reconType": "funding_paystack",
         "status": "completed",
         "previousBalance": 0,
         "newBalance": 1000,
@@ -305,6 +311,51 @@ final uri = Uri.parse(
   'http://localhost:5001/truepay-72060/us-central1/transactionsApi/transactions'
 );
 ```
+
+---
+
+## Display names (Flutter UI & recon)
+
+Each transaction includes normalized presentation fields:
+
+| Field | Purpose |
+|-------|---------|
+| `displayName` | **Use this for the list title** (e.g. `Merchant payment`, `Wallet top-up (Paystack)`, `Send money`) |
+| `title` / `label` | Same as `displayName` (legacy aliases) |
+| `direction` | `"credit"` (money in) or `"debit"` (money out) |
+| `signedAmount` | Positive for credits, negative for debits — use for `+`/`-` prefix |
+| `reconType` | Stable slug for reconciliation exports (`merchant_payment`, `funding_paystack`, `topup_intasend`, …) |
+
+Do **not** default every row to `"Received"`. Map `displayName` directly, or derive from `direction` only as fallback.
+
+Examples:
+
+| `type` | `displayName` | `direction` |
+|--------|---------------|-------------|
+| `merchant_payment` | Merchant payment (MCH-001) | `debit` |
+| `funding` | Wallet top-up (Paystack) | `credit` |
+| `topup` | Wallet top-up (IntaSend) | `credit` |
+| `direct_topup` | Direct top-up | `credit` |
+| `debit` + metadata.type=send | Send money | `debit` |
+| `credit` + metadata.type=receive | Money received | `credit` |
+
+Query param `type=credit` or `type=debit` matches `direction` as well as raw `type`.
+
+---
+
+### Safari Card payout detail fields
+
+When `metadata.source === "safari_card_payout"`, list and single-transaction responses join the linked `safariCardPayouts` document and expose:
+
+| Field | Example |
+|-------|---------|
+| `mpesaReference` | `UHKUE3131L` (M-Pesa receipt) |
+| `merchantName` | Merchant / beneficiary name |
+| `recipient.account_type` | `TillNumber` |
+| `recipient.account` | `4963167` |
+| `fee` / `totalDebit` | Fee breakdown |
+
+Internal fields **`payoutId`**, **`providerTrackingId`**, **`clientRequestId`**, **`narrative`**, **`providerTransactionId`**, and **`providerReference`** are not included in API responses. `displayName` uses `merchantName` when available.
 
 ---
 
