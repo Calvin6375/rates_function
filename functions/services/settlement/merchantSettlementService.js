@@ -5,6 +5,7 @@
 
 const config = require("../../config");
 const { collection, serverTimestamp } = require("../../libs/firestore");
+const { logTransaction } = require("../../utils/transactions");
 const walletService = require("../walletService");
 const rateService = require("../rateService");
 const transactionService = require("../transactionService");
@@ -233,6 +234,39 @@ async function completeMerchantPayment(params) {
   });
 
   await fiatReservationService.confirmReservation(requestId);
+
+  await transactionService.updateTransactionStatus(transactionId, transactionService.STATUSES.completed, {
+    metadata: {
+      merchantPaymentId: mpId,
+      merchantId,
+      previousBalance: debitResult.previousBalance,
+      newBalance: debitResult.newBalance,
+      ledgerEntryId: debitResult.ledgerEntryId,
+    },
+  });
+
+  try {
+    await logTransaction(
+        userId,
+        transactionService.TRANSACTION_TYPES.merchant_payment,
+        numericUsd,
+        transactionService.STATUSES.completed,
+        debitResult.previousBalance,
+        debitResult.newBalance,
+        {
+          currency: FUNDING_CURRENCY,
+          merchantPaymentId: mpId,
+          merchantId,
+          amountKes,
+          fxRate,
+          transactionRecordId: transactionId,
+          ...metadata,
+        },
+    );
+  } catch (logErr) {
+    console.warn("completeMerchantPayment: legacy log failed (non-fatal):", logErr.message);
+  }
+
   await finalizeMerchantPayment(mpId, sjId, transactionId);
 
   await paymentNotifications.notifySettlementCompleted({
@@ -264,13 +298,13 @@ async function completeMerchantPayment(params) {
 async function finalizeMerchantPayment(merchantPaymentId, settlementJobId, transactionRecordId) {
   await collection(MP_COL).doc(merchantPaymentId).update({
     status: MERCHANT_PAYMENT_STATUSES.completed,
+    transactionRecordId,
     updatedAt: serverTimestamp(),
   });
   await collection(SJ_COL).doc(settlementJobId).update({
     status: SETTLEMENT_JOB_STATUSES.completed,
     updatedAt: serverTimestamp(),
   });
-  await transactionService.updateTransactionStatus(transactionRecordId, transactionService.STATUSES.completed);
 }
 
 /**

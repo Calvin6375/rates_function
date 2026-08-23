@@ -39,6 +39,7 @@ const fundingOrderService = require("../services/funding/fundingOrderService");
 const fundingWebhookService = require("../services/funding/fundingWebhookService");
 const partnerRecipientService = require("../services/partnerRecipientService");
 const b2bSendService = require("../services/b2bSendService");
+const b2bPortalDashboardService = require("../services/b2bPortalDashboardService");
 const partnerWalletAdminService = require("../services/partnerWalletAdminService");
 const b2bWalletBalanceSync = require("../services/b2bWalletBalanceSync");
 const partnerAdminProvisioningService = require("../services/partnerAdminProvisioningService");
@@ -2019,6 +2020,64 @@ app.post("/portal/funding/confirm", loadFirebaseUser, attachPartnerContext, asyn
     const status = err.statusCode || 500;
     console.error("b2bPortal POST /portal/funding/confirm:", err.message);
     res.status(status).json({ success: false, error: err.message });
+  }
+});
+
+/** Partner / platform dashboard overview (summary, chart, recent sends & collections). */
+app.get("/portal/dashboard", loadFirebaseUser, attachPartnerContextOrPlatformAdmin, async (req, res) => {
+  try {
+    const platformScope = Boolean(req.platformTransactionScope);
+    const period = req.query.period ? String(req.query.period) : "month";
+    let partnerId = req.partnerId || null;
+    let channel = "b2b";
+
+    if (platformScope) {
+      channel = req.query.channel ? String(req.query.channel) : "all";
+      if (req.query.partnerId) {
+        partnerId = String(req.query.partnerId);
+      }
+    }
+
+    const data = await b2bPortalDashboardService.getPartnerDashboard({
+      partnerId,
+      platformScope,
+      channel,
+      periodKey: period,
+      activityUserId: req.userId,
+      sendsLimit: Math.min(parseInt(String(req.query.sendsLimit || "10"), 10) || 10, 50),
+      collectionsLimit: Math.min(parseInt(String(req.query.collectionsLimit || "10"), 10) || 10, 50),
+      activityLimit: Math.min(parseInt(String(req.query.activityLimit || "15"), 10) || 15, 50),
+    });
+
+    res.status(200).json({ success: true, data });
+  } catch (err) {
+    console.error("b2bPortal GET /portal/dashboard:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/** Platform super-admin dashboard (same payload; always platform scope). */
+app.get("/platform/dashboard", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+  try {
+    const period = req.query.period ? String(req.query.period) : "month";
+    const partnerId = req.query.partnerId ? String(req.query.partnerId) : null;
+    const channel = req.query.channel ? String(req.query.channel) : "all";
+
+    const data = await b2bPortalDashboardService.getPartnerDashboard({
+      partnerId,
+      platformScope: true,
+      channel,
+      periodKey: period,
+      activityUserId: req.userId,
+      sendsLimit: Math.min(parseInt(String(req.query.sendsLimit || "10"), 10) || 10, 50),
+      collectionsLimit: Math.min(parseInt(String(req.query.collectionsLimit || "10"), 10) || 10, 50),
+      activityLimit: Math.min(parseInt(String(req.query.activityLimit || "15"), 10) || 15, 50),
+    });
+
+    res.status(200).json({ success: true, data });
+  } catch (err) {
+    console.error("b2bPortal GET /platform/dashboard:", err.message);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

@@ -18,6 +18,11 @@ const { mountFundingRoutes } = require("./fundingHttp");
 const { mountFundingOpsRoutes } = require("./fundingOpsHttp");
 const { isPlatformAdmin } = require("../utils/accessControl");
 const { verifyFirebaseAuth } = require("../libs/auth");
+const {
+  C2B_ENCRYPTION_SECRETS,
+  C2B_ENCRYPTION_ALLOW_HEADERS,
+  createC2bPayloadEncryptionMiddleware,
+} = require("./middleware/c2bPayloadEncryption");
 
 const db = admin.firestore();
 const app = express();
@@ -53,6 +58,7 @@ function sanitizeCustomerRatesObject(rates) {
 
 // Middleware
 app.use(express.json());
+app.use(createC2bPayloadEncryptionMiddleware());
 
 // CORS middleware - supports credentials
 app.use((req, res, next) => {
@@ -88,7 +94,7 @@ app.use((req, res, next) => {
 
   res.set("Access-Control-Allow-Origin", allowedOrigin);
   res.set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
-  res.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+  res.set("Access-Control-Allow-Headers", C2B_ENCRYPTION_ALLOW_HEADERS);
   res.set("Access-Control-Allow-Credentials", "true");
   res.set("Access-Control-Max-Age", "3600");
 
@@ -1013,6 +1019,7 @@ exports.api = onRequest(
       transakApiKey,
       transakSecretKey,
       transakTreasuryWallet,
+      ...C2B_ENCRYPTION_SECRETS,
     ],
   },
   app,

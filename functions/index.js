@@ -22,6 +22,8 @@ const circleWebhookHttp = require("./http/circleWebhookHttp");
 const paystackWebhookHttp = require("./http/paystackWebhookHttp");
 const transakWebhookHttp = require("./http/transakWebhookHttp");
 const darajaCallbackHttp = require("./http/darajaCallbackHttp");
+const safariCardHttp = require("./http/safariCardHttp");
+const intasendDisbursementWebhookHttp = require("./http/intasendDisbursementWebhookHttp");
 const reconcileCircleLedgerJob = require("./jobs/reconcileCircleLedger");
 const reconcileFundingOrdersJob = require("./jobs/reconcileFundingOrders");
 const releaseExpiredReservationsJob = require("./jobs/releaseExpiredReservations");
@@ -44,6 +46,8 @@ exports.getArbitrageRates = arbitrageHttp.getArbitrageRates;
 
 // Export payment functions (callables: paymentsHttp; webhooks: webhookApi)
 exports.handleTopUpWebhook = webhookApi.handleTopUpWebhook;
+exports.handleIntaSendDisbursementWebhook =
+  intasendDisbursementWebhookHttp.handleIntaSendDisbursementWebhook;
 exports.handleTransFiTopUpWebhook = webhookApi.handleTransFiTopUpWebhook;
 exports.handleCircleWebhook = circleWebhookHttp.handleCircleWebhook;
 exports.handlePaystackWebhook = paystackWebhookHttp.handlePaystackWebhook;
@@ -64,11 +68,12 @@ exports.createSendMoneyOrder = paymentsHttp.createSendMoneyOrder;
 // Export customer wallets REST API
 exports.api = customerWalletsHttp.api;
 exports.cryptoApi = cryptoApi.cryptoApi;
+exports.safariCardApi = safariCardHttp.safariCardApi;
 
 // Export B2B Partner API (X-API-KEY auth)
 exports.partner = partnerApi.partner;
 
-// B2B Partner API sandbox (static public X-API-KEY; in-memory mocks — see B2B_SANDBOX.md)
+// B2B Partner API sandbox (static public X-API-KEY; in-memory mocks — see docs/B2B_SANDBOX.md)
 exports.partnerSandbox = partnerSandboxHttp.partnerSandbox;
 
 // B2B portal: platform admin + partner org admin / members (Firebase Bearer auth)

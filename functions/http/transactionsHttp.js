@@ -8,6 +8,16 @@ const admin = require("../admin");
 const express = require("express");
 const config = require("../config");
 const {verifyFirebaseAuth} = require("../libs/auth");
+const {enrichTransactionForFeed} = require("../utils/transactionFeedLabels");
+const {
+  enrichTransactionWithSafariCardPayout,
+  enrichTransactionsWithSafariCardPayouts,
+} = require("../utils/safariCardTransactionEnrichment");
+const {
+  C2B_ENCRYPTION_SECRETS,
+  C2B_ENCRYPTION_ALLOW_HEADERS,
+  createC2bPayloadEncryptionMiddleware,
+} = require("./middleware/c2bPayloadEncryption");
 
 const firestore = admin.firestore();
 const rtdb = admin.database();
@@ -101,6 +111,262 @@ function resolveClientDisplayName(rec, uid) {
 }
 
 /**
+ * Collect reference ids already represented in the ledger feed (for dedup).
+ * @param {Array<Object>} transactions
+ * @returns {{ merchantPaymentIds: Set<string>, fundingOrderIds: Set<string> }}
+ */
+function collectFeedReferenceIds(transactions) {
+  const merchantPaymentIds = new Set();
+  const fundingOrderIds = new Set();
+
+  for (const tx of transactions) {
+    const meta = tx.metadata && typeof tx.metadata === "object" ? tx.metadata : {};
+    if (meta.merchantPaymentId) {
+      merchantPaymentIds.add(String(meta.merchantPaymentId));
+    }
+    if (meta.fundingOrderId) {
+      fundingOrderIds.add(String(meta.fundingOrderId));
+    }
+    if (typeof tx.merchantPaymentId === "string" && tx.merchantPaymentId) {
+      merchantPaymentIds.add(tx.merchantPaymentId);
+    }
+    if (typeof tx.fundingOrderId === "string" && tx.fundingOrderId) {
+      fundingOrderIds.add(tx.fundingOrderId);
+    }
+  }
+
+  return { merchantPaymentIds, fundingOrderIds };
+}
+
+/**
+ * Pending / in-flight merchant payments (P2M) — no legacy subcollection row yet.
+ * @param {string} userId
+ * @param {number} limit
+ * @param {Set<string>} [skipMerchantPaymentIds]
+ * @returns {Promise<Array>}
+ */
+async function fetchUserMerchantPaymentsForTransactionFeed(
+    userId,
+    limit,
+    skipMerchantPaymentIds = new Set(),
+) {
+  const col = firestore.collection(config.collections.merchantPayments);
+  const cap = Math.min(limit || 50, 50);
+  const mapDoc = (doc) => {
+    const d = doc.data();
+    const mpId = doc.id;
+    if (skipMerchantPaymentIds.has(mpId)) {
+      return null;
+    }
+    if (d.transactionRecordId && d.status === "completed") {
+      return null;
+    }
+    return {
+      id: `merchant_payment_${mpId}`,
+      type: "merchant_payment",
+      status: d.status || "pending",
+      amount: Number(d.amountUsd) || 0,
+      currency: d.currency || "USD",
+      amountKes: Number(d.amountKes) || 0,
+      timestamp: d.createdAt?.toDate?.()?.toISOString() || null,
+      merchantPaymentId: mpId,
+      merchantId: d.merchantId || null,
+      source: "merchantPayments",
+      userId,
+      metadata: {
+        merchantPaymentId: mpId,
+        merchantId: d.merchantId || null,
+        amountKes: Number(d.amountKes) || 0,
+        fxRate: Number(d.fxRate) || 0,
+        ...(d.metadata && typeof d.metadata === "object" ? d.metadata : {}),
+      },
+    };
+  };
+
+  try {
+    const snap = await col
+        .where("userId", "==", userId)
+        .orderBy("createdAt", "desc")
+        .limit(cap)
+        .get();
+    return snap.docs.map(mapDoc).filter(Boolean);
+  } catch (err) {
+    if (!isFirestoreIndexMissingError(err)) {
+      throw err;
+    }
+    const snap = await col
+        .where("userId", "==", userId)
+        .limit(200)
+        .get();
+    const rows = snap.docs.map((doc) => ({
+      doc,
+      ms: orderDocCreatedMs(doc.data()),
+      row: mapDoc(doc),
+    }));
+    rows.sort((a, b) => b.ms - a.ms);
+    return rows.slice(0, cap).map((r) => r.row).filter(Boolean);
+  }
+}
+
+/**
+ * Pending IntaSend / Paystack funding checkouts (fundingOrders — no ledger row yet).
+ * @param {string} userId
+ * @param {number} limit
+ * @param {Set<string>} [skipFundingOrderIds]
+ * @returns {Promise<Array>}
+ */
+async function fetchUserFundingOrdersForTransactionFeed(
+    userId,
+    limit,
+    skipFundingOrderIds = new Set(),
+) {
+  const col = firestore.collection(config.collections.fundingOrders);
+  const cap = Math.min(limit || 50, 50);
+  const terminal = new Set(["completed"]);
+  const mapDoc = (doc) => {
+    const d = doc.data();
+    const orderId = doc.id;
+    if (skipFundingOrderIds.has(orderId)) {
+      return null;
+    }
+    if (terminal.has(String(d.status || ""))) {
+      return null;
+    }
+    const meta = d.metadata && typeof d.metadata === "object" ? d.metadata : {};
+    if (meta.product === "b2b_self_topup") {
+      return null;
+    }
+    return {
+      id: `funding_order_${orderId}`,
+      type: "funding",
+      status: d.status || "pending",
+      amount: Number(d.amount) || 0,
+      currency: d.currency || "USD",
+      timestamp: d.createdAt?.toDate?.()?.toISOString() || null,
+      fundingOrderId: orderId,
+      provider: d.provider || null,
+      source: "fundingOrders",
+      userId,
+      metadata: {
+        fundingOrderId: orderId,
+        provider: d.provider || null,
+        providerReference: d.providerReference || null,
+        checkoutUrl: d.checkoutUrl || null,
+        ...meta,
+      },
+    };
+  };
+
+  try {
+    const snap = await col
+        .where("userId", "==", userId)
+        .orderBy("createdAt", "desc")
+        .limit(cap * 3)
+        .get();
+    return snap.docs.map(mapDoc).filter(Boolean).slice(0, cap);
+  } catch (err) {
+    if (!isFirestoreIndexMissingError(err)) {
+      throw err;
+    }
+    const snap = await col
+        .where("userId", "==", userId)
+        .limit(200)
+        .get();
+    const rows = snap.docs.map((doc) => ({
+      doc,
+      ms: orderDocCreatedMs(doc.data()),
+      row: mapDoc(doc),
+    }));
+    rows.sort((a, b) => b.ms - a.ms);
+    return rows.map((r) => r.row).filter(Boolean).slice(0, cap);
+  }
+}
+
+/**
+ * Pending legacy IntaSend checkout orders (orderType topup).
+ * @param {string} userId
+ * @param {number} limit
+ * @returns {Promise<Array>}
+ */
+async function fetchUserLegacyTopupOrdersForTransactionFeed(userId, limit) {
+  const col = firestore.collection(config.collections.orders);
+  const cap = Math.min(limit || 50, 50);
+  const terminal = new Set(["completed", "failed", "cancelled"]);
+  const mapDoc = (doc) => {
+    const d = doc.data();
+    if (terminal.has(String(d.status || ""))) {
+      return null;
+    }
+    return {
+      id: `order_topup_legacy_${doc.id}`,
+      type: "topup",
+      status: d.status || "pending",
+      amount: Number(d.amount) || 0,
+      currency: d.currency || "KES",
+      timestamp: d.createdAt?.toDate?.()?.toISOString() || null,
+      orderId: doc.id,
+      invoiceId: d.invoiceId || d.metadata?.invoiceId || null,
+      source: "orders",
+      userId,
+      metadata: {
+        orderId: doc.id,
+        invoiceId: d.invoiceId || d.metadata?.invoiceId || null,
+        provider: "intasend",
+        ...(d.metadata && typeof d.metadata === "object" ? d.metadata : {}),
+      },
+    };
+  };
+
+  try {
+    const snap = await col
+        .where("userId", "==", userId)
+        .where("orderType", "==", "topup")
+        .orderBy("createdAt", "desc")
+        .limit(cap * 2)
+        .get();
+    return snap.docs.map(mapDoc).filter(Boolean).slice(0, cap);
+  } catch (err) {
+    if (!isFirestoreIndexMissingError(err)) {
+      throw err;
+    }
+    const snap = await col
+        .where("userId", "==", userId)
+        .where("orderType", "==", "topup")
+        .limit(200)
+        .get();
+    const rows = snap.docs.map((doc) => ({
+      doc,
+      ms: orderDocCreatedMs(doc.data()),
+      row: mapDoc(doc),
+    }));
+    rows.sort((a, b) => b.ms - a.ms);
+    return rows.map((r) => r.row).filter(Boolean).slice(0, cap);
+  }
+}
+
+/**
+ * Match API `type` filter against raw type, direction, or recon category.
+ * @param {Object} tx
+ * @param {string|null} typeFilter
+ * @returns {boolean}
+ */
+function matchesTypeFilter(tx, typeFilter) {
+  if (!typeFilter) {
+    return true;
+  }
+  const t = String(typeFilter).toLowerCase();
+  const rawType = String(tx.type || "").toLowerCase();
+  const direction = String(tx.direction || "").toLowerCase();
+  const reconType = String(tx.reconType || "").toLowerCase();
+  return (
+    rawType === t ||
+    direction === t ||
+    reconType === t ||
+    reconType.startsWith(`${t}_`)
+  );
+}
+
+/**
  * Pending direct top-up queue rows (no ledger entry until settled).
  * @param {string} userId
  * @param {number} limit
@@ -154,6 +420,7 @@ async function fetchUserDirectTopupOrdersForTransactionFeed(userId, limit) {
 
 // Middleware
 app.use(express.json());
+app.use(createC2bPayloadEncryptionMiddleware());
 
 // CORS middleware
 app.use((req, res, next) => {
@@ -189,7 +456,7 @@ app.use((req, res, next) => {
 
   res.set("Access-Control-Allow-Origin", allowedOrigin);
   res.set("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.set("Access-Control-Allow-Headers", C2B_ENCRYPTION_ALLOW_HEADERS);
   res.set("Access-Control-Allow-Credentials", "true");
   res.set("Access-Control-Max-Age", "3600");
 
@@ -286,6 +553,10 @@ async function getTransactionsFromFirestore(userId, options = {}) {
     });
 
     // Pending direct top-ups (orders only — no subcollection row yet)
+    const { merchantPaymentIds, fundingOrderIds } = collectFeedReferenceIds(
+        transactions,
+    );
+
     try {
       const topupFeed = await fetchUserDirectTopupOrdersForTransactionFeed(
           userId,
@@ -299,6 +570,47 @@ async function getTransactionsFromFirestore(userId, options = {}) {
       );
     }
 
+    try {
+      const merchantFeed = await fetchUserMerchantPaymentsForTransactionFeed(
+          userId,
+          limit,
+          merchantPaymentIds,
+      );
+      transactions.push(...merchantFeed);
+    } catch (mpErr) {
+      console.warn(
+          "⚠️ Could not load merchant payments for feed:",
+          mpErr.message,
+      );
+    }
+
+    try {
+      const fundingFeed = await fetchUserFundingOrdersForTransactionFeed(
+          userId,
+          limit,
+          fundingOrderIds,
+      );
+      transactions.push(...fundingFeed);
+    } catch (fundErr) {
+      console.warn(
+          "⚠️ Could not load funding orders for feed:",
+          fundErr.message,
+      );
+    }
+
+    try {
+      const legacyTopupFeed = await fetchUserLegacyTopupOrdersForTransactionFeed(
+          userId,
+          limit,
+      );
+      transactions.push(...legacyTopupFeed);
+    } catch (legacyErr) {
+      console.warn(
+          "⚠️ Could not load legacy IntaSend top-up orders for feed:",
+          legacyErr.message,
+      );
+    }
+
     // Sort by timestamp descending
     transactions.sort((a, b) => {
       const timeA = new Date(a.timestamp || a.createdAt || 0).getTime();
@@ -306,11 +618,9 @@ async function getTransactionsFromFirestore(userId, options = {}) {
       return timeB - timeA;
     });
 
-    let filtered = transactions;
+    let filtered = await enrichTransactionsWithSafariCardPayouts(transactions);
     if (type) {
-      filtered = filtered.filter(
-          (tx) => String(tx.type || "") === String(type),
-      );
+      filtered = filtered.filter((tx) => matchesTypeFilter(tx, type));
     }
     if (status) {
       filtered = filtered.filter(
@@ -478,8 +788,21 @@ app.get("/transactions", async (req, res) => {
       return timeB - timeA;
     });
 
-    // Apply limit after deduplication
-    const limitedTransactions = uniqueTransactions.slice(0, limit);
+    let enrichedTransactions = await enrichTransactionsWithSafariCardPayouts(
+        uniqueTransactions,
+    );
+    if (type) {
+      enrichedTransactions = enrichedTransactions.filter((tx) =>
+        matchesTypeFilter(tx, type),
+      );
+    }
+    if (status) {
+      enrichedTransactions = enrichedTransactions.filter(
+          (tx) => String(tx.status || "") === String(status),
+      );
+    }
+
+    const limitedTransactions = enrichedTransactions.slice(0, limit);
 
     // Get last transaction ID for pagination
     const lastTransactionId = limitedTransactions.length > 0
@@ -547,12 +870,12 @@ app.get("/transactions/:transactionId", async (req, res) => {
         const data = txDoc.data();
         return res.status(200).json({
           success: true,
-          data: {
+          data: await enrichTransactionWithSafariCardPayout({
             ...data,
             id: txDoc.id,
             timestamp: data.timestamp?.toDate?.()?.toISOString() || null,
             source: "firestore",
-          },
+          }),
         });
       }
 
@@ -568,13 +891,13 @@ app.get("/transactions/:transactionId", async (req, res) => {
         if (data.userId === userId) {
           return res.status(200).json({
             success: true,
-            data: {
+            data: await enrichTransactionWithSafariCardPayout({
               ...data,
               id: walletTxDoc.id,
               timestamp: data.createdAt?.toDate?.()?.toISOString() || null,
               createdAt: data.createdAt?.toDate?.()?.toISOString() || null,
               source: "firestore",
-            },
+            }),
           });
         }
       }
@@ -597,11 +920,11 @@ app.get("/transactions/:transactionId", async (req, res) => {
         if (data) {
           return res.status(200).json({
             success: true,
-            data: {
+            data: enrichTransactionForFeed({
               ...data,
               id: transactionId,
               source: "realtime",
-            },
+            }),
           });
         }
       }
@@ -939,6 +1262,7 @@ exports.transactionsApi = onRequest(
       memory: config.resources.memory,
       enforceAppCheck: false, // Allow without App Check for Flutter apps
       minInstances: 0,
+      secrets: [...C2B_ENCRYPTION_SECRETS],
     },
     app,
 );

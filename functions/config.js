@@ -63,6 +63,7 @@ const config = {
      * NOTE: Secret Manager forbids names starting with FIREBASE_ — use WEB_API_KEY.
      */
     firebaseWebApiKey: "WEB_API_KEY",
+    c2bPayloadEncryptionKey: "C2B_PAYLOAD_ENCRYPTION_KEY",
   },
 
   /**
@@ -101,6 +102,12 @@ const config = {
   // Feature flags
   features: {
     enableDetailedLogging: getEnv("ENABLE_DETAILED_LOGGING", "true") === "true",
+  },
+
+  /** C2B mobile API payload encryption (optional; see docs/C2B_PAYLOAD_ENCRYPTION.md) */
+  c2bPayloadEncryption: {
+    required: getEnv("C2B_PAYLOAD_ENCRYPTION_REQUIRED", "false") === "true",
+    defaultKeyId: getEnv("C2B_PAYLOAD_ENCRYPTION_KEY_ID", "default"),
   },
 
   // Binance API configuration
@@ -184,6 +191,10 @@ const config = {
     partnerRecipients: "partnerRecipients",
     /** B2B Send — outbound partner → merchant payments */
     partnerSendPayments: "partnerSendPayments",
+    /** Safari Card — IntaSend disbursement payouts */
+    safariCardPayouts: "safariCardPayouts",
+    /** Safari Card payout idempotency keys */
+    safariCardPayoutIdempotency: "safariCardPayoutIdempotency",
   },
 
   paymentLinks: {
@@ -265,6 +276,19 @@ const config = {
     reservationTtlMinutes: Number(getEnv("FIAT_RESERVATION_TTL_MINUTES", "30")),
     settlementMaxRetries: Number(getEnv("SETTLEMENT_MAX_RETRIES", "5")),
     settlementRetryBaseMs: Number(getEnv("SETTLEMENT_RETRY_BASE_MS", "60000")),
+  },
+
+  /** Safari Card payout flat fees (KES). Override via env. */
+  safariCardPayoutFees: {
+    mpesaB2c: Number(getEnv("SAFARI_CARD_MPESA_B2C_FEE", "0")),
+    mpesaB2b: Number(getEnv("SAFARI_CARD_MPESA_B2B_FEE", "0")),
+    bank: Number(getEnv("SAFARI_CARD_BANK_FEE", "0")),
+  },
+
+  safariCardPayouts: {
+    /** Max KES payout amount unless overridden */
+    maxAmountKes: Number(getEnv("SAFARI_CARD_MAX_PAYOUT_KES", "999999")),
+    minAmountKes: Number(getEnv("SAFARI_CARD_MIN_PAYOUT_KES", "1")),
   },
 
   /** C2B consumer app — Paystack return / deep link (external browser flow) */

@@ -25,10 +25,13 @@ async function verifyIdToken(token) {
 async function verifyFirebaseAuth(req) {
   try {
     const authHeader = req.headers?.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    const bearerMatch = typeof authHeader === "string" ?
+      authHeader.match(/^Bearer\s+(.+)$/i) :
+      null;
+    if (!bearerMatch) {
       return { success: false, error: "Missing or invalid Authorization header" };
     }
-    const token = authHeader.slice(7);
+    const token = bearerMatch[1];
     const decodedToken = await verifyIdToken(token);
     return {
       success: true,

@@ -10,9 +10,15 @@ const config = require("../config");
 const { verifyFirebaseAuth } = require("../libs/auth");
 const circleService = require("../services/circle/circleService");
 const circleRailAdapter = require("../services/circle/circleRailAdapter");
+const {
+  C2B_ENCRYPTION_SECRETS,
+  C2B_ENCRYPTION_ALLOW_HEADERS,
+  createC2bPayloadEncryptionMiddleware,
+} = require("./middleware/c2bPayloadEncryption");
 
 const app = express();
 app.use(express.json());
+app.use(createC2bPayloadEncryptionMiddleware());
 
 /** @type {Map<string, { count: number, resetAt: number }>} */
 const sendRateLimits = new Map();
@@ -50,7 +56,7 @@ app.use((req, res, next) => {
 
   res.set("Access-Control-Allow-Origin", allowedOrigin);
   res.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Idempotency-Key");
+  res.set("Access-Control-Allow-Headers", C2B_ENCRYPTION_ALLOW_HEADERS);
   res.set("Access-Control-Allow-Credentials", "true");
 
   if (req.method === "OPTIONS") {
@@ -223,7 +229,7 @@ const circleEntitySecret = defineSecret(config.secrets.circleEntitySecret);
 
 exports.cryptoApi = onRequest(
     {
-      secrets: [circleApiKey, circleEntitySecret],
+      secrets: [circleApiKey, circleEntitySecret, ...C2B_ENCRYPTION_SECRETS],
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
