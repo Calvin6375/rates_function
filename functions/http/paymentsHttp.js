@@ -371,13 +371,13 @@ exports.handlePaymentWebhook = onCall(
  * and updates user balances atomically. Client must call this instead of writing to orders.
  *
  * Request data: {
- *   fromCurrency: "USDT",
+ *   quoteId?: string,       // preferred — locked quote (client rate IGNORED)
+ *   fromCurrency: "USDT",   // legacy path only (USDT/USD/KES)
  *   toCurrency: "USD",
- *   fromAmount: 6.0,
- *   fee?: 0.03,           // optional; or use feeRate
- *   feeRate?: 0.005,      // optional (e.g. 0.5%)
- *   exchangeRate: 1.01297,
- *   toAmount?: 6.07782    // optional; computed from fromAmount * exchangeRate if omitted
+ *   fromAmount: 6.0,        // legacy path
+ *   fee?: 0.03,
+ *   feeRate?: 0.005,
+ *   // exchangeRate / toAmount from client are NEVER trusted
  * }
  */
 exports.createSwapOrder = onCall(
@@ -394,44 +394,54 @@ exports.createSwapOrder = onCall(
 
       const userId = auth.uid;
       const data = request.data || {};
+      const quoteId = data.quoteId || null;
 
       const fromCurrency = data.fromCurrency || null;
       const toCurrency = data.toCurrency || null;
       const fromAmount = data.fromAmount;
-      const fee = data.fee;
-      const feeRate = data.feeRate;
-      const exchangeRate = data.exchangeRate;
-      const toAmount = data.toAmount;
+      // Client fee / feeRate / exchangeRate / toAmount are NEVER forwarded
 
-      if (!fromCurrency || !toCurrency) {
-        throw new HttpsError("invalid-argument", "fromCurrency and toCurrency are required");
-      }
-      if (fromAmount == null || Number(fromAmount) <= 0) {
-        throw new HttpsError("invalid-argument", "fromAmount must be a positive number");
-      }
-      if (exchangeRate == null || Number(exchangeRate) <= 0) {
-        throw new HttpsError("invalid-argument", "exchangeRate must be a positive number");
+      if (!quoteId) {
+        if (!fromCurrency || !toCurrency) {
+          throw new HttpsError(
+              "invalid-argument",
+              "fromCurrency and toCurrency are required (or provide quoteId)",
+          );
+        }
+        if (fromAmount == null || Number(fromAmount) <= 0) {
+          throw new HttpsError("invalid-argument", "fromAmount must be a positive number");
+        }
       }
 
       try {
         const result = await swapLib.createSwapOrder(userId, {
+          quoteId,
           fromCurrency,
           toCurrency,
-          fromAmount: Number(fromAmount),
-          fee: fee != null ? Number(fee) : undefined,
-          feeRate: feeRate != null ? Number(feeRate) : undefined,
-          exchangeRate: Number(exchangeRate),
-          toAmount: toAmount != null ? Number(toAmount) : undefined,
+          fromAmount: fromAmount != null ? Number(fromAmount) : undefined,
         });
         return result;
       } catch (error) {
+        const code = error.code || "";
+        if (
+          code === "QUOTE_EXPIRED" ||
+          code === "QUOTE_ALREADY_USED" ||
+          code === "PAIR_NOT_SETTLEABLE" ||
+          code === "UNAUTHORIZED_QUOTE" ||
+          code === "MISSING_RATE"
+        ) {
+          throw new HttpsError("failed-precondition", error.message);
+        }
+        if (code === "QUOTE_NOT_FOUND") {
+          throw new HttpsError("not-found", error.message);
+        }
         if (error.message && error.message.includes("Insufficient")) {
           throw new HttpsError("failed-precondition", error.message);
         }
         if (error.message && (error.message.includes("required") || error.message.includes("must be"))) {
           throw new HttpsError("invalid-argument", error.message);
         }
-        console.error("❌ Error creating swap order:", { userId, error: error.message });
+        console.error("❌ Error creating swap order:", {userId, error: error.message});
         throw new HttpsError("internal", `Failed to create swap order: ${error.message}`);
       }
     },

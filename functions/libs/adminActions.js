@@ -11,6 +11,7 @@ const { logAdminAction } = require("../utils/transactions");
 const { validateBalanceUpdate } = require("../utils/validation");
 const { verifyAdminFromToken, isSuperAdminUid } = require("../utils/adminClaims");
 const supportedCountriesService = require("../services/supportedCountriesService");
+const { normalizeRatesForStorage } = require("../utils/customerRatesResolve");
 const axios = require("axios");
 const { defineSecret } = require("firebase-functions/params");
 
@@ -395,24 +396,28 @@ async function updateCommissionConfig(adminId, buyRate, sellRate, currencyPair =
   const configDoc = await configRef.get();
   const beforeData = configDoc.exists ? configDoc.data() : { rates: {} };
 
-  // Determine currency pair
-  const pair = currencyPair || `${config.binance.defaultAsset}/${config.binance.defaultFiat}`;
+  // Determine currency pair (legacy USDT/C or currency code); values = KES per unit
+  const pair = currencyPair || `USDT/KES`;
+  const normalized = normalizeRatesForStorage(
+      {[pair]: {buyRate: buy, sellRate: sell}},
+      beforeData.rates || {},
+      {rateVersion: beforeData.rateVersion},
+  );
 
-  // Prepare update data
   const updateData = {
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     updatedBy: adminId,
-    rates: {
-      ...(beforeData.rates || {}),
-      [pair]: {
-        buyRate: buy,
-        sellRate: sell,
-      },
-    },
+    rates: normalized.rates,
+    baseCurrency: normalized.baseCurrency,
+    rateMeaning: normalized.rateMeaning,
+    rateVersion: normalized.rateVersion,
   };
 
-  // Update or create config document
-  await configRef.set(updateData, { merge: true });
+  if (configDoc.exists) {
+    await configRef.update(updateData);
+  } else {
+    await configRef.set(updateData);
+  }
 
   // Get updated data for logging
   const afterDoc = await configRef.get();
@@ -544,10 +549,10 @@ async function getIntaSendPaymentStatus(adminId, invoiceId) {
 }
 
 /**
- * Set platform supported countries (super admin only — enforced here).
- * Default: merge with existing. Pass `replace: true` to persist the request list only (removals).
+ * @deprecated Supported currencies are derived from P2P rates.
+ * Always rejects after super-admin check so old admin UI gets a clear error.
  * @param {string} adminId - Caller Firebase uid
- * @param {unknown} countries - ISO 3166-1 alpha-3 codes
+ * @param {unknown} countries
  * @param {{ replace?: boolean }} [options]
  * @returns {Promise<Object>}
  */
@@ -557,22 +562,8 @@ async function setSupportedCountries(adminId, countries, options = {}) {
     throw new Error("Super admin access required");
   }
 
-  const result = await supportedCountriesService.setSupportedCountries(adminId, countries, options);
-
-  await logAdminAction(
-    adminId,
-    "system",
-    "setSupportedCountries",
-    { countries: result.before, replace: !!options.replace },
-    { countries: result.countries, updatedBy: result.updatedBy, merged: result.merged },
-  );
-
-  return {
-    success: true,
-    countries: result.countries,
-    updatedAt: result.updatedAt,
-    merged: result.merged,
-  };
+  // Throws failed-precondition / deprecated — do not write config/supportedCountries.
+  await supportedCountriesService.setSupportedCountries(adminId, countries, options);
 }
 
 /**

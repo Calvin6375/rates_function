@@ -140,6 +140,8 @@ const config = {
   collections: {
     users: "users",
     orders: "orders",
+    /** Locked Exchange quotes (Send→Get); consumed once by createSwapOrder */
+    exchangeQuotes: "exchangeQuotes",
     transactions: "transactions",
     p2pRates: "p2pRates",
     config: "config",
@@ -283,6 +285,7 @@ const config = {
     mpesaB2c: Number(getEnv("SAFARI_CARD_MPESA_B2C_FEE", "0")),
     mpesaB2b: Number(getEnv("SAFARI_CARD_MPESA_B2B_FEE", "0")),
     bank: Number(getEnv("SAFARI_CARD_BANK_FEE", "0")),
+    wallet: Number(getEnv("SAFARI_CARD_WALLET_FEE", "0")),
   },
 
   safariCardPayouts: {

@@ -429,10 +429,9 @@ exports.getIntaSendPaymentStatus = onCall(
 );
 
 /**
- * Callable: set supported countries (ISO 3166-1 alpha-3), super admin only.
- * Request: { countries: string[], replace?: boolean }
- * - Default (replace omitted or false): **merges** with the stored list (add-only; safe if the UI sends only new codes).
- * - replace: true — persist `countries` as the full list (use to remove codes or reset the set).
+ * Callable: deprecated. Supported currencies come from the P2P rates book.
+ * Use PUT /api/config/fees to add/remove currency rates instead.
+ * Kept so old admin UI gets a clear failed-precondition instead of silent writes.
  */
 exports.setSupportedCountries = onCall(
   {
@@ -467,6 +466,10 @@ exports.setSupportedCountries = onCall(
 
       if (error.message.includes("Super admin")) {
         throw new HttpsError("permission-denied", error.message);
+      }
+
+      if (error.deprecated || error.code === "failed-precondition") {
+        throw new HttpsError("failed-precondition", error.message);
       }
 
       if (error.message.includes("Invalid") || error.message.includes("must be") || error.message.includes("Too many")) {

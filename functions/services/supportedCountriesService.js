@@ -1,157 +1,111 @@
 /**
- * @fileoverview Supported countries list (platform config in Firestore).
- * Read by consumer API and B2B; writes restricted to super-admin flow in adminActions.
+ * @fileoverview Supported currencies for apps/B2B — derived from the P2P rates book.
+ *
+ * Product rule: a currency present in `config/customerRates` is supported.
+ * `GET /countries` keeps the legacy field name `countries` but values are
+ * **currency codes** (ETB, KES, USDC), not ISO 3166-1 country codes.
+ *
+ * Writes: use PUT /api/config/fees (add/remove rate rows). The callable
+ * `setSupportedCountries` is deprecated and rejected.
  */
 
 const admin = require("../admin");
 const config = require("../config");
+const {listCurrenciesFromRates} = require("../utils/customerRatesResolve");
 
 const firestore = admin.firestore();
+/** @deprecated Legacy Firestore doc; no longer authoritative. */
 const CONFIG_DOC_ID = "supportedCountries";
+const CUSTOMER_RATES_DOC_ID = "customerRates";
 
-/** When no Firestore doc exists yet (ISO 3166-1 alpha-3) */
-const DEFAULT_COUNTRY_CODES = ["KEN", "NGA", "GHA"];
+/** @deprecated Kept for export compatibility; empty book no longer falls back to these. */
+const DEFAULT_COUNTRY_CODES = Object.freeze([]);
+
+const SET_DEPRECATED_MESSAGE =
+  "Supported currencies are managed via P2P rates (PUT /api/config/fees). " +
+  "Add or remove a currency rate instead of calling setSupportedCountries.";
 
 /**
  * @returns {FirebaseFirestore.DocumentReference}
  */
-function docRef() {
-  return firestore.collection(config.collections.config).doc(CONFIG_DOC_ID);
+function customerRatesRef() {
+  return firestore.collection(config.collections.config).doc(CUSTOMER_RATES_DOC_ID);
 }
 
 /**
- * Normalize to unique uppercase ISO 3166-1 alpha-3 codes.
- * @param {unknown} raw
- * @returns {string[]}
+ * Build public payload from a customerRates document body (pure; testable).
+ *
+ * @param {FirebaseFirestore.DocumentData|null|undefined} data
+ * @returns {{
+ *   success: true,
+ *   countries: string[],
+ *   currencies: string[],
+ *   source: "customerRates",
+ *   rateVersion: number|null,
+ *   updatedAt: string|null,
+ *   isDefault: boolean,
+ * }}
  */
-function normalizeCountryCodes(raw) {
-  if (!Array.isArray(raw)) {
-    return [];
+function buildSupportedCurrenciesPayload(data) {
+  const rates = data && typeof data.rates === "object" && data.rates ? data.rates : {};
+  const currencies = listCurrenciesFromRates(rates);
+  const rateVersion =
+    data && Number.isFinite(Number(data.rateVersion)) ? Number(data.rateVersion) : null;
+  // normalizeKesBook always injects KES; isDefault means "no admin rates stored yet".
+  const hasStoredRates = Object.keys(rates).length > 0;
+
+  let updatedAt = null;
+  const rawUpdated = data && data.updatedAt;
+  if (rawUpdated && typeof rawUpdated.toDate === "function") {
+    updatedAt = rawUpdated.toDate().toISOString();
+  } else if (typeof rawUpdated === "string") {
+    updatedAt = rawUpdated;
   }
-  const seen = new Set();
-  const out = [];
-  for (const item of raw) {
-    if (typeof item !== "string") {
-      continue;
-    }
-    const code = item.trim().toUpperCase();
-    if (!/^[A-Z]{3}$/.test(code)) {
-      throw new Error(`Invalid country code: ${item} (expected ISO 3166-1 alpha-3, e.g. ETH)`);
-    }
-    if (!seen.has(code)) {
-      seen.add(code);
-      out.push(code);
-    }
-  }
-  return out;
+
+  return {
+    success: true,
+    // Legacy response field — now currency codes from the rates book.
+    countries: currencies,
+    currencies,
+    source: "customerRates",
+    rateVersion,
+    updatedAt,
+    isDefault: !hasStoredRates,
+  };
 }
 
 /**
- * Public read: supported country codes for apps and B2B.
- * @returns {Promise<{ success: boolean, countries: string[], updatedAt: string|null, isDefault: boolean }>}
+ * Public read: supported currency codes derived from config/customerRates.
+ * @returns {Promise<ReturnType<typeof buildSupportedCurrenciesPayload>>}
  */
 async function getSupportedCountries() {
-  const ref = docRef();
-  const snap = await ref.get();
+  const snap = await customerRatesRef().get();
   if (!snap.exists) {
-    return {
-      success: true,
-      countries: [...DEFAULT_COUNTRY_CODES],
-      updatedAt: null,
-      isDefault: true,
-    };
+    return buildSupportedCurrenciesPayload(null);
   }
-  const data = snap.data() || {};
-  const raw = data.countries;
-  let countries;
-  try {
-    countries = normalizeCountryCodes(raw);
-  } catch (e) {
-    console.error("supportedCountries: invalid stored data, falling back to default", e.message);
-    countries = [...DEFAULT_COUNTRY_CODES];
-  }
-  if (countries.length === 0) {
-    return {
-      success: true,
-      countries: [...DEFAULT_COUNTRY_CODES],
-      updatedAt: data.updatedAt?.toDate?.()?.toISOString() || null,
-      isDefault: true,
-    };
-  }
-  return {
-    success: true,
-    countries,
-    updatedAt: data.updatedAt?.toDate?.()?.toISOString() || null,
-    isDefault: false,
-  };
+  return buildSupportedCurrenciesPayload(snap.data() || {});
 }
 
 /**
- * Persist list (caller must enforce super-admin).
- *
- * By default, **merges** with the current stored list (union, de-duplicated) so partial saves
- * (e.g. only newly added codes) do not wipe existing entries. Pass `replace: true` to set the
- * list exactly to `countries` (for removals or a full authoritative reset).
- *
- * @param {string} actorUid
- * @param {string[]} countries
- * @param {{ replace?: boolean }} [options]
- * @returns {Promise<{ success: boolean, countries: string[], updatedAt: string, merged: boolean }>}
+ * @deprecated Use PUT /api/config/fees to add/remove currency rates.
+ * @param {string} _actorUid
+ * @param {unknown} _countries
+ * @param {{ replace?: boolean }} [_options]
+ * @returns {Promise<never>}
  */
-async function setSupportedCountries(actorUid, countries, options = {}) {
-  const replace = options.replace === true;
-  const incoming = normalizeCountryCodes(countries);
-  if (incoming.length === 0) {
-    throw new Error(
-        "countries must be a non-empty array of ISO 3166-1 alpha-3 codes (3 letters, e.g. ETH, KEN)",
-    );
-  }
-
-  const ref = docRef();
-  const beforeSnap = await ref.get();
-  const beforeData = beforeSnap.exists ? beforeSnap.data() : {};
-
-  const currentPayload = await getSupportedCountries();
-  const currentList = currentPayload.countries || [];
-
-  let normalized;
-  if (replace) {
-    normalized = incoming;
-  } else {
-    normalized = normalizeCountryCodes([...currentList, ...incoming]);
-  }
-
-  if (normalized.length === 0) {
-    throw new Error("countries must be a non-empty array of ISO 3166-1 alpha-3 codes (3 letters, e.g. ETH, KEN)");
-  }
-  if (normalized.length > 250) {
-    throw new Error("Too many countries (max 250)");
-  }
-
-  const updatePayload = {
-    countries: normalized,
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    updatedBy: actorUid,
-  };
-
-  await ref.set(updatePayload, { merge: true });
-
-  const afterSnap = await ref.get();
-  const afterData = afterSnap.data() || {};
-
-  return {
-    success: true,
-    countries: afterData.countries || normalized,
-    updatedAt: afterData.updatedAt?.toDate?.()?.toISOString() || new Date().toISOString(),
-    updatedBy: actorUid,
-    before: beforeData.countries || null,
-    merged: !replace,
-  };
+async function setSupportedCountries(_actorUid, _countries, _options = {}) {
+  const err = new Error(SET_DEPRECATED_MESSAGE);
+  err.code = "failed-precondition";
+  err.deprecated = true;
+  throw err;
 }
 
 module.exports = {
   getSupportedCountries,
   setSupportedCountries,
+  buildSupportedCurrenciesPayload,
+  SET_DEPRECATED_MESSAGE,
   DEFAULT_COUNTRY_CODES,
   CONFIG_DOC_ID,
+  CUSTOMER_RATES_DOC_ID,
 };

@@ -2,7 +2,7 @@
  * @fileoverview Safari Card payout types, status mapping, and error codes.
  */
 
-/** @typedef {"MPESA_B2C"|"MPESA_B2B"|"BANK"} SafariCardPayoutType */
+/** @typedef {"MPESA_B2C"|"MPESA_B2B"|"BANK"|"SAFARITAP_WALLET"} SafariCardPayoutType */
 
 /** @typedef {"PENDING"|"INITIATED"|"PROCESSING"|"SUCCESS"|"FAILED"|"CANCELLED"|"RETRY"|"UNKNOWN"} SafariCardPayoutStatus */
 
@@ -10,6 +10,8 @@ const PAYOUT_TYPES = Object.freeze({
   MPESA_B2C: "MPESA_B2C",
   MPESA_B2B: "MPESA_B2B",
   BANK: "BANK",
+  /** Internal TruePay ledger transfer (no IntaSend) */
+  SAFARITAP_WALLET: "SAFARITAP_WALLET",
 });
 
 const B2B_ACCOUNT_TYPES = Object.freeze({
@@ -51,6 +53,8 @@ const ERROR_CODES = Object.freeze({
   UNAUTHORIZED: "UNAUTHORIZED",
   NOT_FOUND: "NOT_FOUND",
   VALIDATION_FAILED: "VALIDATION_FAILED",
+  RECIPIENT_NOT_FOUND: "RECIPIENT_NOT_FOUND",
+  SELF_TRANSFER: "SELF_TRANSFER",
 });
 
 /** Batch-level IntaSend status codes */
@@ -173,6 +177,15 @@ function serializeRecipientForClient(payout) {
     };
   }
 
+  if (payoutType === PAYOUT_TYPES.SAFARITAP_WALLET) {
+    return {
+      account_type: "SafariTapWallet",
+      account: recipient.phoneNumber || recipient.userId || null,
+      user_id: recipient.userId || null,
+      phone_number: recipient.phoneNumber || null,
+    };
+  }
+
   return null;
 }
 
@@ -197,9 +210,11 @@ function serializePayoutForClient(payout) {
   if (!payout) {
     return null;
   }
-  return {
+  const defaultProvider =
+    payout.type === PAYOUT_TYPES.SAFARITAP_WALLET ? "truepay" : "intasend";
+  const row = {
     status: payout.status,
-    provider: payout.provider || "intasend",
+    provider: payout.provider || defaultProvider,
     amount: Number(payout.amount),
     fee: Number(payout.fee || 0),
     totalDebit: Number(payout.totalDebit || payout.amount),
@@ -213,6 +228,10 @@ function serializePayoutForClient(payout) {
     completedAt: payout.completedAt?.toDate?.()?.toISOString?.() || payout.completedAt || null,
     failedAt: payout.failedAt?.toDate?.()?.toISOString?.() || payout.failedAt || null,
   };
+  if (payout.type === PAYOUT_TYPES.SAFARITAP_WALLET) {
+    row.recipientUserId = payout.recipientUserId || payout.recipient?.userId || null;
+  }
+  return row;
 }
 
 module.exports = {

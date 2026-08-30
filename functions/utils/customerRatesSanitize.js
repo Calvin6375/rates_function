@@ -1,6 +1,12 @@
 /**
- * @fileoverview When config/customerRates has impossible USDT↔fiat values (e.g. USDT/KES ≈ 1),
- * backfill from Binance P2P so public /rates and /customer-rates stay usable.
+ * @fileoverview Market-leg helpers for true USDT↔fiat Binance pairs.
+ *
+ * Customer P2P rates are a **KES-per-unit** book (see customerRatesResolve.js).
+ * Do NOT call sanitizeRatesObject on that book — values like USDT/ETB = 1.44
+ * mean KES per ETB, not ETB per USDT, and must not be overwritten by Binance.
+ *
+ * These helpers remain for optional market-data repair only when the caller
+ * knows the map is literally "fiat units per 1 USDT".
  */
 
 const config = require("../config");
@@ -8,7 +14,6 @@ const ratesLib = require("../libs/rates");
 
 /**
  * Minimum plausible "fiat per 1 USDT" for supported African fiats.
- * Config values below this are treated as mis-entered or unit-swapped.
  */
 const MIN_PLAUSIBLE_USDT_FIAT = {
   KES: 50,
@@ -48,12 +53,17 @@ async function fillUsdtFiatFromBinance(fiat) {
 }
 
 /**
- * Mutates rates map: fixes USDT/KES (and other supported fiats) when stored rates are implausible.
+ * No-op for the KES customer book. Kept so existing imports do not break.
+ * Pass `{ forceMarketUsdtFiat: true }` only for maps that are literally fiat-per-USDT.
  *
  * @param {Record<string, { buyRate?: number, sellRate?: number }>} ratesObj
+ * @param {{ forceMarketUsdtFiat?: boolean }} [options]
  * @returns {Promise<void>}
  */
-async function sanitizeRatesObject(ratesObj) {
+async function sanitizeRatesObject(ratesObj, options = {}) {
+  if (!options.forceMarketUsdtFiat) {
+    return;
+  }
   const asset = config.binance.defaultAsset;
   const fiats = config.binance.supportedFiats || [];
   for (const fiat of fiats) {
@@ -70,7 +80,7 @@ async function sanitizeRatesObject(ratesObj) {
         sellRate: 1 / fixed.buyRate,
       };
       console.warn(`customerRatesSanitize: replaced implausible ${pair} using Binance`, {
-        before: { buyRate: r.buyRate, sellRate: r.sellRate },
+        before: {buyRate: r.buyRate, sellRate: r.sellRate},
         after: fixed,
       });
     } catch (e) {
@@ -80,22 +90,13 @@ async function sanitizeRatesObject(ratesObj) {
 }
 
 /**
- * @param {string} currencyPair e.g. USDT/KES
+ * Disabled for KES-book pairs. Never rewrite admin customer quotes.
+ * @param {string} currencyPair
  * @param {{ buyRate: number, sellRate: number }} pairRates
  * @returns {Promise<{ buyRate: number, sellRate: number }>}
  */
 async function maybeFixResolvedPair(currencyPair, pairRates) {
-  if (!currencyPair || !currencyPair.includes("/") || !pairRates) return pairRates;
-  const [base, quote] = currencyPair.split("/");
-  if (base !== config.binance.defaultAsset) return pairRates;
-  if (typeof pairRates.buyRate !== "number" || typeof pairRates.sellRate !== "number") return pairRates;
-  if (!isImplausibleUsdtAgainstFiat(quote, pairRates.buyRate, pairRates.sellRate)) return pairRates;
-  try {
-    return await fillUsdtFiatFromBinance(quote);
-  } catch (e) {
-    console.error("maybeFixResolvedPair:", e.message);
-    return pairRates;
-  }
+  return pairRates;
 }
 
 module.exports = {

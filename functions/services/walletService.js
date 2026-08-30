@@ -18,6 +18,76 @@ const circleRailAdapter = require("./circle/circleRailAdapter");
 const OWNER_TYPES = Object.freeze({ user: "user", partner: "partner" });
 const DEFAULT_BALANCES = { USD: 0, KES: 0, USDT: 0 };
 
+/** Fiat currencies projected to RTDB `wallet/{uid}/fiat/*` (parity with sync). */
+const STANDARD_FIAT_CURRENCIES = Object.freeze([
+  "USD", "KES", "TZS", "ETB", "GBP", "EUR", "NGN", "GHS",
+]);
+/** Crypto currencies projected to RTDB `wallet/{uid}/crypto/*`. */
+const STANDARD_CRYPTO_CURRENCIES = Object.freeze(["USDT", "USDC"]);
+
+/**
+ * Read a currency balance from a users/{uid} document body.
+ * @param {Object} data
+ * @param {string} currency
+ * @returns {number}
+ */
+function readUserCurrencyBalance(data, currency) {
+  const code = String(currency || "").toUpperCase();
+  const wallets = data && data.wallets && typeof data.wallets === "object" ? data.wallets : {};
+  const balanceField = `${code.toLowerCase()}Balance`;
+  return Number(data?.[balanceField] ?? data?.[code] ?? wallets[code] ?? 0) || 0;
+}
+
+/**
+ * Build fiat/crypto balance maps from Firestore user doc + USDC ledger value.
+ * Does not read RTDB. Shape mirrors what Flutter WalletRepository used to list
+ * from `wallet/{uid}/fiat` and `wallet/{uid}/crypto`.
+ *
+ * @param {Object|null|undefined} userData
+ * @param {{ usdc?: number }} [opts]
+ * @returns {{ fiat: Record<string, number>, crypto: Record<string, number> }}
+ */
+function buildAccountBalancesFromUserData(userData, opts = {}) {
+  const data = userData && typeof userData === "object" ? userData : {};
+  const wallets = data.wallets && typeof data.wallets === "object" ? data.wallets : {};
+  const fiat = {};
+
+  for (const code of STANDARD_FIAT_CURRENCIES) {
+    fiat[code] = readUserCurrencyBalance(data, code);
+  }
+
+  for (const rawKey of Object.keys(wallets)) {
+    const code = String(rawKey || "").toUpperCase();
+    if (!/^[A-Z]{2,10}$/.test(code)) continue;
+    if (STANDARD_CRYPTO_CURRENCIES.includes(code)) continue;
+    if (fiat[code] === undefined) {
+      fiat[code] = Number(wallets[rawKey] ?? 0) || 0;
+    }
+  }
+
+  const crypto = {
+    USDT: Number(data.usdtBalance ?? data.USDT ?? wallets.USDT ?? 0) || 0,
+    USDC: Number(opts.usdc ?? 0) || 0,
+  };
+
+  return {fiat, crypto};
+}
+
+/**
+ * @param {Record<string, number>} map
+ * @param {"fiat"|"crypto"} type
+ * @returns {Array<{ currency: string, balance: number, type: string }>}
+ */
+function mapToAccountList(map, type) {
+  return Object.keys(map)
+      .sort()
+      .map((currency) => ({
+        currency,
+        balance: Number(map[currency]) || 0,
+        type,
+      }));
+}
+
 /**
  * Get user wallet balances from Firestore (users collection).
  * Preserves existing structure for consumer app.
@@ -179,6 +249,39 @@ async function getBalances(userId) {
 }
 
 /**
+ * List C2B customer accounts (owned wallets) for HTTP clients.
+ * Source of truth: Firestore users/{uid} + USDC ledger — never RTDB.
+ *
+ * @param {string} userId
+ * @returns {Promise<{
+ *   userId: string,
+ *   fiat: Array<{ currency: string, balance: number, type: string }>,
+ *   crypto: Array<{ currency: string, balance: number, type: string }>,
+ *   accounts: Array<{ currency: string, balance: number, type: string }>,
+ *   balances: { fiat: Record<string, number>, crypto: Record<string, number> },
+ * }|null>}
+ */
+async function listCustomerAccounts(userId) {
+  if (!userId) return null;
+
+  const userDoc = await admin.firestore().collection(config.collections.users).doc(userId).get();
+  if (!userDoc.exists) return null;
+
+  const usdc = await getCryptoBalance(userId);
+  const {fiat, crypto} = buildAccountBalancesFromUserData(userDoc.data(), {usdc});
+  const fiatAccounts = mapToAccountList(fiat, "fiat");
+  const cryptoAccounts = mapToAccountList(crypto, "crypto");
+
+  return {
+    userId,
+    fiat: fiatAccounts,
+    crypto: cryptoAccounts,
+    accounts: [...fiatAccounts, ...cryptoAccounts],
+    balances: {fiat, crypto},
+  };
+}
+
+/**
  * Dual-write fiat balance to users document (Flutter backward compat).
  * Supports USD/KES specially, plus other ISO fiats on `wallets.{CCY}` / `{ccy}Balance`.
  * @param {string} userId
@@ -264,13 +367,136 @@ async function dualWriteUsdBalance(userId, newUsdBalance) {
 }
 
 /**
- * Get spendable fiat balance from ledger aggregates minus reservations.
+ * Fiat assets that Safari Card / settlements debit via fiatLedger.
+ * (USDT remains on the legacy users/crypto projection.)
+ */
+const FIAT_LEDGER_ASSETS = new Set([
+  "USD", "KES", "TZS", "ETB", "GBP", "EUR", "NGN", "GHS",
+]);
+
+/**
+ * Users-doc projection for a fiat currency (what /api/accounts shows).
+ * @param {string} userId
+ * @param {string} asset
+ * @returns {Promise<number>}
+ */
+async function getProjectedFiatBalance(userId, asset) {
+  const code = String(asset || "").toUpperCase();
+  const userDoc = await admin.firestore().collection(config.collections.users).doc(userId).get();
+  if (!userDoc.exists) return 0;
+  return readUserCurrencyBalance(userDoc.data(), code);
+}
+
+/**
+ * Bring fiatLedger in line with users/{uid} projection.
+ *
+ * Default (**credit-only**): if users.*Balance &gt; ledger, credit the gap.
+ * Never auto-debit the ledger when users is behind — that destroyed balances when
+ * creditUserFiat dual-wrote a low ledger total over a higher users balance.
+ *
+ * Pass `allowDebit: true` after admin users-doc debits that intentionally lower projection.
+ *
+ * @param {string} userId
+ * @param {string} asset
+ * @param {{ allowDebit?: boolean }} [options]
+ * @returns {Promise<{ synced: boolean, projected: number, ledgerBefore: number, ledgerAfter: number, gap: number }>}
+ */
+async function syncFiatLedgerFromUserProjection(userId, asset, options = {}) {
+  const code = String(asset || "").toUpperCase();
+  const allowDebit = options.allowDebit === true;
+  if (!userId || !FIAT_LEDGER_ASSETS.has(code)) {
+    return {synced: false, projected: 0, ledgerBefore: 0, ledgerAfter: 0, gap: 0};
+  }
+
+  const projected = await getProjectedFiatBalance(userId, code);
+  const ledgerBefore = await fiatLedgerService.getLedgerBalance(userId, code);
+  const gap = projected - ledgerBefore;
+
+  if (!Number.isFinite(gap) || Math.abs(gap) < 0.000001) {
+    return {synced: false, projected, ledgerBefore, ledgerAfter: ledgerBefore, gap: 0};
+  }
+
+  const cents = (n) => Math.round(Number(n) * 100);
+  const referenceId =
+    `user_projection_sync_${userId}_${code}_${cents(projected)}_${cents(ledgerBefore)}`;
+
+  if (gap > 0) {
+    const result = await fiatLedgerService.appendTransaction({
+      userId,
+      type: "funding",
+      asset: code,
+      amount: gap,
+      direction: "credit",
+      source: "user_projection_sync",
+      referenceId,
+      metadata: {
+        reason: "Align fiatLedger with users projection (swap/legacy credits)",
+        projected,
+        ledgerBefore,
+      },
+    });
+    return {
+      synced: !result.duplicate,
+      projected,
+      ledgerBefore,
+      ledgerAfter: result.newBalance,
+      gap,
+    };
+  }
+
+  if (!allowDebit) {
+    console.warn("syncFiatLedgerFromUserProjection: users behind ledger; skip auto-debit", {
+      userId,
+      asset: code,
+      projected,
+      ledgerBefore,
+      gap,
+    });
+    return {synced: false, projected, ledgerBefore, ledgerAfter: ledgerBefore, gap};
+  }
+
+  const result = await fiatLedgerService.appendTransaction({
+    userId,
+    type: "withdrawal",
+    asset: code,
+    amount: Math.abs(gap),
+    direction: "debit",
+    source: "user_projection_sync",
+    referenceId,
+    metadata: {
+      reason: "Align fiatLedger down after admin/users debit",
+      projected,
+      ledgerBefore,
+    },
+  });
+  return {
+    synced: !result.duplicate,
+    projected,
+    ledgerBefore,
+    ledgerAfter: result.newBalance,
+    gap,
+  };
+}
+
+/**
+ * Get spendable fiat balance: sync users projection → ledger, then ledger − reservations.
  * @param {string} userId
  * @param {string} [asset="USD"]
  * @returns {Promise<number>}
  */
 async function getFiatAvailableBalance(userId, asset = "USD") {
-  return fiatReservationService.getAvailableBalance(userId, asset);
+  const code = String(asset || "USD").toUpperCase();
+  try {
+    // Bidirectional: admin may have zeroed users.* while ledger still holds funds.
+    await syncFiatLedgerFromUserProjection(userId, code, {allowDebit: true});
+  } catch (err) {
+    console.warn("getFiatAvailableBalance: projection sync failed", {
+      userId,
+      asset: code,
+      error: err.message,
+    });
+  }
+  return fiatReservationService.getAvailableBalance(userId, code);
 }
 
 /**
@@ -291,6 +517,14 @@ async function creditUserFiat(userId, amount, currency = "USD", options = {}) {
   const referenceId = options.referenceId;
   if (!referenceId) {
     throw new Error("referenceId is required for idempotent fiat credit");
+  }
+
+  // Align ledger to users.*Balance first (both directions), then apply credit.
+  // - users > ledger (swap/legacy): credit gap so dualWrite does not wipe users
+  // - users < ledger (admin debit to 0): debit gap so old ledger is not "resurrected"
+  //   when dualWrite(ledger + amount) runs
+  if (options.skipProjectionSync !== true) {
+    await syncFiatLedgerFromUserProjection(userId, asset, {allowDebit: true});
   }
 
   const ledgerResult = await fiatLedgerService.appendTransaction({
@@ -337,6 +571,10 @@ async function debitUserFiat(userId, amount, currency = "USD", options = {}) {
     throw new Error("referenceId is required for idempotent fiat debit");
   }
 
+  if (options.skipProjectionSync !== true) {
+    await syncFiatLedgerFromUserProjection(userId, asset, {allowDebit: true});
+  }
+
   const ledgerResult = await fiatLedgerService.appendTransaction({
     userId,
     type: options.type || "merchant_settlement",
@@ -362,9 +600,16 @@ async function debitUserFiat(userId, amount, currency = "USD", options = {}) {
 
 module.exports = {
   OWNER_TYPES,
+  STANDARD_FIAT_CURRENCIES,
+  STANDARD_CRYPTO_CURRENCIES,
+  FIAT_LEDGER_ASSETS,
+  buildAccountBalancesFromUserData,
   getUserWalletBalances,
   getCryptoBalance,
   getBalances,
+  listCustomerAccounts,
+  getProjectedFiatBalance,
+  syncFiatLedgerFromUserProjection,
   getFiatAvailableBalance,
   creditUserFiat,
   debitUserFiat,

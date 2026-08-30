@@ -11,9 +11,23 @@ const config = require("../config");
 const userWalletsLib = require("../libs/userWallets");
 const ratesLib = require("../libs/rates");
 const p2pListingsLib = require("../libs/p2pListings");
-const { sanitizeRatesObject, maybeFixResolvedPair } = require("../utils/customerRatesSanitize");
+const {
+  resolveCustomerPair,
+  expandRatesWithCrosses,
+  parseSendGetQuery,
+  buildSendGetRatePayload,
+  normalizeRatesForStorage,
+  normalizeKesBook,
+  toCurrencyBook,
+  BASE_CURRENCY,
+  RATE_MEANING,
+  listCurrenciesFromRates,
+} = require("../utils/customerRatesResolve");
+const {getPairCapabilities} = require("../services/settlementCapabilityService");
+const exchangeQuoteService = require("../services/exchangeQuoteService");
 const supportedCountriesService = require("../services/supportedCountriesService");
 const customerSelfRegistrationService = require("../services/customerSelfRegistrationService");
+const walletService = require("../services/walletService");
 const { mountFundingRoutes } = require("./fundingHttp");
 const { mountFundingOpsRoutes } = require("./fundingOpsHttp");
 const { isPlatformAdmin } = require("../utils/accessControl");
@@ -163,15 +177,73 @@ async function requireAdmin(req, res, next) {
 }
 
 /**
+ * Express middleware: valid Firebase ID token for the calling C2B customer.
+ */
+async function requireCustomerAuth(req, res, next) {
+  try {
+    const auth = await verifyFirebaseAuth(req);
+    if (!auth.success || !auth.userId) {
+      res.status(401).json({
+        success: false,
+        error: "Unauthorized",
+        message: auth.error || "Authentication required. Please provide a valid Firebase Auth token.",
+      });
+      return;
+    }
+    req.userId = auth.userId;
+    next();
+  } catch (err) {
+    console.error("requireCustomerAuth middleware:", err.message);
+    res.status(500).json({
+      success: false,
+      error: "Internal error",
+      message: err.message,
+    });
+  }
+}
+
+/**
+ * Shared handler for GET /accounts and GET /wallets.
+ * Authenticated C2B wallet list (fiat + crypto). Replaces direct Flutter RTDB
+ * reads of wallet/{uid}/fiat and wallet/{uid}/crypto.
+ * Balances come from Firestore + USDC ledger — never from RTDB.
+ */
+async function handleListCustomerAccounts(req, res) {
+  try {
+    const accounts = await walletService.listCustomerAccounts(req.userId);
+    if (!accounts) {
+      res.status(404).json({
+        success: false,
+        error: "NOT_FOUND",
+        message: "User wallet not found",
+      });
+      return;
+    }
+    res.status(200).json({
+      success: true,
+      data: accounts,
+    });
+  } catch (error) {
+    console.error("Error listing customer accounts:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to list accounts",
+      message: error.message,
+    });
+  }
+}
+
+app.get("/accounts", requireCustomerAuth, handleListCustomerAccounts);
+/** Alias of GET /accounts */
+app.get("/wallets", requireCustomerAuth, handleListCustomerAccounts);
+
+/**
  * GET /rates
- * Get all customer rates (view-only, public endpoint)
- * No authentication required - public access for displaying rates
- * 
- * Returns all configured customer rates (rate + commission combined) in Buy and Sell format
+ * Public customer rate book (KES-per-unit) with expanded Send/Get crosses.
+ * Does not overwrite admin rates with Binance.
  */
 app.get("/rates", async (req, res) => {
   try {
-    // Get customer rates configuration from Firestore
     const configRef = db.collection(config.collections.config).doc("customerRates");
     const configDoc = await configRef.get();
 
@@ -180,6 +252,9 @@ app.get("/rates", async (req, res) => {
         success: true,
         data: {
           rates: {},
+          book: {},
+          baseCurrency: BASE_CURRENCY,
+          rateMeaning: RATE_MEANING,
         },
         message: "No rates configured yet",
       });
@@ -187,30 +262,19 @@ app.get("/rates", async (req, res) => {
     }
 
     const configData = configDoc.data();
-    const rates = configData.rates || {};
+    const rates = {...(configData.rates || {})};
+    const ratesExpanded = expandRatesWithCrosses(rates);
+    const book = toCurrencyBook(rates);
 
-    // Include inverse pairs so e.g. USD/USDT works when only USDT/USD is configured
-    const ratesWithInverses = { ...rates };
-    for (const [pair, pairRates] of Object.entries(rates)) {
-      if (!pairRates || typeof pairRates.buyRate !== "number" || typeof pairRates.sellRate !== "number") continue;
-      if (!pair.includes("/")) continue;
-      const [base, quote] = pair.split("/");
-      const inversePair = `${quote}/${base}`;
-      if (!ratesWithInverses[inversePair]) {
-        ratesWithInverses[inversePair] = {
-          buyRate: 1 / pairRates.sellRate,
-          sellRate: 1 / pairRates.buyRate,
-        };
-      }
-    }
-
-    await sanitizeRatesObject(ratesWithInverses);
-
-    // Return all rates (public access)
     res.status(200).json({
       success: true,
       data: {
-        rates: ratesWithInverses,
+        rates: ratesExpanded,
+        book,
+        currencies: listCurrenciesFromRates(rates),
+        baseCurrency: configData.baseCurrency || BASE_CURRENCY,
+        rateMeaning: configData.rateMeaning || RATE_MEANING,
+        rateVersion: configData.rateVersion != null ? Number(configData.rateVersion) : null,
         updatedAt: configData.updatedAt?.toDate?.()?.toISOString() || null,
       },
     });
@@ -226,7 +290,9 @@ app.get("/rates", async (req, res) => {
 
 /**
  * GET /countries
- * Supported country codes (ISO 3166-1 alpha-3) for onboarding and KYC UI.
+ * Supported **currency** codes derived from the P2P rates book
+ * (`config/customerRates`). Field name `countries` is legacy; values are
+ * currencies (ETB, KES, USDC), not ISO country codes.
  * Public — same App Check enforcement as the rest of this HTTP function.
  */
 app.get("/countries", async (req, res) => {
@@ -236,6 +302,9 @@ app.get("/countries", async (req, res) => {
       success: true,
       data: {
         countries: payload.countries,
+        currencies: payload.currencies,
+        source: payload.source,
+        rateVersion: payload.rateVersion,
         updatedAt: payload.updatedAt,
         isDefault: payload.isDefault,
       },
@@ -285,19 +354,26 @@ app.post("/register", async (req, res) => {
 
 /**
  * GET /customer-rates
- * Get customer rates (buyRate and sellRate) for Flutter app
- * Public endpoint - no authentication required
- * 
- * Query parameters:
- * - currencyPair (optional): e.g., "USDT/KES", defaults to "USDT/KES"
- * 
- * Returns the customer rates (rate + commission combined) for buying and selling
+ * Exchange quote: Send (sold) → Get (received). KES-numeraire crosses.
+ *
+ * Query: send + get (aliases from/to). Legacy: currencyPair=SEND/GET.
+ * data.rate = Get per 1 Send (sell side). Missing priced leg ⇒ 404 (no 1.0 peg).
  */
 app.get("/customer-rates", async (req, res) => {
   try {
-    const currencyPair = req.query.currencyPair || `${config.binance.defaultAsset}/${config.binance.defaultFiat}`;
+    const defaultPair = `USDT/${BASE_CURRENCY}`;
+    const parsed = parseSendGetQuery(req.query, {defaultPair});
+    if (!parsed.ok) {
+      res.status(400).json({
+        success: false,
+        error: parsed.error,
+        message: parsed.message,
+      });
+      return;
+    }
 
-    // Get customer rates configuration from Firestore
+    const {sendCurrency, getCurrency, currencyPair} = parsed;
+
     const configRef = db.collection(config.collections.config).doc("customerRates");
     const configDoc = await configRef.get();
 
@@ -305,56 +381,175 @@ app.get("/customer-rates", async (req, res) => {
       res.status(404).json({
         success: false,
         error: "Customer rates not configured",
-        message: `No rates found for ${currencyPair}. Please configure rates in admin dashboard.`,
+        message: `No rates found for ${sendCurrency} → ${getCurrency}. Please configure rates in admin dashboard.`,
       });
       return;
     }
 
     const configData = configDoc.data();
-    const rates = configData.rates || {};
+    const rates = {...(configData.rates || {})};
+    const {conflicts} = normalizeKesBook(rates);
 
-    let pairRates = rates[currencyPair];
-    let resolvedPair = currencyPair;
-
-    // If exact pair not found, try inverse (e.g. USD/USDT when only USDT/USD is configured)
-    if (!pairRates && currencyPair.includes("/")) {
-      const [base, quote] = currencyPair.split("/");
-      const inversePair = `${quote}/${base}`;
-      const inverseRates = rates[inversePair];
-      if (inverseRates && typeof inverseRates.buyRate === "number" && typeof inverseRates.sellRate === "number") {
-        pairRates = {
-          buyRate: 1 / inverseRates.sellRate,
-          sellRate: 1 / inverseRates.buyRate,
-        };
-        resolvedPair = currencyPair;
-      }
-    }
-
-    if (!pairRates || typeof pairRates.buyRate !== "number" || typeof pairRates.sellRate !== "number") {
+    const resolved = resolveCustomerPair(rates, currencyPair);
+    if (!resolved) {
+      const known = listCurrenciesFromRates(rates).join(", ") || "none";
       res.status(404).json({
         success: false,
-        error: "Currency pair not found",
-        message: `No rates configured for ${currencyPair}. Available pairs: ${Object.keys(rates).join(", ") || "none"}`,
+        error: "MISSING_RATE",
+        message: `No KES price for send=${sendCurrency} and/or get=${getCurrency}. Configure each currency in admin (KES per 1 unit). Known: ${known}`,
       });
       return;
     }
 
-    const fixedPairRates = await maybeFixResolvedPair(resolvedPair, pairRates);
+    const caps = getPairCapabilities(sendCurrency, getCurrency);
+    const payload = buildSendGetRatePayload({
+      sendCurrency,
+      getCurrency,
+      pairRates: {buyRate: resolved.buyRate, sellRate: resolved.sellRate},
+      source: resolved.source,
+      numeraire: resolved.numeraire,
+      rateUnit: resolved.rateUnit,
+      quotable: caps.quotable,
+      settleable: caps.settleable,
+      rateVersion: configData.rateVersion != null ? Number(configData.rateVersion) : null,
+      conflicts: conflicts.length ? conflicts : null,
+      updatedAt: configData.updatedAt?.toDate?.()?.toISOString() || null,
+    });
+
+    // Optional locked quote when sendAmount is provided (auth required if settleable)
+    const sendAmountRaw = req.query.sendAmount ?? req.query.amount;
+    if (sendAmountRaw != null && String(sendAmountRaw).trim() !== "") {
+      try {
+        const auth = await verifyFirebaseAuth(req);
+        const userId = auth.success ? auth.uid : null;
+        if (caps.settleable && !userId) {
+          res.status(401).json({
+            success: false,
+            error: "UNAUTHORIZED_QUOTE",
+            message: "Authentication required to create a settleable Exchange quote",
+          });
+          return;
+        }
+
+        const quote = await exchangeQuoteService.createQuote({
+          rates,
+          sendCurrency,
+          getCurrency,
+          sendAmount: sendAmountRaw,
+          userId,
+          rateVersion: Number(configData.rateVersion) || 0,
+          ratesUpdatedAt: payload.updatedAt,
+        });
+        payload.quoteId = quote.quoteId;
+        payload.sendAmount = quote.sendAmount;
+        payload.getAmount = quote.getAmount;
+        payload.grossGetAmount = quote.grossGetAmount;
+        payload.netGetAmount = quote.netGetAmount;
+        payload.feeRate = quote.feeRate;
+        payload.feeAmount = quote.feeAmount;
+        payload.feeCurrency = quote.feeCurrency;
+        payload.totalDebit = quote.totalDebit;
+        payload.feeConvention = quote.feeConvention;
+        payload.expiresAt = quote.expiresAt;
+        payload.quoteStatus = quote.status;
+      } catch (quoteErr) {
+        if (
+          quoteErr.code === "INVALID_AMOUNT" ||
+          quoteErr.code === "UNAUTHORIZED_QUOTE" ||
+          quoteErr.code === "INVALID_CURRENCY"
+        ) {
+          res.status(quoteErr.code === "UNAUTHORIZED_QUOTE" ? 401 : 400).json({
+            success: false,
+            error: quoteErr.code,
+            message: quoteErr.message,
+          });
+          return;
+        }
+        throw quoteErr;
+      }
+    }
 
     res.status(200).json({
       success: true,
-      data: {
-        currencyPair: resolvedPair,
-        buyRate: fixedPairRates.buyRate,
-        sellRate: fixedPairRates.sellRate,
-        updatedAt: configData.updatedAt?.toDate?.()?.toISOString() || null,
-      },
+      data: payload,
     });
   } catch (error) {
     console.error("Error getting customer rates:", error);
     res.status(500).json({
       success: false,
       error: "Failed to get customer rates",
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * POST /exchange-quotes
+ * Create a locked Send→Get quote (auth recommended). Body: send, get, sendAmount.
+ */
+app.post("/exchange-quotes", async (req, res) => {
+  try {
+    const auth = await verifyFirebaseAuth(req);
+    if (!auth.success) {
+      res.status(401).json({
+        success: false,
+        error: "UNAUTHORIZED_QUOTE",
+        message: "Authentication required to create an Exchange quote",
+      });
+      return;
+    }
+    const userId = auth.uid;
+    const body = req.body || {};
+    const sendCurrency = String(body.send || body.sendCurrency || body.from || "").toUpperCase();
+    const getCurrency = String(body.get || body.getCurrency || body.to || "").toUpperCase();
+    const sendAmount = body.sendAmount ?? body.amount;
+
+    if (!sendCurrency || !getCurrency) {
+      res.status(400).json({
+        success: false,
+        error: "INVALID_CURRENCY",
+        message: "send and get are required",
+      });
+      return;
+    }
+    if (sendAmount == null) {
+      res.status(400).json({
+        success: false,
+        error: "INVALID_AMOUNT",
+        message: "sendAmount is required",
+      });
+      return;
+    }
+
+    const configRef = db.collection(config.collections.config).doc("customerRates");
+    const configDoc = await configRef.get();
+    if (!configDoc.exists) {
+      res.status(404).json({
+        success: false,
+        error: "MISSING_RATE",
+        message: "Customer rates not configured",
+      });
+      return;
+    }
+    const configData = configDoc.data();
+    const quote = await exchangeQuoteService.createQuote({
+      rates: configData.rates || {},
+      sendCurrency,
+      getCurrency,
+      sendAmount,
+      userId,
+      rateVersion: Number(configData.rateVersion) || 0,
+      ratesUpdatedAt: configData.updatedAt?.toDate?.()?.toISOString() || null,
+    });
+
+    res.status(201).json({success: true, data: quote});
+  } catch (error) {
+    const code = error.code || "internal";
+    const status = code === "MISSING_RATE" ? 404 :
+      (code === "INVALID_CURRENCY" || code === "INVALID_AMOUNT" ? 400 : 500);
+    res.status(status).json({
+      success: false,
+      error: code,
       message: error.message,
     });
   }
@@ -793,11 +988,15 @@ app.get("/config/fees", async (req, res) => {
     const safeRates = sanitizeCustomerRatesObject(configData.rates || {});
     const feeNum = Number(arbitrageFee);
     const safeArbitrage = Number.isFinite(feeNum) && feeNum > 0 ? feeNum : 1.5;
+    const rawRates = configData.rates || {};
 
     res.status(200).json({
       success: true,
       data: {
         rates: safeRates,
+        book: toCurrencyBook(rawRates),
+        baseCurrency: configData.baseCurrency || BASE_CURRENCY,
+        rateMeaning: configData.rateMeaning || RATE_MEANING,
         arbitrageFee: safeArbitrage,
         updatedAt: configData.updatedAt?.toDate?.()?.toISOString() || null,
         updatedBy: configData.updatedBy || null,
@@ -815,26 +1014,8 @@ app.get("/config/fees", async (req, res) => {
 
 /**
  * PUT /config/fees
- * Update customer rates configuration (buyRate and sellRate)
- * Authentication: Admin only (Firebase Auth Bearer token + admin custom claim)
- *
- * Accepts customer rates (rate + commission combined) in Buy and Sell format.
- * Rates are stored per currency pair (e.g., "USDT/KES").
- * 
- * Request body format:
- * {
- *   "currencyPair": "USDT/KES",  // Optional: defaults to "USDT/KES"
- *   "buyRate": 129.50,            // Required: Customer rate for buying
- *   "sellRate": 128.00            // Required: Customer rate for selling
- * }
- * 
- * Or update multiple pairs:
- * {
- *   "rates": {
- *     "USDT/KES": { "buyRate": 129.50, "sellRate": 128.00 },
- *     "USDT/NGN": { "buyRate": 1500.00, "sellRate": 1480.00 }
- *   }
- * }
+ * Update customer rates (admin). Values = KES per 1 unit of currency.
+ * Accepts currency keys ("ETB") or legacy ("USDT/ETB"). Persists both + metadata.
  */
 app.put("/config/fees", requireAdmin, async (req, res) => {
   try {
@@ -842,24 +1023,13 @@ app.put("/config/fees", requireAdmin, async (req, res) => {
 
     const { currencyPair, buyRate, sellRate, rates } = req.body || {};
 
-    // Get current config for logging
     const configRef = db.collection(config.collections.config).doc("customerRates");
     const configDoc = await configRef.get();
     const beforeData = configDoc.exists ? configDoc.data() : { rates: {} };
 
-    const updateData = {
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      updatedBy: adminId,
-    };
+    /** @type {Record<string, { buyRate: number, sellRate: number }>} */
+    const incoming = {};
 
-    // Initialize rates object if it doesn't exist
-    if (!updateData.rates) {
-      updateData.rates = beforeData.rates || {};
-    } else {
-      updateData.rates = { ...beforeData.rates };
-    }
-
-    // Handle bulk update (rates object)
     if (rates && typeof rates === "object") {
       for (const [pair, rateData] of Object.entries(rates)) {
         if (rateData && typeof rateData === "object") {
@@ -884,15 +1054,11 @@ app.put("/config/fees", requireAdmin, async (req, res) => {
             return;
           }
 
-          updateData.rates[pair] = {
-            buyRate: buy,
-            sellRate: sell,
-          };
+          incoming[pair] = {buyRate: buy, sellRate: sell};
         }
       }
     } else if (buyRate !== undefined || sellRate !== undefined) {
-      // Handle single currency pair update
-      const pair = currencyPair || `${config.binance.defaultAsset}/${config.binance.defaultFiat}`;
+      const pair = currencyPair || `USDT/${BASE_CURRENCY}`;
 
       if (buyRate === undefined || sellRate === undefined) {
         res.status(400).json({
@@ -924,10 +1090,7 @@ app.put("/config/fees", requireAdmin, async (req, res) => {
         return;
       }
 
-      updateData.rates[pair] = {
-        buyRate: buy,
-        sellRate: sell,
-      };
+      incoming[pair] = {buyRate: buy, sellRate: sell};
     } else {
       res.status(400).json({
         success: false,
@@ -936,6 +1099,18 @@ app.put("/config/fees", requireAdmin, async (req, res) => {
       });
       return;
     }
+
+    const normalized = normalizeRatesForStorage(incoming, beforeData.rates || {}, {
+      rateVersion: beforeData.rateVersion,
+    });
+    const updateData = {
+      rates: normalized.rates,
+      baseCurrency: normalized.baseCurrency,
+      rateMeaning: normalized.rateMeaning,
+      rateVersion: normalized.rateVersion,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedBy: adminId,
+    };
 
     // Handle arbitrageFee update if present
     const { arbitrageFee } = req.body;
@@ -954,8 +1129,12 @@ app.put("/config/fees", requireAdmin, async (req, res) => {
       }
     }
 
-    // Update the document
-    await configRef.set(updateData, { merge: true });
+    // Replace `rates` map entirely (merge would leave stale pair keys)
+    if (configDoc.exists) {
+      await configRef.update(updateData);
+    } else {
+      await configRef.set(updateData);
+    }
 
     const afterDoc = await configRef.get();
     const afterData = afterDoc.data();
@@ -974,17 +1153,20 @@ app.put("/config/fees", requireAdmin, async (req, res) => {
     }
 
     console.log(`✅ Admin ${adminId} updated customer rates via REST API`, {
-      rates: updateData.rates,
+      currencies: listCurrenciesFromRates(updateData.rates),
     });
 
     res.status(200).json({
       success: true,
       data: {
         rates: afterData.rates || {},
+        book: toCurrencyBook(afterData.rates || {}),
+        baseCurrency: afterData.baseCurrency || BASE_CURRENCY,
+        rateMeaning: afterData.rateMeaning || RATE_MEANING,
         updatedAt: afterData.updatedAt?.toDate?.()?.toISOString() || new Date().toISOString(),
         updatedBy: adminId,
       },
-      message: "Customer rates updated successfully",
+      message: "Customer rates updated successfully (KES per unit)",
     });
   } catch (error) {
     console.error("Error updating customer rates config:", error);

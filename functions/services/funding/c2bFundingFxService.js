@@ -7,8 +7,9 @@ const admin = require("../../admin");
 const config = require("../../config");
 const rateService = require("../rateService");
 const { C2B_PAYSTACK_CURRENCY } = require("../../utils/fundingTypes");
+const { normalizeKesBook, getKesPerUnit } = require("../../utils/customerRatesResolve");
 
-/** Currencies treated as 1:1 with USDT for KES conversion. */
+/** Fallback peg only when customer book has no USD/USDT row (uses Binance USDT/KES). */
 const USDT_PEGGED = new Set(["USD", "USDT"]);
 
 /**
@@ -46,29 +47,21 @@ async function loadCustomerRates() {
 }
 
 /**
- * Prefer buyRate (customer pays) then sellRate for KES-per-unit pairs.
- * @param {Object} rates
- * @param {string} pair
- * @returns {number|null}
- */
-function readPairRate(rates, pair) {
-  const row = rates[pair];
-  if (!row || typeof row !== "object") return null;
-  const buy = Number(row.buyRate);
-  const sell = Number(row.sellRate);
-  if (Number.isFinite(buy) && buy > 0) return buy;
-  if (Number.isFinite(sell) && sell > 0) return sell;
-  return null;
-}
-
-/**
- * KES per 1 unit of `currency`.
+ * KES per 1 unit of `currency` from the customer KES book, then market fallback.
  * @param {string} currency
  * @returns {Promise<number>}
  */
 async function resolveKesPerUnit(currency) {
   if (currency === C2B_PAYSTACK_CURRENCY) {
     return 1;
+  }
+
+  const customerRates = await loadCustomerRates();
+  const {book} = normalizeKesBook(customerRates);
+  const fromBook = getKesPerUnit(book, currency);
+  if (fromBook) {
+    // Prefer buy side (KES per unit when converting client amount → KES charge)
+    return fromBook.buyRate;
   }
 
   const kesRates = await rateService.getRates("KES", "USDT");
@@ -79,24 +72,6 @@ async function resolveKesPerUnit(currency) {
 
   if (USDT_PEGGED.has(currency)) {
     return kesPerUsdt;
-  }
-
-  const customerRates = await loadCustomerRates();
-
-  const direct = readPairRate(customerRates, `${currency}/KES`);
-  if (direct) {
-    return direct;
-  }
-
-  const inverse = readPairRate(customerRates, `KES/${currency}`);
-  if (inverse) {
-    return 1 / inverse;
-  }
-
-  const usdtViaConfig = readPairRate(customerRates, `USDT/${currency}`);
-  if (usdtViaConfig) {
-    // USDT/{currency} ≈ currency units per 1 USDT
-    return kesPerUsdt / usdtViaConfig;
   }
 
   try {

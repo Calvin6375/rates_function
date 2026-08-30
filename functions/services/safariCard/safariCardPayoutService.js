@@ -9,6 +9,7 @@ const walletService = require("../walletService");
 const transactionService = require("../transactionService");
 const fiatReservationService = require("../ledger/fiatReservationService");
 const intasendDisbursement = require("../intasend/intasendDisbursementProvider");
+const { resolveRecipientUserId } = require("../../libs/sendMoney");
 const { calculatePayoutFee } = require("./safariCardPayoutFeeService");
 const {
   validateCreatePayoutRequest,
@@ -73,11 +74,90 @@ async function findPayoutByIdempotency(userId, clientRequestId) {
 }
 
 /**
+ * Lookup TruePay user by phone (phoneNumber / phone, with/without +).
+ * @param {string} phoneDigits - e.g. 254712345678
+ * @returns {Promise<string|null>}
+ */
+async function lookupUserIdByPhone(phoneDigits) {
+  if (!phoneDigits) return null;
+  const viaSendMoney = await resolveRecipientUserId(null, phoneDigits);
+  if (viaSendMoney) return viaSendMoney;
+
+  const variants = [phoneDigits, `+${phoneDigits}`];
+  const users = admin.firestore().collection(config.collections.users);
+  for (const field of ["phoneNumber", "phone"]) {
+    for (const value of variants) {
+      const snap = await users.where(field, "==", value).limit(1).get();
+      if (!snap.empty) return snap.docs[0].id;
+    }
+  }
+  return null;
+}
+
+/**
+ * @param {{ userId?: string|null, phoneNumber?: string|null, name?: string|null }} recipient
+ * @returns {Promise<{ userId: string, phoneNumber: string|null, name: string|null }>}
+ */
+async function resolveSafariTapWalletRecipient(recipient) {
+  const hintUid = recipient?.userId ? String(recipient.userId).trim() : "";
+  const phone = recipient?.phoneNumber ? String(recipient.phoneNumber).trim() : "";
+
+  let userId = null;
+  if (hintUid) {
+    userId = await resolveRecipientUserId(hintUid, null);
+  }
+  if (!userId && phone) {
+    userId = await lookupUserIdByPhone(phone);
+  }
+  if (!userId) {
+    throw payoutError(
+        ERROR_CODES.RECIPIENT_NOT_FOUND,
+        "No SafariTap wallet found for this recipient",
+        404,
+    );
+  }
+
+  const userDoc = await admin.firestore().collection(config.collections.users).doc(userId).get();
+  const data = userDoc.exists ? (userDoc.data() || {}) : {};
+  // Prefer profile name over client-supplied label (avoids wrong "verified name").
+  const profileName = data.name ||
+    [data.firstName, data.lastName].filter(Boolean).join(" ").trim() ||
+    null;
+  const name = profileName || recipient?.name || null;
+
+  return {
+    userId,
+    phoneNumber: phone || data.phoneNumber || data.phone || null,
+    name,
+  };
+}
+
+/**
  * @param {Object} params
  * @returns {Promise<Object>}
  */
 async function validateBeneficiary(params) {
   const parsed = validateBeneficiaryRequest(params);
+
+  if (parsed.provider === "SAFARITAP_WALLET") {
+    const resolved = await resolveSafariTapWalletRecipient({
+      userId: parsed.userId,
+      phoneNumber: parsed.phoneNumber,
+      name: parsed.name,
+    });
+    return {
+      valid: true,
+      account: parsed.account,
+      accountType: parsed.accountType,
+      bankCode: null,
+      beneficiaryName: resolved.name,
+      recipientUserId: resolved.userId,
+      phoneNumber: resolved.phoneNumber,
+      provider: "truepay",
+      providerStatus: "valid",
+    };
+  }
+
   const result = await intasendDisbursement.validateAccount({
     account: parsed.account,
     provider: parsed.provider,
@@ -103,6 +183,13 @@ async function validateBeneficiary(params) {
  * @returns {{ provider: string, transaction: Object }}
  */
 function buildProviderPayload(payout) {
+  if (payout.type === PAYOUT_TYPES.SAFARITAP_WALLET) {
+    throw payoutError(
+        ERROR_CODES.UNSUPPORTED_PAYOUT_TYPE,
+        "SAFARITAP_WALLET transfers do not use an external provider",
+    );
+  }
+
   const requestReferenceId = payout.payoutId;
   const base = {
     amount: payout.amount,
@@ -146,6 +233,261 @@ function buildProviderPayload(payout) {
 }
 
 /**
+ * Synchronous SafariTap wallet → wallet transfer (internal ledger).
+ * @param {string} senderId
+ * @param {Object} parsed - validateCreatePayoutRequest result
+ * @param {{ amount: number, fee: number, totalDebit: number, currency: string }} feeBreakdown
+ * @returns {Promise<Object>}
+ */
+async function createInternalWalletPayout(senderId, parsed, feeBreakdown) {
+  const resolved = await resolveSafariTapWalletRecipient(parsed.recipient);
+  if (resolved.userId === senderId) {
+    throw payoutError(
+        ERROR_CODES.SELF_TRANSFER,
+        "Cannot send to your own SafariTap wallet",
+        400,
+    );
+  }
+
+  const payoutRef = collection(PAYOUTS_COL).doc();
+  const payoutId = payoutRef.id;
+  const requestId = payoutId;
+
+  try {
+    await fiatReservationService.reserveFunds({
+      userId: senderId,
+      amount: feeBreakdown.totalDebit,
+      asset: parsed.currency,
+      requestId,
+      purpose: RESERVATION_PURPOSE,
+      merchantPaymentId: payoutId,
+    });
+  } catch (err) {
+    if (String(err.message || "").includes("Insufficient")) {
+      throw payoutError(ERROR_CODES.INSUFFICIENT_BALANCE, err.message, 402);
+    }
+    throw err;
+  }
+
+  const recipient = {
+    ...parsed.recipient,
+    userId: resolved.userId,
+    phoneNumber: resolved.phoneNumber || parsed.recipient.phoneNumber || null,
+    name: resolved.name || parsed.recipient.name || "SafariTap User",
+  };
+
+  /** @type {Record<string, unknown>} */
+  const payoutDoc = {
+    payoutId,
+    userId: senderId,
+    recipientUserId: resolved.userId,
+    type: parsed.type,
+    status: PAYOUT_STATUS.PENDING,
+    amount: feeBreakdown.amount,
+    fee: feeBreakdown.fee,
+    totalDebit: feeBreakdown.totalDebit,
+    currency: parsed.currency,
+    recipient,
+    provider: "truepay",
+    providerTrackingId: null,
+    providerTransactionId: null,
+    providerReference: null,
+    reference: payoutId,
+    narrative: parsed.narrative,
+    idempotencyKey: `safari_card_payout:${senderId}:${parsed.clientRequestId}`,
+    clientRequestId: parsed.clientRequestId,
+    requestId,
+    statusHistory: [{
+      status: PAYOUT_STATUS.PENDING,
+      at: new Date().toISOString(),
+    }],
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    completedAt: null,
+    failedAt: null,
+    failureReason: null,
+  };
+
+  const idempotencyRef = collection(IDEMPOTENCY_COL)
+      .doc(idempotencyDocId(senderId, parsed.clientRequestId));
+
+  await payoutRef.set(payoutDoc);
+  await idempotencyRef.set({
+    payoutId,
+    userId: senderId,
+    clientRequestId: parsed.clientRequestId,
+    createdAt: serverTimestamp(),
+  });
+
+  try {
+    return await finalizeInternalWalletTransfer({
+      payoutId,
+      requestId,
+      senderId,
+      recipientUserId: resolved.userId,
+    });
+  } catch (err) {
+    await handlePayoutFailure({
+      payoutId,
+      requestId,
+      failureReason: err.message || "Internal wallet transfer failed",
+      providerPayload: null,
+    });
+    if (err.code && err.httpStatus) {
+      throw err;
+    }
+    throw payoutError(
+        ERROR_CODES.PAYOUT_FAILED,
+        err.message || "SafariTap wallet transfer failed",
+        500,
+    );
+  }
+}
+
+/**
+ * Debit sender + credit recipient on the fiat ledger, then mark SUCCESS.
+ * @param {Object} params
+ * @returns {Promise<Object>}
+ */
+async function finalizeInternalWalletTransfer(params) {
+  const { payoutId, requestId, senderId, recipientUserId } = params;
+  const payout = await getPayoutById(payoutId);
+  if (!payout) {
+    throw payoutError(ERROR_CODES.NOT_FOUND, "Payout not found", 404);
+  }
+  if (payout.status === PAYOUT_STATUS.SUCCESS) {
+    return serializePayoutForClient(payout);
+  }
+
+  const amount = Number(payout.amount);
+  const totalDebit = Number(payout.totalDebit);
+  const currency = payout.currency;
+  const debitRef = `sc_payout_debit_${payoutId}`;
+  const creditRef = `sc_payout_credit_${payoutId}`;
+
+  let senderName = null;
+  try {
+    const senderDoc = await admin.firestore()
+        .collection(config.collections.users)
+        .doc(senderId || payout.userId)
+        .get();
+    if (senderDoc.exists) {
+      const s = senderDoc.data() || {};
+      senderName = s.name ||
+        [s.firstName, s.lastName].filter(Boolean).join(" ").trim() ||
+        null;
+    }
+  } catch (_err) {
+    // non-critical for labels
+  }
+
+  const recipientName = payout.recipient?.name || null;
+
+  const debitResult = await walletService.debitUserFiat(
+      senderId || payout.userId,
+      totalDebit,
+      currency,
+      {
+        referenceId: debitRef,
+        type: "withdrawal",
+        source: "safaritap_wallet_transfer",
+        metadata: {
+          payoutId,
+          type: payout.type,
+          recipientUserId,
+          recipientName,
+          fee: Number(payout.fee || 0),
+        },
+      },
+  );
+
+  // creditUserFiat syncs recipient users→ledger UP before credit so dualWrite
+  // cannot wipe an existing kesBalance when fiatLedger was still 0.
+  const creditResult = await walletService.creditUserFiat(
+      recipientUserId,
+      amount,
+      currency,
+      {
+        referenceId: creditRef,
+        type: "funding",
+        source: "safaritap_wallet_transfer",
+        metadata: {
+          payoutId,
+          type: payout.type,
+          senderUserId: senderId || payout.userId,
+          senderName,
+        },
+      },
+  );
+
+  await fiatReservationService.confirmReservation(requestId || payout.requestId);
+
+  const { transactionId } = await transactionService.createTransactionRecord({
+    type: transactionService.TRANSACTION_TYPES.withdrawal,
+    userId: payout.userId,
+    amount,
+    currency,
+    status: transactionService.STATUSES.completed,
+    metadata: {
+      payoutId,
+      ...buildSafariCardTransactionMetadata(payout, null, {
+        previousBalance: debitResult.previousBalance,
+        newBalance: debitResult.newBalance,
+      }),
+      provider: "truepay",
+      source: "safaritap_wallet_transfer",
+      recipientUserId,
+      recipientName,
+      merchantName: recipientName,
+    },
+    logLegacy: true,
+  });
+
+  await transactionService.createTransactionRecord({
+    type: transactionService.TRANSACTION_TYPES.funding,
+    userId: recipientUserId,
+    amount,
+    currency,
+    status: transactionService.STATUSES.completed,
+    metadata: {
+      payoutId,
+      provider: "truepay",
+      source: "safaritap_wallet_transfer",
+      senderUserId: senderId || payout.userId,
+      senderName,
+      previousBalance: creditResult.previousBalance,
+      newBalance: creditResult.newBalance,
+    },
+    logLegacy: true,
+  });
+
+  await collection(PAYOUTS_COL).doc(payoutId).update({
+    status: PAYOUT_STATUS.SUCCESS,
+    transactionId,
+    ledgerEntryId: debitResult.ledgerEntryId || null,
+    creditLedgerEntryId: creditResult.ledgerEntryId || null,
+    completedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    statusHistory: admin.firestore.FieldValue.arrayUnion({
+      status: PAYOUT_STATUS.SUCCESS,
+      at: new Date().toISOString(),
+      source: "internal_wallet",
+    }),
+  });
+
+  console.log("SafariTap wallet transfer completed", {
+    payoutId,
+    senderId: senderId || payout.userId,
+    recipientUserId,
+    amount,
+    currency,
+  });
+
+  const updated = await getPayoutById(payoutId);
+  return serializePayoutForClient(updated);
+}
+
+/**
  * @param {string} userId
  * @param {Object} body
  * @returns {Promise<Object>}
@@ -168,9 +510,14 @@ async function createPayout(userId, body) {
   if (available < feeBreakdown.totalDebit) {
     throw payoutError(
         ERROR_CODES.INSUFFICIENT_BALANCE,
-        `Insufficient ${parsed.currency} balance`,
+        `Insufficient ${parsed.currency} balance ` +
+          `(available: ${available}, required: ${feeBreakdown.totalDebit})`,
         402,
     );
+  }
+
+  if (parsed.type === PAYOUT_TYPES.SAFARITAP_WALLET) {
+    return createInternalWalletPayout(userId, parsed, feeBreakdown);
   }
 
   const payoutRef = collection(PAYOUTS_COL).doc();
@@ -594,6 +941,8 @@ module.exports = {
   findPayoutByTrackingId,
   applyProviderStatusUpdate,
   finalizePayoutSuccess,
+  finalizeInternalWalletTransfer,
   handlePayoutFailure,
   buildProviderPayload,
+  resolveSafariTapWalletRecipient,
 };

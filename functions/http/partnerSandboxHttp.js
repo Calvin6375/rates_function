@@ -180,6 +180,9 @@ app.get("/countries", requireSandboxKey, async (req, res) => {
       sandbox: true,
       data: {
         countries: payload.countries,
+        currencies: payload.currencies,
+        source: payload.source,
+        rateVersion: payload.rateVersion,
         updatedAt: payload.updatedAt,
         isDefault: payload.isDefault,
       },

@@ -2,14 +2,26 @@
  * @fileoverview Safari Card payout service tests (mocked persistence).
  */
 
-jest.mock("../../admin", () => ({
-  firestore: Object.assign(jest.fn(), {
-    FieldValue: {
-      serverTimestamp: jest.fn(() => ({ _serverTimestamp: true })),
-      arrayUnion: jest.fn((v) => ({ _arrayUnion: v })),
-    },
-  }),
-}));
+jest.mock("../../admin", () => {
+  const firestoreFn = jest.fn(() => ({
+    collection: jest.fn(() => ({
+      doc: jest.fn(() => ({
+        get: jest.fn(async () => ({
+          exists: true,
+          data: () => ({ name: "Jane Doe", phoneNumber: "254712345678" }),
+        })),
+      })),
+      where: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      get: jest.fn(async () => ({ empty: true, docs: [] })),
+    })),
+  }));
+  firestoreFn.FieldValue = {
+    serverTimestamp: jest.fn(() => ({ _serverTimestamp: true })),
+    arrayUnion: jest.fn((v) => ({ _arrayUnion: v })),
+  };
+  return { firestore: firestoreFn };
+});
 
 jest.mock("../../libs/firestore", () => ({
   collection: jest.fn(),
@@ -19,12 +31,17 @@ jest.mock("../../libs/firestore", () => ({
 jest.mock("../../services/walletService", () => ({
   getFiatAvailableBalance: jest.fn(),
   debitUserFiat: jest.fn(),
+  creditUserFiat: jest.fn(),
 }));
 
 jest.mock("../../services/transactionService", () => ({
-  TRANSACTION_TYPES: { withdrawal: "withdrawal" },
+  TRANSACTION_TYPES: { withdrawal: "withdrawal", funding: "funding" },
   STATUSES: { completed: "completed", failed: "failed" },
   createTransactionRecord: jest.fn().mockResolvedValue({ transactionId: "txr_sc_1" }),
+}));
+
+jest.mock("../../libs/sendMoney", () => ({
+  resolveRecipientUserId: jest.fn(),
 }));
 
 jest.mock("../../services/ledger/fiatReservationService", () => ({
@@ -52,6 +69,7 @@ const { collection } = require("../../libs/firestore");
 const walletService = require("../../services/walletService");
 const fiatReservationService = require("../../services/ledger/fiatReservationService");
 const intasendDisbursement = require("../../services/intasend/intasendDisbursementProvider");
+const { resolveRecipientUserId } = require("../../libs/sendMoney");
 const safariCardPayoutService = require("../../services/safariCard/safariCardPayoutService");
 const { PAYOUT_STATUS, ERROR_CODES } = require("../../utils/safariCardPayoutTypes");
 
@@ -71,6 +89,12 @@ describe("safariCardPayoutService.createPayout", () => {
       newBalance: 5000,
       ledgerEntryId: "fl_test",
     });
+    walletService.creditUserFiat.mockResolvedValue({
+      previousBalance: 0,
+      newBalance: 500,
+      ledgerEntryId: "fl_credit",
+    });
+    resolveRecipientUserId.mockResolvedValue("user_recipient");
     fiatReservationService.reserveFunds.mockResolvedValue({ reservationId: "fres_test" });
     fiatReservationService.confirmReservation.mockResolvedValue(undefined);
     fiatReservationService.releaseReservation.mockResolvedValue(undefined);
@@ -218,5 +242,46 @@ describe("safariCardPayoutService.createPayout", () => {
     })).rejects.toMatchObject({ code: ERROR_CODES.PAYOUT_FAILED });
 
     expect(fiatReservationService.releaseReservation).toHaveBeenCalled();
+  });
+
+  it("completes SAFARITAP_WALLET as internal ledger transfer", async () => {
+    const result = await safariCardPayoutService.createPayout("user_1", {
+      type: "SAFARITAP_WALLET",
+      amount: 500,
+      currency: "KES",
+      clientRequestId: "req-wallet-001",
+      recipient: { phoneNumber: "254712345678", name: "Jane Doe" },
+      narrative: "SafariTap wallet transfer",
+    });
+
+    expect(intasendDisbursement.initiateAndApproveSendMoney).not.toHaveBeenCalled();
+    expect(walletService.debitUserFiat).toHaveBeenCalledWith(
+        "user_1",
+        500,
+        "KES",
+        expect.objectContaining({ source: "safaritap_wallet_transfer" }),
+    );
+    expect(walletService.creditUserFiat).toHaveBeenCalledWith(
+        "user_recipient",
+        500,
+        "KES",
+        expect.objectContaining({ source: "safaritap_wallet_transfer" }),
+    );
+    expect(fiatReservationService.confirmReservation).toHaveBeenCalled();
+    expect(result.status).toBe(PAYOUT_STATUS.SUCCESS);
+    expect(result.provider).toBe("truepay");
+    expect(result.recipientUserId).toBe("user_recipient");
+  });
+
+  it("rejects SAFARITAP_WALLET self-transfer", async () => {
+    resolveRecipientUserId.mockResolvedValue("user_1");
+    await expect(safariCardPayoutService.createPayout("user_1", {
+      type: "SAFARITAP_WALLET",
+      amount: 500,
+      currency: "KES",
+      clientRequestId: "req-wallet-self-001",
+      recipient: { phoneNumber: "254712345678" },
+    })).rejects.toMatchObject({ code: ERROR_CODES.SELF_TRANSFER });
+    expect(intasendDisbursement.initiateAndApproveSendMoney).not.toHaveBeenCalled();
   });
 });

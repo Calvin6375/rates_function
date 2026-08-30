@@ -100,6 +100,35 @@ describe("safariCardPayoutValidation", () => {
         expect(err.code).toBe(ERROR_CODES.INVALID_AMOUNT);
       }
     });
+
+    it("accepts SAFARITAP_WALLET with phoneNumber", () => {
+      const parsed = validateCreatePayoutRequest({
+        type: "SAFARITAP_WALLET",
+        amount: 500,
+        currency: "KES",
+        clientRequestId: "client-req-wallet-001",
+        recipient: { phoneNumber: "0712345678", name: "Jane Doe" },
+        narrative: "SafariTap wallet transfer",
+      });
+      expect(parsed.type).toBe("SAFARITAP_WALLET");
+      expect(parsed.recipient.phoneNumber).toBe("254712345678");
+      expect(parsed.recipient.name).toBe("Jane Doe");
+    });
+
+    it("rejects SAFARITAP_WALLET without phone or userId", () => {
+      try {
+        validateCreatePayoutRequest({
+          type: "SAFARITAP_WALLET",
+          amount: 500,
+          currency: "KES",
+          clientRequestId: "client-req-wallet-002",
+          recipient: { name: "Jane" },
+        });
+        throw new Error("expected validation error");
+      } catch (err) {
+        expect(err.code).toBe(ERROR_CODES.INVALID_RECIPIENT);
+      }
+    });
   });
 
   describe("validateBeneficiaryRequest", () => {
@@ -118,6 +147,15 @@ describe("safariCardPayoutValidation", () => {
         accountNumber: "0123456789",
       });
       expect(parsed.provider).toBe("PESALINK");
+    });
+
+    it("maps SAFARITAP_WALLET for internal lookup", () => {
+      const parsed = validateBeneficiaryRequest({
+        type: "SAFARITAP_WALLET",
+        recipient: { phoneNumber: "254712345678", name: "Jane" },
+      });
+      expect(parsed.provider).toBe("SAFARITAP_WALLET");
+      expect(parsed.phoneNumber).toBe("254712345678");
     });
   });
 });

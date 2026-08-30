@@ -59,7 +59,8 @@ app.get("/rates", requirePartner, async (req, res) => {
 
 /**
  * GET /partner/countries
- * Supported country codes for B2B integrations (same list as consumer app).
+ * Supported currency codes from the P2P rates book (same list as consumer app).
+ * Field `countries` is legacy; prefer `currencies`.
  */
 app.get("/countries", requirePartner, async (req, res) => {
   try {
@@ -68,6 +69,9 @@ app.get("/countries", requirePartner, async (req, res) => {
       success: true,
       data: {
         countries: payload.countries,
+        currencies: payload.currencies,
+        source: payload.source,
+        rateVersion: payload.rateVersion,
         updatedAt: payload.updatedAt,
         isDefault: payload.isDefault,
       },

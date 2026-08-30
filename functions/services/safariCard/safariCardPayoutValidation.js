@@ -161,6 +161,28 @@ function validateCreatePayoutRequest(body) {
     recipient.accountName = body?.recipient?.accountName || body?.accountName || "Safari Card Beneficiary";
   }
 
+  if (type === PAYOUT_TYPES.SAFARITAP_WALLET) {
+    const recipientUserId = String(
+        body?.recipient?.userId || body?.recipientUserId || "",
+    ).trim();
+    const phone = normalizeKenyanPhoneNumber(
+        body?.recipient?.phoneNumber || body?.phoneNumber,
+    );
+    if (!recipientUserId && !phone) {
+      throw payoutError(
+          ERROR_CODES.INVALID_RECIPIENT,
+          "SafariTap wallet recipient requires phoneNumber or userId",
+      );
+    }
+    if (phone) {
+      recipient.phoneNumber = phone;
+    }
+    if (recipientUserId) {
+      recipient.userId = recipientUserId;
+    }
+    recipient.name = body?.recipient?.name || body?.name || "SafariTap User";
+  }
+
   return {
     type,
     amount,
@@ -231,6 +253,30 @@ function validateBeneficiaryRequest(body) {
       account: accountNumber.replace(/\s/g, ""),
       accountType: null,
       bankCode,
+    };
+  }
+
+  if (type === PAYOUT_TYPES.SAFARITAP_WALLET) {
+    const recipientUserId = String(
+        body?.recipient?.userId || body?.recipientUserId || "",
+    ).trim();
+    const phone = normalizeKenyanPhoneNumber(
+        body?.recipient?.phoneNumber || body?.phoneNumber,
+    );
+    if (!recipientUserId && !phone) {
+      throw payoutError(
+          ERROR_CODES.INVALID_RECIPIENT,
+          "SafariTap wallet recipient requires phoneNumber or userId",
+      );
+    }
+    return {
+      provider: "SAFARITAP_WALLET",
+      account: phone || recipientUserId,
+      accountType: "SafariTapWallet",
+      bankCode: null,
+      phoneNumber: phone || null,
+      userId: recipientUserId || null,
+      name: body?.recipient?.name || body?.name || null,
     };
   }
 

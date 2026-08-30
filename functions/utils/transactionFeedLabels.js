@@ -101,6 +101,12 @@ function resolveReconType(tx) {
   if (type === "topup") {
     return provider ? `topup_${provider}` : "topup_intasend";
   }
+  if (meta.source === "safaritap_wallet_transfer") {
+    if (type === "funding" || type === "credit") {
+      return "p2p_receive";
+    }
+    return "p2p_send";
+  }
   if (type === "withdrawal" || meta.source === "safari_card_payout") {
     return "safari_card_payout";
   }
@@ -143,6 +149,10 @@ function resolveTransactionDisplayName(tx) {
       return "Merchant payment";
     }
     case "funding":
+      if (meta.source === "safaritap_wallet_transfer") {
+        const from = meta.senderName || meta.counterpartName || null;
+        return from ? `Received from ${from}` : "SafariTap transfer received";
+      }
       return provider ? `Wallet top-up (${provider})` : "Wallet top-up";
     case "topup":
       return provider ? `Wallet top-up (${provider})` : "Wallet top-up (IntaSend)";
@@ -151,6 +161,13 @@ function resolveTransactionDisplayName(tx) {
     case "direct_payout":
       return "Withdrawal request";
     case "withdrawal":
+      if (meta.source === "safaritap_wallet_transfer") {
+        const to = meta.merchantName ||
+          meta.recipientName ||
+          meta.recipient?.name ||
+          null;
+        return to ? `Sent to ${to}` : "SafariTap transfer sent";
+      }
       if (meta.source === "safari_card_payout" || meta.payoutType) {
         if (meta.merchantName) {
           return meta.merchantName;

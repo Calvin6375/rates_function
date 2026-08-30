@@ -18,6 +18,8 @@ function getConfiguredFlatFee(payoutType) {
       return Number(fees.mpesaB2b || 0);
     case PAYOUT_TYPES.BANK:
       return Number(fees.bank || 0);
+    case PAYOUT_TYPES.SAFARITAP_WALLET:
+      return Number(fees.wallet || 0);
     default:
       return 0;
   }

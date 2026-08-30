@@ -427,6 +427,17 @@ async function creditCustomerWallet(id, amount, description = "Wallet credit", c
       // Don't fail the operation if sync fails
     }
 
+    // Keep fiatLedger in sync with admin-updated users.*Balance.
+    try {
+      const walletService = require("../services/walletService");
+      const code = String(currency || "").toUpperCase();
+      if (walletService.FIAT_LEDGER_ASSETS.has(code)) {
+        await walletService.syncFiatLedgerFromUserProjection(id, code, {allowDebit: true});
+      }
+    } catch (ledgerSyncErr) {
+      console.warn("Admin credit: fiat ledger sync failed:", ledgerSyncErr.message);
+    }
+
     // Send notification to user (both dashboard and mobile app)
     try {
       const newBalance = previousBalance + amount;
@@ -680,6 +691,17 @@ async function debitCustomerWallet(id, amount, description = "Wallet debit", cur
     } catch (syncError) {
       console.error("Failed to sync balance to Realtime DB:", syncError.message);
       // Don't fail the operation if sync fails
+    }
+
+    // Keep fiatLedger in sync so Safari Card / transfers cannot re-credit wiped users balances.
+    try {
+      const walletService = require("../services/walletService");
+      const code = String(currency || "").toUpperCase();
+      if (walletService.FIAT_LEDGER_ASSETS.has(code)) {
+        await walletService.syncFiatLedgerFromUserProjection(id, code, {allowDebit: true});
+      }
+    } catch (ledgerSyncErr) {
+      console.warn("Admin debit: fiat ledger sync failed:", ledgerSyncErr.message);
     }
 
     // Send notification to user (both dashboard and mobile app)
