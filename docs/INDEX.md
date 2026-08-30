@@ -14,6 +14,7 @@
 | Doc | Topic |
 |-----|-------|
 | [`api.md`](./api.md) | REST + callables |
+| [`rates.md`](./rates.md) | P2P / customer rates, Send→Get quotes, cross pairs |
 | [`auth.md`](./auth.md) | Authentication |
 | [`FRONTEND_AUTH_HANDOFF.md`](./FRONTEND_AUTH_HANDOFF.md) | Claims, routing, token refresh |
 | [`PAYSTACK_TOURIST.md`](./PAYSTACK_TOURIST.md) | Paystack wallet top-up |

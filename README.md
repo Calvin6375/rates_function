@@ -8,11 +8,13 @@ Firebase Cloud Functions backend for **TruePay** — a cryptocurrency exchange a
 
 | Surface | Users | Examples |
 |---------|-------|----------|
-| **Consumer (C2B)** | Tourist / retail app | Wallet top-up (Paystack), pay merchants (USD → KES via Daraja), swap, send money, USDC (Circle), Safari Card payouts |
+| **Consumer (C2B)** | Tourist / retail Flutter app | Wallet top-up (Paystack), pay merchants (USD → KES via Daraja), **Safari Card** M-Pesa payouts (Till / PayBill / Pochi / Send Money), swap, USDC (Circle) |
 | **B2B** | Partners & portals | Partner API (`X-API-KEY`), hosted payment links, team portal, sandbox |
 | **Platform** | Ops & admin | User/partner management, funding reconciliation, settlement retries |
 
 Wallet balances for the Flutter app are projected to **Realtime Database** (`wallet/{uid}/fiat/…`, `wallet/{uid}/crypto/USDC`). Firestore holds ledgers, orders, and audit trails.
+
+C2B **Cloud Function** HTTP APIs optionally support **AES-256-GCM payload encryption** (opt-in via `X-TruePay-Encrypted: 1`). RTDB reads and B2B/webhook traffic are unchanged. See [`docs/C2B_PAYLOAD_ENCRYPTION.md`](./docs/C2B_PAYLOAD_ENCRYPTION.md).
 
 ## Repository layout
 
@@ -37,18 +39,27 @@ Business logic belongs in `functions/services/`, not in HTTP handlers. See [`AGE
 
 ## Main APIs
 
-HTTP functions (base URL pattern: `https://us-central1-truepay-72060.cloudfunctions.net/<name>`):
+Base URL: `https://us-central1-truepay-72060.cloudfunctions.net/<name>`
 
 | Export | Auth | Purpose |
 |--------|------|---------|
 | [`api`](./docs/api.md) | Firebase Bearer | Customer REST — wallets, funding, merchant payments, register |
-| [`transactionsApi`](./docs/TRANSACTIONS_API.md) | Firebase Bearer | Transaction history feed |
+| [`transactionsApi`](./docs/TRANSACTIONS_API.md) | Firebase Bearer | Transaction history feed (labels, Safari Card enrichment) |
 | [`notificationsApi`](./docs/api.md) | Firebase Bearer | In-app notifications |
 | [`cryptoApi`](./docs/circle_c2b.md) | Firebase Bearer | Circle USDC wallet & send |
-| [`safariCardApi`](./docs/pay.md) | Firebase Bearer | Safari Card validate / pay / payout |
+| [`safariCardApi`](./docs/pay.md) | Firebase Bearer | Safari Card validate / pay / payout (IntaSend disbursement) |
 | [`partner`](./docs/B2B_docs.md) | `X-API-KEY` | B2B Partner API |
 | [`b2bPortal`](./docs/B2B_docs.md) | Firebase Bearer | Partner dashboard & platform admin |
 | [`partnerSandbox`](./docs/B2B_SANDBOX.md) | Static sandbox key | In-memory B2B mocks |
+
+**Safari Card (C2B pay tab)** — all flows use one endpoint:
+
+```
+POST /safari-card/payouts
+GET  /safari-card/payouts/by-client-request/{clientRequestId}
+```
+
+PayBill, Buy Goods (Till), Pochi, and Send Money differ only in request body (`accountType`, `recipient`). Flutter generates **`clientRequestId`** (UUID) per Pay tap for idempotency and polling.
 
 **Callables:** `createPayment`, `createDirectTopup`, `createSwapOrder`, `createSendMoneyOrder`, `userBootstrap`, …
 
@@ -65,10 +76,14 @@ All guides live in **[`docs/`](./docs/)**. Start with [`docs/INDEX.md`](./docs/I
 | [`docs/README_HIGH_LEVEL.md`](./docs/README_HIGH_LEVEL.md) | Architecture & data model overview |
 | [`docs/BACKEND_ARCHITECTURE.md`](./docs/BACKEND_ARCHITECTURE.md) | Service layer conventions |
 | [`docs/api.md`](./docs/api.md) | Consumer Flutter / REST integration |
+| [`docs/rates.md`](./docs/rates.md) | P2P / customer rates & cross-pair quotes |
+| [`docs/pay.md`](./docs/pay.md) | Safari Card Flutter integration |
+| [`docs/SAFARI_CARD_PAYOUTS.md`](./docs/SAFARI_CARD_PAYOUTS.md) | Safari Card backend (IntaSend, webhooks, Firestore) |
+| [`docs/TRANSACTIONS_API.md`](./docs/TRANSACTIONS_API.md) | Transaction feed API |
+| [`docs/C2B_PAYLOAD_ENCRYPTION.md`](./docs/C2B_PAYLOAD_ENCRYPTION.md) | Optional C2B request/response encryption |
 | [`docs/B2B_docs.md`](./docs/B2B_docs.md) | B2B Partner & portal API reference |
 | [`docs/PAYSTACK_TOURIST.md`](./docs/PAYSTACK_TOURIST.md) | C2B Paystack top-up flow |
 | [`docs/PAYMENT_LIFECYCLE.md`](./docs/PAYMENT_LIFECYCLE.md) | Funding + merchant settlement lifecycle |
-| [`docs/pay.md`](./docs/pay.md) | Safari Card Flutter integration |
 
 > **Note:** On macOS, `README.md` and `readme.md` refer to this file at the repo root. The detailed backend reference is [`docs/readme.md`](./docs/readme.md) (lowercase, under `docs/`).
 
@@ -91,8 +106,11 @@ Deploy:
 ```bash
 cd functions
 npm run deploy                              # all functions
-firebase deploy --only functions:api        # single function
-firebase deploy --only firestore:indexes    # composite indexes
+
+# Common partial deploys
+firebase deploy --only functions:api,functions:transactionsApi,functions:safariCardApi,functions:cryptoApi
+firebase deploy --only functions:handleIntaSendDisbursementWebhook
+firebase deploy --only firestore:indexes
 ```
 
 Stream logs:
@@ -105,11 +123,29 @@ Unit tests:
 
 ```bash
 cd functions && npm test
+cd functions && npm test -- --testPathPattern=safariCard
 ```
 
 ## Environment & secrets
 
-Configured via Firebase params / secrets and `functions/config.js`. Common keys include Paystack, Circle, Daraja, IntaSend (collection + Safari Card disbursement), SMTP, and webhook HMAC secrets. See [`docs/readme.md`](./docs/readme.md) and [`docs/FUNDING_OPS.md`](./docs/FUNDING_OPS.md) for ops runbooks.
+Configured via Firebase params / secrets and `functions/config.js`. Common keys:
+
+| Area | Secrets / config |
+|------|------------------|
+| Paystack / Transak | `PAYSTACK_*`, `TRANSAK_*` |
+| Circle USDC | `CIRCLE_API_KEY`, `CIRCLE_ENTITY_SECRET` |
+| Daraja settlement | `DARAJA_*` |
+| IntaSend collection + Safari Card disbursement | `INTASEND_*` |
+| C2B payload encryption (optional) | `C2B_PAYLOAD_ENCRYPTION_KEY` |
+| Email / auth helpers | `SMTP_*`, `WEB_API_KEY` |
+
+Set a secret:
+
+```bash
+firebase functions:secrets:set C2B_PAYLOAD_ENCRYPTION_KEY
+```
+
+Ops runbooks: [`docs/FUNDING_OPS.md`](./docs/FUNDING_OPS.md) · [`docs/readme.md`](./docs/readme.md)
 
 ## Contributing
 

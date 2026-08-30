@@ -176,7 +176,7 @@ Many callables set **`enforceAppCheck: true`** — client must also send a valid
 | **`b2bPortal`** | Bearer JWT + route middleware | See [B2B portal](#b2b-portal-b2bportal) |
 | **`partner`** | `X-API-KEY` | Live partner integration |
 | **`partnerSandbox`** | Static sandbox `X-API-KEY` | Mock data only |
-| **`api`** (customer wallets) | Mixed: public rates; `requireAdmin` for wallet CRUD | Admin = `admin` claim or master email |
+| **`api`** (customer wallets) | Mixed: public rates; Bearer JWT for `/accounts`; `requireAdmin` for wallet CRUD | Admin = `admin` claim or master email |
 | **`transactionsApi`** | Bearer JWT; queries scoped to `auth.uid` | |
 | **`cryptoApi`** | Bearer JWT per route | |
 | **`notificationsApi`** | Bearer JWT + inbox scoping | See `notificationAccess.js` |
@@ -188,6 +188,10 @@ Public **no-auth** examples:
 - `GET /api/customer-rates`, `/api/rates`, `/api/countries`
 - `GET /b2bPortal/public/payment-links/*` (payer checkout)
 - `GET /partnerSandbox/checkout/*` (sandbox checkout pages)
+
+Authenticated **C2B customer** (Bearer Firebase ID token + App Check on `api`):
+
+- `GET /api/accounts` (alias `GET /api/wallets`) — fiat + crypto account list for the caller. Replaces direct RTDB `wallet/{uid}/fiat|crypto` reads in the Flutter app. See [`docs/rates.md`](./rates.md) § Accounts API.
 
 ### B2B portal (`b2bPortal`)
 

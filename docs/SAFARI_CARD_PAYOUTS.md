@@ -32,14 +32,66 @@ handleIntaSendDisbursementWebhook
 
 ## Supported payout types
 
-| Type | IntaSend provider | Use case |
-|------|-------------------|----------|
-| `MPESA_B2C` | `MPESA-B2C` | Send to customer M-Pesa phone |
-| `MPESA_B2B` + `TillNumber` | `MPESA-B2B` | Pay merchant Till |
-| `MPESA_B2B` + `PayBill` | `MPESA-B2B` | Pay PayBill (+ `accountReference`) |
-| `BANK` | `PESALINK` | Kenyan bank account (PesaLink) |
+| Type | Provider | Use case |
+|------|----------|----------|
+| `MPESA_B2C` | IntaSend `MPESA-B2C` | Send to customer M-Pesa phone |
+| `MPESA_B2B` + `TillNumber` | IntaSend `MPESA-B2B` | Pay merchant Till |
+| `MPESA_B2B` + `PayBill` | IntaSend `MPESA-B2B` | Pay PayBill (+ `accountReference`) |
+| `BANK` | IntaSend `PESALINK` | Kenyan bank account (PesaLink) |
+| `SAFARITAP_WALLET` | **TruePay ledger** (no IntaSend) | Send KES to another SafariTap / C2B user wallet |
 
 Currency: **KES only** (Safari Card disbursement scope).
+
+### Balance source (important)
+
+Safari Card spends **available fiat ledger** balance (`walletAggregatesFiat` / `fiatLedger`), not RTDB.
+
+Historically, **Exchange swaps** updated `users.kesBalance` (shown on `/api/accounts`) without writing the fiat ledger. Before each payout balance check the server now runs `syncFiatLedgerFromUserProjection` (credit-only) so swapped KES becomes spendable. New swaps also sync the ledger after completion.
+
+**SafariTap / ledger sync bugs (fixed):**
+
+1. **Wipe on receive:** `creditUserFiat` dual-writes `users.kesBalance` to the **absolute** ledger total. If ledger was `0` but users held e.g. `2,660.69`, a `+300` credit set balance to `300`. Credits now align ledger to users **before** applying the amount.
+2. **Resurrect after admin zero:** Admin debit updates `users.kesBalance → 0` but could leave fiatLedger at the old total. The next SafariTap credit did `oldLedger + sendAmount` and wrote that back to users (e.g. zero → send 500 → **3,160.69**). Sync before credit/debit is now **bidirectional** (`allowDebit: true`) so admin-zeroed wallets start from `0` then add only the transfer.
+
+If you still see `INSUFFICIENT_BALANCE`, the error includes `available` vs `required`, and active **reservations** may be holding funds.
+
+**Repair wiped recipient:** Admin → Customer Wallets → credit KES for the missing amount (then ledger syncs on next spend).
+
+### `SAFARITAP_WALLET` (internal transfer)
+
+```
+POST /safari-card/payouts
+{
+  "type": "SAFARITAP_WALLET",
+  "amount": 500,
+  "currency": "KES",
+  "clientRequestId": "550e8400-e29b-41d4-a716-446655440000",
+  "recipient": {
+    "phoneNumber": "254712345678",
+    "name": "Jane Doe"
+  },
+  "narrative": "SafariTap wallet transfer"
+}
+```
+
+Optional: `recipient.userId` (Firebase uid) instead of / in addition to phone.
+
+Flow (synchronous):
+
+1. Resolve recipient by `userId` or Kenyan `phoneNumber` (`users` collection)
+2. Reject self-transfer / missing user (`SELF_TRANSFER` / `RECIPIENT_NOT_FOUND`)
+3. Reserve `totalDebit` (amount + fee; wallet fee default **0**, `SAFARI_CARD_WALLET_FEE`)
+4. `debitUserFiat(sender)` + `creditUserFiat(recipient)` on fiat ledger
+5. Confirm reservation → payout `SUCCESS` immediately (`provider: "truepay"`)
+
+Validate:
+
+```
+POST /safari-card/payouts/validate-beneficiary
+{ "type": "SAFARITAP_WALLET", "recipient": { "phoneNumber": "254712345678" } }
+```
+
+Returns `{ valid, beneficiaryName, recipientUserId, provider: "truepay" }` — no IntaSend call.
 
 Bank amount limits per IntaSend: **KES 100 – 999,999**.
 
