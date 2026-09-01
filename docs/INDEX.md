@@ -37,6 +37,8 @@
 | [`B2B_SANDBOX_DASHBOARD_FRONTEND.md`](./B2B_SANDBOX_DASHBOARD_FRONTEND.md) | Sandbox dashboard |
 | [`B2B_ADD_MONEY.md`](./B2B_ADD_MONEY.md) | Partner Add Money |
 | [`B2B_SEND.md`](./B2B_SEND.md) | B2B Send |
+| [`PRODUCT_PRICING.md`](./PRODUCT_PRICING.md) | Revenue Calculator product fees |
+| [`aed.md`](./aed.md) | AED Send: what is implemented |
 | [`B2B_ADMIN_WALLET.md`](./B2B_ADMIN_WALLET.md) | Admin wallet |
 | [`B2B_CREATE_PARTNER.md`](./B2B_CREATE_PARTNER.md) | Create partner |
 

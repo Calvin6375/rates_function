@@ -431,10 +431,38 @@ If validate-beneficiary returns `502` / `PROVIDER_AUTH_ERROR` (previously surfac
 | `http/intasendDisbursementWebhookHttp.js` | Webhook HTTP handler |
 | `utils/safariCardPayoutTypes.js` | Status mapping, errors |
 
+## Admin dashboard list (Safari Tap tabs)
+
+```http
+GET /api/admin/safari-tap/transactions?type=topups
+Authorization: Bearer <admin Firebase ID token>
+```
+
+| Query | Values |
+|-------|--------|
+| **`type`** (or `method`) | `topups` \| `pay` \| `send` \| `exchange` (**required**) |
+| `period` | `today` \| `7d` \| `30d` (default) \| `month` \| `custom` |
+| `startDate` / `endDate` | ISO dates when `period=custom` |
+| `status`, `currency`, `userId`, `search` | optional filters |
+| `limit`, `startAfter` | pagination (max 100) |
+
+**Tab mapping**
+
+| type | Sources |
+|------|---------|
+| `topups` | `funding` / `topup` / `crypto_onramp` + `fundingOrders` + `orders` (`topup`, `direct_topup`) |
+| `pay` | `merchant_payment` + Safari Card `MPESA_B2B` |
+| `send` | SafariTap wallet + `MPESA_B2C` + `BANK` + P2P `orders.send` |
+| `exchange` | `orders` with `orderType=swap` |
+
+Row fields for the UI table: `orderId`, `clientName`, `recipientName`, `date`, `type`, `amount`, `currency`, `phone`, `channel` (`C2B`), `status`.
+
+Deploy: `firebase deploy --only functions:api`
+
 ## Tests
 
 ```bash
-cd functions && npm test -- test/safariCard
+cd functions && npm test -- test/safariCard test/c2bSafariTapAdminListService.test.js
 ```
 
 ## Unchanged collection flows
