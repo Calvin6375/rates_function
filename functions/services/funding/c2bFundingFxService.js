@@ -12,6 +12,21 @@ const { normalizeKesBook, getKesPerUnit } = require("../../utils/customerRatesRe
 /** Fallback peg only when customer book has no USD/USDT row (uses Binance USDT/KES). */
 const USDT_PEGGED = new Set(["USD", "USDT"]);
 
+const CUSTOMER_RATES_META_KEYS = new Set([
+  "updatedAt",
+  "updatedBy",
+  "rateVersion",
+  "baseCurrency",
+  "rateMeaning",
+  "countries",
+  "currencies",
+  "createdAt",
+  "createdBy",
+]);
+
+/** Paystack Kenya hosted checkout rejects sub-shilling charges. */
+const MIN_PAYSTACK_KES = 1;
+
 /**
  * @param {number} amount
  * @returns {number}
@@ -29,21 +44,66 @@ function isIsoCurrency(currency) {
 }
 
 /**
+ * KES charged per 1 unit when the customer is buying `currency` (Paystack in KES).
+ * Prefer sellRate (platform sells the unit); fall back to buyRate if only one side is set.
+ *
+ * @param {{ buyRate?: number, sellRate?: number }|null} row
+ * @returns {number|null}
+ */
+function kesChargeRateFromRow(row) {
+  if (!row || typeof row !== "object") return null;
+  const sellRate = Number(row.sellRate);
+  const buyRate = Number(row.buyRate);
+  if (Number.isFinite(sellRate) && sellRate > 0) return sellRate;
+  if (Number.isFinite(buyRate) && buyRate > 0) return buyRate;
+  return null;
+}
+
+/**
+ * @param {FirebaseFirestore.DocumentData|null|undefined} data
+ * @returns {Record<string, unknown>}
+ */
+function extractRatesMap(data) {
+  if (!data || typeof data !== "object") return {};
+  if (data.rates && typeof data.rates === "object" && !Array.isArray(data.rates)) {
+    return data.rates;
+  }
+  const out = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (CUSTOMER_RATES_META_KEYS.has(key)) continue;
+    if (value && typeof value === "object" && !Array.isArray(value) &&
+        (value.buyRate != null || value.sellRate != null)) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+/**
  * @returns {Promise<Object>}
  */
 async function loadCustomerRates() {
-  try {
-    const snap = await admin.firestore()
-        .collection(config.collections.config)
-        .doc("customerRates")
-        .get();
-    if (!snap.exists) return {};
-    const data = snap.data() || {};
-    return data.rates && typeof data.rates === "object" ? data.rates : {};
-  } catch (err) {
-    console.warn("c2bFundingFx: customerRates lookup failed:", err.message);
-    return {};
-  }
+  const snap = await admin.firestore()
+      .collection(config.collections.config)
+      .doc("customerRates")
+      .get();
+  if (!snap.exists) return {};
+  return extractRatesMap(snap.data() || {});
+}
+
+/**
+ * @param {Record<string, unknown>} customerRates
+ * @param {string} currency
+ * @returns {number|null}
+ */
+function kesPerUnitFromCustomerBook(customerRates, currency) {
+  const {book} = normalizeKesBook(customerRates);
+  const fromBook = getKesPerUnit(book, currency);
+  const fromCanonical = kesChargeRateFromRow(fromBook);
+  if (fromCanonical) return fromCanonical;
+
+  const raw = customerRates[currency] || customerRates[currency.toLowerCase()];
+  return kesChargeRateFromRow(raw);
 }
 
 /**
@@ -57,11 +117,9 @@ async function resolveKesPerUnit(currency) {
   }
 
   const customerRates = await loadCustomerRates();
-  const {book} = normalizeKesBook(customerRates);
-  const fromBook = getKesPerUnit(book, currency);
+  const fromBook = kesPerUnitFromCustomerBook(customerRates, currency);
   if (fromBook) {
-    // Prefer buy side (KES per unit when converting client amount → KES charge)
-    return fromBook.buyRate;
+    return fromBook;
   }
 
   const kesRates = await rateService.getRates("KES", "USDT");
@@ -84,7 +142,10 @@ async function resolveKesPerUnit(currency) {
     console.warn(`c2bFundingFx: Binance rate for ${currency} failed:`, err.message);
   }
 
-  throw new Error(`FX rate unavailable for ${currency} → KES`);
+  throw new Error(
+      `FX rate unavailable for ${currency} → KES. ` +
+      `Add ${currency} to P2P customer rates (KES per 1 ${currency}) to enable this top-up.`,
+  );
 }
 
 /**
@@ -114,10 +175,14 @@ async function convertToKesForPaystack(amount, currency = "USD") {
   }
 
   if (requestedCurrency === C2B_PAYSTACK_CURRENCY) {
+    const amountKes = roundMajorUnits(numericAmount);
+    if (amountKes < MIN_PAYSTACK_KES) {
+      throw new Error(`Amount must be at least ${MIN_PAYSTACK_KES} KES for Paystack checkout`);
+    }
     return {
       requestedAmount: numericAmount,
       requestedCurrency,
-      amountKes: roundMajorUnits(numericAmount),
+      amountKes,
       paystackCurrency: C2B_PAYSTACK_CURRENCY,
       fxRate: 1,
     };
@@ -128,10 +193,18 @@ async function convertToKesForPaystack(amount, currency = "USD") {
     throw new Error(`FX rate unavailable for ${requestedCurrency} → KES`);
   }
 
+  const amountKes = roundMajorUnits(numericAmount * fxRate);
+  if (amountKes < MIN_PAYSTACK_KES) {
+    throw new Error(
+        `Converted amount ${amountKes} KES is below Paystack minimum ` +
+        `(${MIN_PAYSTACK_KES} KES) for ${numericAmount} ${requestedCurrency}`,
+    );
+  }
+
   return {
     requestedAmount: numericAmount,
     requestedCurrency,
-    amountKes: roundMajorUnits(numericAmount * fxRate),
+    amountKes,
     paystackCurrency: C2B_PAYSTACK_CURRENCY,
     fxRate,
   };
@@ -139,7 +212,10 @@ async function convertToKesForPaystack(amount, currency = "USD") {
 
 module.exports = {
   USDT_PEGGED,
+  MIN_PAYSTACK_KES,
   convertToKesForPaystack,
   resolveKesPerUnit,
   roundMajorUnits,
+  extractRatesMap,
+  kesChargeRateFromRow,
 };

@@ -1,9 +1,14 @@
 /**
  * @fileoverview Safari Card payout fee calculation.
+ *
+ * Precedence for Pay (MPESA_B2B Till / PayBill):
+ *   product pricing (enabled) → env flat fee → 0
+ * Other payout types keep env flat fees only.
  */
 
 const config = require("../../config");
-const { PAYOUT_TYPES } = require("../../utils/safariCardPayoutTypes");
+const {PAYOUT_TYPES} = require("../../utils/safariCardPayoutTypes");
+const productPricingService = require("../pricing/productPricingService");
 
 /**
  * @param {SafariCardPayoutType} payoutType
@@ -31,19 +36,50 @@ function getConfiguredFlatFee(payoutType) {
  * @param {SafariCardPayoutType} params.payoutType
  * @param {number} params.amount
  * @param {string} params.currency
- * @returns {{ amount: number, fee: number, totalDebit: number, currency: string }}
+ * @param {Object} [params.recipient]
+ * @returns {Promise<{
+ *   amount: number,
+ *   fee: number,
+ *   totalDebit: number,
+ *   currency: string,
+ *   feeSource: string,
+ *   pricingProductKey: string|null,
+ * }>}
  */
-function calculatePayoutFee(params) {
+async function calculatePayoutFee(params) {
   const amount = Number(params.amount);
   const currency = String(params.currency || "KES").toUpperCase();
-  const fee = Math.max(0, getConfiguredFlatFee(params.payoutType));
-  const totalDebit = amount + fee;
+  const productKey = productPricingService.resolveSafariPayProductKey(
+      params.payoutType,
+      params.recipient,
+  );
 
+  if (productKey) {
+    const priced = await productPricingService.computeProductFee({
+      productKey,
+      amount,
+      currency,
+    });
+    if (priced.applied) {
+      return {
+        amount,
+        fee: priced.feeAmount,
+        totalDebit: amount + priced.feeAmount,
+        currency,
+        feeSource: priced.source,
+        pricingProductKey: productKey,
+      };
+    }
+  }
+
+  const fee = Math.max(0, getConfiguredFlatFee(params.payoutType));
   return {
     amount,
     fee,
-    totalDebit,
+    totalDebit: amount + fee,
     currency,
+    feeSource: "env_flat_fee",
+    pricingProductKey: productKey,
   };
 }
 

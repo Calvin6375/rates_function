@@ -124,6 +124,80 @@ describe("c2bFundingBridgeService", () => {
     );
   });
 
+  it("charges Paystack in KES for an ETB top-up and returns ETB on the response", async () => {
+    convertToKesForPaystack.mockResolvedValue({
+      requestedAmount: 600,
+      requestedCurrency: "ETB",
+      amountKes: 859.62,
+      paystackCurrency: "KES",
+      fxRate: 1.4327,
+    });
+    fundingOrderService.createFundingOrder.mockResolvedValue({
+      id: "fund_etb_1",
+      userId: "user_1",
+      provider: "paystack",
+      amount: 859.62,
+      currency: "KES",
+      status: "pending",
+      providerReference: "fund_etb_1",
+      correlationId: "corr_etb",
+      metadata: {
+        product: "tourist",
+        requestedAmount: 600,
+        requestedCurrency: "ETB",
+        fxRate: 1.4327,
+      },
+    });
+    fundingOrderService.updateFundingOrder.mockResolvedValue({
+      id: "fund_etb_1",
+      userId: "user_1",
+      provider: "paystack",
+      amount: 859.62,
+      currency: "KES",
+      status: "pending",
+      providerReference: "fund_etb_1",
+      checkoutUrl: "https://checkout.paystack.com/etb",
+      correlationId: "corr_etb",
+      metadata: {
+        requestedAmount: 600,
+        requestedCurrency: "ETB",
+        fxRate: 1.4327,
+      },
+    });
+
+    const response = await c2bFundingBridge.createC2bTopupCheckout({
+      userId: "user_1",
+      amount: 600,
+      currency: "ETB",
+      email: "ruben@gmail.com",
+    });
+
+    expect(convertToKesForPaystack).toHaveBeenCalledWith(600, "ETB");
+    expect(fundingOrderService.createFundingOrder).toHaveBeenCalledWith(
+        expect.objectContaining({
+          amount: 859.62,
+          currency: "KES",
+          metadata: expect.objectContaining({
+            requestedAmount: 600,
+            requestedCurrency: "ETB",
+          }),
+        }),
+    );
+    expect(fundingRailService.initializePayment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          amount: 859.62,
+          currency: "KES",
+        }),
+    );
+    expect(response).toMatchObject({
+      amount: 600,
+      currency: "ETB",
+      paystackAmount: 859.62,
+      paystackCurrency: "KES",
+      checkoutUrl: "https://checkout.paystack.com/etb",
+    });
+  });
+
   it("returns duplicate idempotent response without re-initializing", async () => {
     fundingIdempotencyService.lookupIdempotencyKey.mockResolvedValue({
       fundingOrderId: "fund_existing",

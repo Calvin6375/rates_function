@@ -286,6 +286,8 @@ async function createInternalWalletPayout(senderId, parsed, feeBreakdown) {
     amount: feeBreakdown.amount,
     fee: feeBreakdown.fee,
     totalDebit: feeBreakdown.totalDebit,
+    feeSource: feeBreakdown.feeSource || "env_flat_fee",
+    pricingProductKey: feeBreakdown.pricingProductKey || null,
     currency: parsed.currency,
     recipient,
     provider: "truepay",
@@ -499,11 +501,12 @@ async function createPayout(userId, body) {
     return serializePayoutForClient(existing);
   }
 
-  const feeBreakdown = calculatePayoutFee({
+  const feeBreakdown = await calculatePayoutFee({
     userId,
     payoutType: parsed.type,
     amount: parsed.amount,
     currency: parsed.currency,
+    recipient: parsed.recipient,
   });
 
   const available = await walletService.getFiatAvailableBalance(userId, parsed.currency);
@@ -552,6 +555,8 @@ async function createPayout(userId, body) {
     amount: feeBreakdown.amount,
     fee: feeBreakdown.fee,
     totalDebit: feeBreakdown.totalDebit,
+    feeSource: feeBreakdown.feeSource || "env_flat_fee",
+    pricingProductKey: feeBreakdown.pricingProductKey || null,
     currency: parsed.currency,
     recipient: parsed.recipient,
     provider: "intasend",

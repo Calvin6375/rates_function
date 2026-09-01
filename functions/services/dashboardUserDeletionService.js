@@ -3,9 +3,8 @@
  */
 
 const admin = require("../admin");
-const {clearPartnerClaims} = require("../utils/customClaimsMerge");
 const {isSuperAdminUid} = require("../utils/adminClaims");
-const {deleteUserDataAcrossStores} = require("../libs/userAuthDataCleanup");
+const {purgeUserAccount} = require("../libs/userAuthDataCleanup");
 const {logAdminAction} = require("../utils/transactions");
 const b2bMemberService = require("./b2bMemberService");
 
@@ -37,7 +36,7 @@ async function deleteUserAsPlatformAdmin(actorUid, targetUserId, opts) {
   try {
     targetRecord = await admin.auth().getUser(targetUserId);
   } catch (e) {
-    if (e.code !== "auth/user-not-found") {
+    if (e.code !== "auth/user-not-found" && e.code !== "auth/invalid-uid") {
       throw e;
     }
   }
@@ -50,22 +49,8 @@ async function deleteUserAsPlatformAdmin(actorUid, targetUserId, opts) {
     );
   }
 
-  let authDeleted = false;
-  if (targetRecord) {
-    try {
-      await clearPartnerClaims(targetUserId);
-    } catch (clearErr) {
-      console.warn(
-          "deleteUserAsPlatformAdmin clearPartnerClaims:",
-          clearErr.message,
-      );
-    }
-    await admin.auth().deleteUser(targetUserId);
-    authDeleted = true;
-  }
-
-  await deleteUserDataAcrossStores(targetUserId, {
-    requireUsersDocRemoved: true,
+  const purged = await purgeUserAccount(targetUserId, {
+    protectedUids: [actorUid],
   });
 
   await logAdminAction(
@@ -73,14 +58,23 @@ async function deleteUserAsPlatformAdmin(actorUid, targetUserId, opts) {
       targetUserId,
       "deleteUser.platform",
       {hadAuth: !!targetRecord},
-      {authDeleted},
+      {
+        authDeleted: purged.authDeletedUids.length > 0,
+        authDeletedUids: purged.authDeletedUids,
+        emails: purged.emails,
+      },
   );
 
-  return {userId: targetUserId, authDeleted};
+  return {
+    userId: targetUserId,
+    authDeleted: purged.authDeletedUids.length > 0,
+    authDeletedUids: purged.authDeletedUids,
+  };
 }
 
 /**
- * Partner org admin: remove member, delete Auth + user data.
+ * Partner org admin: remove member if present, delete Auth + user data.
+ * C2B / Safari Tap users are not partner members — still hard-delete them.
  *
  * @param {string} actorUid
  * @param {string} partnerId
@@ -100,20 +94,17 @@ async function deleteUserAsPartnerOrgAdmin(actorUid, partnerId, targetUserId) {
     throw new Error("Cannot delete the platform owner account");
   }
 
-  await b2bMemberService.removeMember(partnerId, targetUserId);
-
-  let authDeleted = false;
   try {
-    await admin.auth().deleteUser(targetUserId);
-    authDeleted = true;
-  } catch (e) {
-    if (e.code !== "auth/user-not-found") {
-      throw e;
+    await b2bMemberService.removeMember(partnerId, targetUserId);
+  } catch (err) {
+    const msg = String(err.message || "");
+    if (!msg.includes("Member not found")) {
+      throw err;
     }
   }
 
-  await deleteUserDataAcrossStores(targetUserId, {
-    requireUsersDocRemoved: true,
+  const purged = await purgeUserAccount(targetUserId, {
+    protectedUids: [actorUid],
   });
 
   await logAdminAction(
@@ -121,10 +112,18 @@ async function deleteUserAsPartnerOrgAdmin(actorUid, partnerId, targetUserId) {
       targetUserId,
       "deleteUser.partnerOrgAdmin",
       {partnerId},
-      {authDeleted},
+      {
+        authDeleted: purged.authDeletedUids.length > 0,
+        authDeletedUids: purged.authDeletedUids,
+        emails: purged.emails,
+      },
   );
 
-  return {userId: targetUserId, authDeleted};
+  return {
+    userId: targetUserId,
+    authDeleted: purged.authDeletedUids.length > 0,
+    authDeletedUids: purged.authDeletedUids,
+  };
 }
 
 module.exports = {

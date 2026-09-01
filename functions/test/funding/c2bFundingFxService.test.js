@@ -3,31 +3,39 @@
  */
 
 jest.mock("../../services/rateService");
-jest.mock("../../admin", () => ({
-  firestore: jest.fn(() => ({
+jest.mock("../../admin", () => {
+  const state = {snap: {exists: false, data: () => ({})}};
+  const firestore = jest.fn(() => ({
     collection: jest.fn(() => ({
       doc: jest.fn(() => ({
-        get: jest.fn().mockResolvedValue({ exists: false, data: () => ({}) }),
+        get: jest.fn(async () => state.snap),
       })),
     })),
-  })),
-}));
+  }));
+  firestore.__state = state;
+  return {firestore};
+});
 
+const admin = require("../../admin");
 const rateService = require("../../services/rateService");
-const { convertToKesForPaystack } = require("../../services/funding/c2bFundingFxService");
+const {
+  convertToKesForPaystack,
+  extractRatesMap,
+} = require("../../services/funding/c2bFundingFxService");
 
 describe("c2bFundingFxService", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    admin.firestore.__state.snap = {exists: false, data: () => ({})};
     rateService.getRates.mockImplementation(async (fiat) => {
       if (fiat === "KES") {
-        return { customerPrice: 130, marketPrice: 128 };
+        return {customerPrice: 130, marketPrice: 128};
       }
       if (fiat === "GBP") {
-        return { customerPrice: 0.79, marketPrice: 0.78 };
+        return {customerPrice: 0.79, marketPrice: 0.78};
       }
       if (fiat === "EUR") {
-        return { customerPrice: 0.92, marketPrice: 0.91 };
+        return {customerPrice: 0.92, marketPrice: 0.91};
       }
       throw new Error(`No rate for ${fiat}`);
     });
@@ -68,6 +76,53 @@ describe("c2bFundingFxService", () => {
     expect(result.amountKes).toBeCloseTo(round2(10 * (130 / 0.79)), 2);
     expect(rateService.getRates).toHaveBeenCalledWith("KES", "USDT");
     expect(rateService.getRates).toHaveBeenCalledWith("GBP", "USDT");
+  });
+
+  it("converts ETB to KES from the customer P2P book (not Binance)", async () => {
+    admin.firestore.__state.snap = {
+      exists: true,
+      data: () => ({
+        rates: {
+          ETB: {buyRate: 1.4415, sellRate: 1.4327},
+        },
+      }),
+    };
+
+    const result = await convertToKesForPaystack(600, "ETB");
+
+    expect(result.requestedAmount).toBe(600);
+    expect(result.requestedCurrency).toBe("ETB");
+    expect(result.paystackCurrency).toBe("KES");
+    expect(result.fxRate).toBe(1.4327);
+    expect(result.amountKes).toBe(round2(600 * 1.4327));
+    expect(rateService.getRates).not.toHaveBeenCalled();
+  });
+
+  it("converts ETB using a one-sided book row", async () => {
+    admin.firestore.__state.snap = {
+      exists: true,
+      data: () => ({
+        rates: {
+          ETB: {sellRate: 1.5},
+        },
+      }),
+    };
+
+    const result = await convertToKesForPaystack(600, "ETB");
+    expect(result.fxRate).toBe(1.5);
+    expect(result.amountKes).toBe(900);
+  });
+
+  it("reads rates stored at the document root", () => {
+    const rates = extractRatesMap({
+      updatedAt: "x",
+      ETB: {buyRate: 1.4, sellRate: 1.5},
+    });
+    expect(rates.ETB).toEqual({buyRate: 1.4, sellRate: 1.5});
+  });
+
+  it("rejects ETB when it is missing from the book and Binance", async () => {
+    await expect(convertToKesForPaystack(600, "ETB")).rejects.toThrow(/Add ETB to P2P/);
   });
 
   it("rejects invalid currency codes", async () => {

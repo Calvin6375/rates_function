@@ -1,0 +1,645 @@
+/**
+ * @fileoverview Product pricing for Revenue Calculator (fee % + flat KES).
+ *
+ * Suggested values match the dashboard mock UI and are never used to charge.
+ * Live charges apply only when a product is enabled in config/productPricing
+ * and PRODUCT_PRICING_ENABLED is not false.
+ */
+
+const config = require("../../config");
+const {collection, serverTimestamp} = require("../../libs/firestore");
+const {Decimal, roundAmount} = require("../../utils/money");
+
+const CONFIG_DOC = "productPricing";
+const FORMULA = "charge = amount * (feePercent / 100) + flatFeeKes";
+
+/**
+ * Static catalog: labels, categories, UI-suggested defaults, live-path hints.
+ * Writable fee fields live in Firestore; this map is not admin-editable.
+ */
+const CATALOG = Object.freeze({
+  buy_goods: Object.freeze({
+    key: "buy_goods",
+    label: "Buy Goods (Till)",
+    category: "pay",
+    currency: "KES",
+    suggested: Object.freeze({feePercent: 1.5, flatFeeKes: 0}),
+    liveChargePath: "safari_card_mpesa_b2b_till",
+  }),
+  pay_bill: Object.freeze({
+    key: "pay_bill",
+    label: "Pay Bill",
+    category: "pay",
+    currency: "KES",
+    suggested: Object.freeze({feePercent: 1.25, flatFeeKes: 10}),
+    liveChargePath: "safari_card_mpesa_b2b_paybill",
+  }),
+  pochi: Object.freeze({
+    key: "pochi",
+    label: "Pochi la Biashara",
+    category: "pay",
+    currency: "KES",
+    suggested: Object.freeze({feePercent: 1, flatFeeKes: 5}),
+    liveChargePath: "none",
+  }),
+  send_ke: Object.freeze({
+    key: "send_ke",
+    label: "Send — Kenya",
+    category: "send",
+    currency: "KES",
+    suggested: Object.freeze({feePercent: 0.75, flatFeeKes: 15}),
+    liveChargePath: "b2b_send_kes_kes",
+  }),
+  send_et: Object.freeze({
+    key: "send_et",
+    label: "Send — Ethiopia",
+    category: "send",
+    currency: "KES",
+    suggested: Object.freeze({feePercent: 1.8, flatFeeKes: 25}),
+    liveChargePath: "b2b_send_kes_etb",
+  }),
+  send_ug: Object.freeze({
+    key: "send_ug",
+    label: "Send — Uganda",
+    category: "send",
+    currency: "KES",
+    suggested: Object.freeze({feePercent: 1.6, flatFeeKes: 20}),
+    liveChargePath: "b2b_send_kes_ugx",
+  }),
+  send_tz: Object.freeze({
+    key: "send_tz",
+    label: "Send — Tanzania",
+    category: "send",
+    currency: "KES",
+    suggested: Object.freeze({feePercent: 1.7, flatFeeKes: 22}),
+    liveChargePath: "b2b_send_kes_tzs",
+  }),
+  send_ae: Object.freeze({
+    key: "send_ae",
+    label: "Send — UAE",
+    category: "send",
+    currency: "KES",
+    suggested: Object.freeze({feePercent: 2, flatFeeKes: 30}),
+    liveChargePath: "b2b_send_kes_aed",
+  }),
+  payment_links: Object.freeze({
+    key: "payment_links",
+    label: "Payment Links",
+    category: "collection",
+    currency: "KES",
+    suggested: Object.freeze({feePercent: 2.5, flatFeeKes: 0}),
+    liveChargePath: "b2b_payment_link_credit",
+  }),
+  checkout: Object.freeze({
+    key: "checkout",
+    label: "Checkout",
+    category: "collection",
+    currency: "KES",
+    suggested: Object.freeze({feePercent: 2.5, flatFeeKes: 0}),
+    liveChargePath: "b2b_checkout_credit",
+  }),
+});
+
+const PRODUCT_KEYS = Object.freeze(Object.keys(CATALOG));
+
+/** B2B Send corridor key → product key (KES-source corridors only). */
+const SEND_PRODUCT_BY_CORRIDOR = Object.freeze({
+  KES_KES: "send_ke",
+  KES_ETB: "send_et",
+  KES_UGX: "send_ug",
+  KES_TZS: "send_tz",
+  KES_AED: "send_ae",
+});
+
+/**
+ * Live defaults: disabled + zero so charge paths keep legacy fees until enabled.
+ * @returns {Record<string, {enabled: boolean, feePercent: number, flatFeeKes: number}>}
+ */
+function buildLiveDefaults() {
+  /** @type {Record<string, {enabled: boolean, feePercent: number, flatFeeKes: number}>} */
+  const products = {};
+  for (const key of PRODUCT_KEYS) {
+    products[key] = {enabled: false, feePercent: 0, flatFeeKes: 0};
+  }
+  return products;
+}
+
+/** @type {{ expiresAt: number, value: Object|null }} */
+let cache = {expiresAt: 0, value: null};
+
+/**
+ * @returns {void}
+ */
+function clearCache() {
+  cache = {expiresAt: 0, value: null};
+}
+
+/**
+ * @returns {{ products: Array<Object> }}
+ */
+function getCatalog() {
+  return {
+    products: PRODUCT_KEYS.map((key) => {
+      const item = CATALOG[key];
+      return {
+        key: item.key,
+        label: item.label,
+        category: item.category,
+        currency: item.currency,
+        suggested: {...item.suggested},
+        liveChargePath: item.liveChargePath,
+      };
+    }),
+  };
+}
+
+/**
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function toIso(value) {
+  if (!value) return null;
+  if (typeof value.toDate === "function") {
+    try {
+      return value.toDate().toISOString();
+    } catch (_e) {
+      return null;
+    }
+  }
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "string") return value;
+  return null;
+}
+
+/**
+ * @param {Object} raw
+ * @returns {{ enabled: boolean, feePercent: number, flatFeeKes: number, updatedAt: string|null, updatedBy: string|null }}
+ */
+function normalizeProductEntry(raw) {
+  const data = raw && typeof raw === "object" ? raw : {};
+  return {
+    enabled: data.enabled === true,
+    feePercent: Number.isFinite(Number(data.feePercent)) ? Number(data.feePercent) : 0,
+    flatFeeKes: Number.isFinite(Number(data.flatFeeKes)) ? Number(data.flatFeeKes) : 0,
+    updatedAt: toIso(data.updatedAt),
+    updatedBy: data.updatedBy != null ? String(data.updatedBy) : null,
+  };
+}
+
+/**
+ * @param {Object} [options]
+ * @param {boolean} [options.forceRefresh]
+ * @returns {Promise<{
+ *   products: Record<string, Object>,
+ *   source: string,
+ *   updatedAt: string|null,
+ *   updatedBy: string|null,
+ *   schemaVersion: number,
+ * }>}
+ */
+async function getPricingConfig(options = {}) {
+  const forceRefresh = options.forceRefresh === true;
+  const ttl = Number(config.productPricing?.cacheTtlMs) || 60000;
+  const now = Date.now();
+  if (!forceRefresh && cache.value && cache.expiresAt > now) {
+    return cache.value;
+  }
+
+  const defaults = buildLiveDefaults();
+  try {
+    const snap = await collection(config.collections.config).doc(CONFIG_DOC).get();
+    if (!snap.exists) {
+      const value = {
+        products: defaults,
+        source: "defaults",
+        updatedAt: null,
+        updatedBy: null,
+        schemaVersion: 1,
+      };
+      cache = {expiresAt: now + ttl, value};
+      return value;
+    }
+
+    const data = snap.data() || {};
+    const stored = data.products && typeof data.products === "object" ? data.products : {};
+    /** @type {Record<string, Object>} */
+    const products = {};
+    for (const key of PRODUCT_KEYS) {
+      products[key] = {
+        ...defaults[key],
+        ...normalizeProductEntry(stored[key]),
+      };
+    }
+
+    const value = {
+      products,
+      source: "config/productPricing",
+      updatedAt: toIso(data.updatedAt),
+      updatedBy: data.updatedBy != null ? String(data.updatedBy) : null,
+      schemaVersion: Number(data.schemaVersion) || 1,
+    };
+    cache = {expiresAt: now + ttl, value};
+    return value;
+  } catch (err) {
+    console.warn("productPricingService.getPricingConfig:", err.message);
+    const value = {
+      products: defaults,
+      source: "defaults_on_error",
+      updatedAt: null,
+      updatedBy: null,
+      schemaVersion: 1,
+    };
+    cache = {expiresAt: now + Math.min(ttl, 5000), value};
+    return value;
+  }
+}
+
+/**
+ * @param {string} productKey
+ * @returns {Promise<{key: string, enabled: boolean, feePercent: number, flatFeeKes: number, source: string}|null>}
+ */
+async function getProductPricing(productKey) {
+  const key = String(productKey || "");
+  if (!CATALOG[key]) return null;
+  const cfg = await getPricingConfig();
+  const product = cfg.products[key];
+  return {
+    key,
+    enabled: product.enabled === true,
+    feePercent: Number(product.feePercent) || 0,
+    flatFeeKes: Number(product.flatFeeKes) || 0,
+    source: cfg.source,
+  };
+}
+
+/**
+ * Calculator preview — pure math; never touches charge paths.
+ *
+ * @param {Object} params
+ * @param {number|string} params.amount
+ * @param {number|string} params.feePercent
+ * @param {number|string} params.flatFeeKes
+ * @param {number|string} [params.volume]
+ * @param {string} [params.currency]
+ * @returns {{ feeAmount: number, customerCharge: number, netAmount: number, projectedRevenue: number|null, currency: string }}
+ */
+function previewCharge(params) {
+  const currency = String(params.currency || "KES").toUpperCase();
+  const amount = Number(params.amount);
+  const feePercent = Number(params.feePercent);
+  const flatFeeKes = Number(params.flatFeeKes);
+  if (!Number.isFinite(amount) || amount < 0) {
+    const err = new Error("amount must be a number >= 0");
+    err.statusCode = 400;
+    throw err;
+  }
+  if (!Number.isFinite(feePercent) || feePercent < 0 || feePercent > 100) {
+    const err = new Error("feePercent must be between 0 and 100");
+    err.statusCode = 400;
+    throw err;
+  }
+  if (!Number.isFinite(flatFeeKes) || flatFeeKes < 0) {
+    const err = new Error("flatFeeKes must be a number >= 0");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const feeDec = new Decimal(amount).mul(feePercent).div(100).plus(flatFeeKes);
+  const feeAmount = Number(roundAmount(feeDec, currency));
+  const customerCharge = Number(roundAmount(new Decimal(amount).plus(feeAmount), currency));
+  const volume = params.volume != null ? Number(params.volume) : null;
+  const projectedRevenue = Number.isFinite(volume) && volume >= 0 ?
+    Number(roundAmount(new Decimal(feeAmount).mul(volume), currency)) :
+    null;
+
+  return {
+    feeAmount,
+    customerCharge,
+    netAmount: Number(roundAmount(amount, currency)),
+    projectedRevenue,
+    currency,
+  };
+}
+
+/**
+ * The only function charge paths should call.
+ * applied === false ⇒ caller MUST use pre-existing fee logic unchanged.
+ *
+ * @param {Object} params
+ * @param {string} params.productKey
+ * @param {number|string} params.amount
+ * @param {string} [params.currency]
+ * @returns {Promise<{
+ *   applied: boolean,
+ *   reason: string|null,
+ *   feeAmount: number,
+ *   feePercent: number,
+ *   flatFee: number,
+ *   currency: string,
+ *   productKey: string,
+ *   source: string,
+ * }>}
+ */
+async function computeProductFee(params) {
+  const productKey = String(params.productKey || "");
+  const currency = String(params.currency || "KES").toUpperCase();
+  const amount = Number(params.amount);
+
+  const base = {
+    applied: false,
+    reason: null,
+    feeAmount: 0,
+    feePercent: 0,
+    flatFee: 0,
+    currency,
+    productKey,
+    source: "none",
+  };
+
+  if (!config.productPricing || config.productPricing.enabled === false) {
+    return {...base, reason: "kill_switch"};
+  }
+  if (!CATALOG[productKey]) {
+    return {...base, reason: "unknown_product"};
+  }
+  if (!Number.isFinite(amount) || amount < 0) {
+    return {...base, reason: "invalid_amount"};
+  }
+
+  let priced;
+  try {
+    priced = await getProductPricing(productKey);
+  } catch (err) {
+    console.warn("productPricingService.computeProductFee:", err.message);
+    return {...base, reason: "config_error", source: "defaults_on_error"};
+  }
+
+  if (!priced) {
+    return {...base, reason: "unknown_product"};
+  }
+  if (priced.source === "defaults_on_error") {
+    return {...base, reason: "config_error", source: priced.source};
+  }
+  if (!priced.enabled) {
+    return {...base, reason: "not_enabled", source: priced.source};
+  }
+
+  const feePercent = Number(priced.feePercent) || 0;
+  let flatFee = Number(priced.flatFeeKes) || 0;
+  let reason = null;
+
+  if (currency !== "KES" && flatFee > 0) {
+    flatFee = 0;
+    reason = "flat_fee_skipped_non_kes";
+  }
+
+  if (feePercent <= 0 && flatFee <= 0) {
+    return {
+      ...base,
+      reason: "zero_pricing",
+      feePercent,
+      flatFee: 0,
+      source: priced.source,
+    };
+  }
+
+  const feeDec = new Decimal(amount).mul(feePercent).div(100).plus(flatFee);
+  const feeAmount = Number(roundAmount(feeDec, currency));
+
+  return {
+    applied: true,
+    reason,
+    feeAmount,
+    feePercent,
+    flatFee,
+    currency,
+    productKey,
+    source: `product_pricing:${productKey}`,
+  };
+}
+
+/**
+ * @param {Object} patch
+ * @param {string} key
+ * @returns {{ enabled: boolean, feePercent: number, flatFeeKes: number }}
+ */
+function validateProductPatch(patch, key) {
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+    const err = new Error(`products.${key} must be an object`);
+    err.statusCode = 400;
+    throw err;
+  }
+  if (patch.enabled !== undefined && typeof patch.enabled !== "boolean") {
+    const err = new Error(`products.${key}.enabled must be a boolean`);
+    err.statusCode = 400;
+    throw err;
+  }
+  if (patch.feePercent !== undefined) {
+    const p = Number(patch.feePercent);
+    if (!Number.isFinite(p) || p < 0 || p > 100) {
+      const err = new Error(`products.${key}.feePercent must be between 0 and 100`);
+      err.statusCode = 400;
+      throw err;
+    }
+  }
+  if (patch.flatFeeKes !== undefined) {
+    const f = Number(patch.flatFeeKes);
+    if (!Number.isFinite(f) || f < 0) {
+      const err = new Error(`products.${key}.flatFeeKes must be a number >= 0`);
+      err.statusCode = 400;
+      throw err;
+    }
+  }
+  /** @type {{ enabled?: boolean, feePercent?: number, flatFeeKes?: number }} */
+  const out = {};
+  if (patch.enabled !== undefined) out.enabled = patch.enabled;
+  if (patch.feePercent !== undefined) out.feePercent = Number(patch.feePercent);
+  if (patch.flatFeeKes !== undefined) out.flatFeeKes = Number(patch.flatFeeKes);
+  return out;
+}
+
+/**
+ * @param {Object} params
+ * @param {Record<string, Object>} params.products
+ * @param {string} params.updatedBy
+ * @returns {Promise<Object>}
+ */
+async function updateProductPricing(params) {
+  const updatedBy = String(params.updatedBy || "").trim();
+  if (!updatedBy) {
+    const err = new Error("updatedBy is required");
+    err.statusCode = 400;
+    throw err;
+  }
+  const incoming = params.products;
+  if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) {
+    const err = new Error("products must be an object keyed by product key");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const keys = Object.keys(incoming);
+  if (keys.length === 0) {
+    const err = new Error("products must include at least one product");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  for (const key of keys) {
+    if (!CATALOG[key]) {
+      const err = new Error(`Unknown product key: ${key}`);
+      err.statusCode = 400;
+      throw err;
+    }
+    validateProductPatch(incoming[key], key);
+  }
+
+  const current = await getPricingConfig({forceRefresh: true});
+  /** @type {Record<string, Object>} */
+  const merged = {};
+  for (const key of PRODUCT_KEYS) {
+    const base = {
+      enabled: current.products[key].enabled === true,
+      feePercent: Number(current.products[key].feePercent) || 0,
+      flatFeeKes: Number(current.products[key].flatFeeKes) || 0,
+      updatedAt: current.products[key].updatedAt || null,
+      updatedBy: current.products[key].updatedBy || null,
+    };
+    if (incoming[key]) {
+      const patch = validateProductPatch(incoming[key], key);
+      merged[key] = {
+        ...base,
+        ...patch,
+        updatedAt: new Date().toISOString(),
+        updatedBy,
+      };
+    } else {
+      merged[key] = base;
+    }
+  }
+
+  const ref = collection(config.collections.config).doc(CONFIG_DOC);
+  await ref.set({
+    schemaVersion: 1,
+    products: merged,
+    updatedAt: serverTimestamp(),
+    updatedBy,
+  }, {merge: true});
+
+  clearCache();
+  return getPricingConfig({forceRefresh: true});
+}
+
+/**
+ * Reset every product to live defaults (disabled / zero).
+ *
+ * @param {Object} params
+ * @param {string} params.updatedBy
+ * @returns {Promise<Object>}
+ */
+async function resetToDefaults(params) {
+  const updatedBy = String(params.updatedBy || "").trim();
+  if (!updatedBy) {
+    const err = new Error("updatedBy is required");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const products = buildLiveDefaults();
+  for (const key of PRODUCT_KEYS) {
+    products[key] = {
+      ...products[key],
+      updatedAt: new Date().toISOString(),
+      updatedBy,
+    };
+  }
+
+  const ref = collection(config.collections.config).doc(CONFIG_DOC);
+  await ref.set({
+    schemaVersion: 1,
+    products,
+    updatedAt: serverTimestamp(),
+    updatedBy,
+  }, {merge: true});
+
+  clearCache();
+  return getPricingConfig({forceRefresh: true});
+}
+
+/**
+ * Admin GET payload: catalog + live values + suggested.
+ *
+ * @returns {Promise<Object>}
+ */
+async function getAdminPricingView() {
+  const cfg = await getPricingConfig();
+  const products = PRODUCT_KEYS.map((key) => {
+    const catalog = CATALOG[key];
+    const live = cfg.products[key];
+    return {
+      key,
+      label: catalog.label,
+      category: catalog.category,
+      currency: catalog.currency,
+      enabled: live.enabled === true,
+      feePercent: Number(live.feePercent) || 0,
+      flatFeeKes: Number(live.flatFeeKes) || 0,
+      suggested: {...catalog.suggested},
+      liveChargePath: catalog.liveChargePath,
+      updatedAt: live.updatedAt || null,
+      updatedBy: live.updatedBy || null,
+    };
+  });
+
+  return {
+    products,
+    source: cfg.source,
+    formula: FORMULA,
+    updatedAt: cfg.updatedAt,
+    updatedBy: cfg.updatedBy,
+    schemaVersion: cfg.schemaVersion,
+  };
+}
+
+/**
+ * Resolve Safari Card Pay product key from payout type + recipient.
+ *
+ * @param {string} payoutType
+ * @param {Object} [recipient]
+ * @returns {string|null}
+ */
+function resolveSafariPayProductKey(payoutType, recipient) {
+  if (String(payoutType) !== "MPESA_B2B") return null;
+  const accountType = String(recipient?.accountType || "");
+  if (accountType === "TillNumber") return "buy_goods";
+  if (accountType === "PayBill") return "pay_bill";
+  return null;
+}
+
+/**
+ * @param {string} corridorKey
+ * @returns {string|null}
+ */
+function resolveSendProductKey(corridorKey) {
+  return SEND_PRODUCT_BY_CORRIDOR[String(corridorKey || "").toUpperCase()] || null;
+}
+
+module.exports = {
+  CONFIG_DOC,
+  FORMULA,
+  CATALOG,
+  PRODUCT_KEYS,
+  SEND_PRODUCT_BY_CORRIDOR,
+  getCatalog,
+  getPricingConfig,
+  getProductPricing,
+  computeProductFee,
+  previewCharge,
+  updateProductPricing,
+  resetToDefaults,
+  getAdminPricingView,
+  resolveSafariPayProductKey,
+  resolveSendProductKey,
+  clearCache,
+  buildLiveDefaults,
+};

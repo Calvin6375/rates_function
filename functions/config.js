@@ -288,6 +288,15 @@ const config = {
     wallet: Number(getEnv("SAFARI_CARD_WALLET_FEE", "0")),
   },
 
+  /**
+   * Product pricing (Revenue Calculator). When disabled, charge paths keep
+   * legacy fees. Per-product live fees require enabled:true in config/productPricing.
+   */
+  productPricing: {
+    enabled: String(getEnv("PRODUCT_PRICING_ENABLED", "true")).toLowerCase() !== "false",
+    cacheTtlMs: Number(getEnv("PRODUCT_PRICING_CACHE_TTL_MS", "60000")),
+  },
+
   safariCardPayouts: {
     /** Max KES payout amount unless overridden */
     maxAmountKes: Number(getEnv("SAFARI_CARD_MAX_PAYOUT_KES", "999999")),

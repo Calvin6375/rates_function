@@ -72,6 +72,13 @@ async function createC2bPaystackTopupCheckout(params) {
 
   const provider = FUNDING_PROVIDERS.paystack;
   const charge = await convertToKesForPaystack(amount, currency);
+  logger.info("c2b.checkout.fx", {
+    userId,
+    requestedAmount: charge.requestedAmount,
+    requestedCurrency: charge.requestedCurrency,
+    amountKes: charge.amountKes,
+    fxRate: charge.fxRate,
+  });
 
   const ctx = createPaymentContext({
     correlationId,

@@ -175,7 +175,19 @@ exports.createPayment = onCall(
           throw error;
         }
 
-        throw new HttpsError("internal", `Failed to create payment order: ${error.message}`);
+        const msg = String(error.message || "Failed to create payment order");
+        if (
+          msg.includes("FX rate") ||
+          msg.includes("Invalid currency") ||
+          msg.includes("Amount must") ||
+          msg.includes("below Paystack") ||
+          msg.includes("Paystack split") ||
+          msg.includes("not configured")
+        ) {
+          throw new HttpsError("failed-precondition", msg);
+        }
+
+        throw new HttpsError("internal", `Failed to create payment order: ${msg}`);
       }
     },
 );

@@ -9,6 +9,7 @@ const walletService = require("./walletService");
 const transactionService = require("./transactionService");
 const partnerRecipientService = require("./partnerRecipientService");
 const partnerService = require("./partnerService");
+const productPricingService = require("./pricing/productPricingService");
 const {
   createNotification,
   sendPushNotification,
@@ -160,19 +161,44 @@ async function resolveCorridor(fromCurrency, toCurrency, rail = "bank_transfer")
     throw err;
   }
 
+  let ourFeeFlat = Number(corridor.ourFeeFlat) || 0;
+  let ourFeePercent = Number(corridor.ourFeePercent) || 0;
+  let feeSource = cfg.source === "config/b2bSend" ? "config/b2bSend" : "defaults";
+
+  // Product pricing overrides ourFee* only for KES-source corridors (flat is KES).
+  const productKey = productPricingService.resolveSendProductKey(key);
+  if (productKey && from === "KES") {
+    try {
+      const priced = await productPricingService.getProductPricing(productKey);
+      if (
+        priced &&
+        priced.enabled &&
+        (Number(priced.feePercent) > 0 || Number(priced.flatFeeKes) > 0)
+      ) {
+        ourFeeFlat = Number(priced.flatFeeKes) || 0;
+        ourFeePercent = Number(priced.feePercent) || 0;
+        feeSource = `product_pricing:${productKey}`;
+      }
+    } catch (err) {
+      console.warn("b2bSendService.resolveCorridor pricing:", err.message);
+    }
+  }
+
   return {
     key,
     fromCurrency: from,
     toCurrency: to,
     rail: String(corridor.rail || rail || "bank_transfer"),
     rate,
-    ourFeeFlat: Number(corridor.ourFeeFlat) || 0,
-    ourFeePercent: Number(corridor.ourFeePercent) || 0,
+    ourFeeFlat,
+    ourFeePercent,
     paymentFeeFlat: Number(corridor.paymentFeeFlat) || 0,
     paymentFeePercent: Number(corridor.paymentFeePercent) || 0,
     estimatedDelivery: corridor.estimatedDelivery || "Within minutes",
     noChargesToRecipient: corridor.noChargesToRecipient !== false,
     configSource: cfg.source,
+    feeSource,
+    pricingProductKey: productKey,
   };
 }
 
@@ -245,6 +271,8 @@ async function quoteSend(params) {
       ourFeePercent: corridor.ourFeePercent,
       paymentFeeFlat: corridor.paymentFeeFlat,
       paymentFeePercent: corridor.paymentFeePercent,
+      feeSource: corridor.feeSource || "defaults",
+      pricingProductKey: corridor.pricingProductKey || null,
     },
     noChargesToRecipient: corridor.noChargesToRecipient,
     totalDeduction,

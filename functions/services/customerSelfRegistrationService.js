@@ -1,6 +1,10 @@
 /**
  * @fileoverview C2B self-registration: POST /api/register.
  * Creates Auth user + Firestore users/{uid} with institution/channel tags.
+ *
+ * Flutter often creates Auth first (createUserWithEmailAndPassword) then calls
+ * this endpoint. Reuse that Auth user and only write the profile — do not 409
+ * unless a completed customer profile already exists.
  */
 
 const admin = require("../admin");
@@ -34,6 +38,90 @@ function isValidEmailShape(email) {
 function isValidE164(phone) {
   const s = String(phone).trim();
   return /^\+[1-9]\d{6,14}$/.test(s);
+}
+
+/**
+ * True when users/{uid} already looks like a finished C2B signup.
+ * @param {FirebaseFirestore.DocumentData|null|undefined} data
+ * @returns {boolean}
+ */
+function hasCompletedCustomerProfile(data) {
+  if (!data || typeof data !== "object") return false;
+  const channel = String(data.channel || "");
+  const institution = String(data.institution || "");
+  const userType = String(data.userType || "");
+  if (channel === CHANNEL_C2B || institution === INSTITUTION_CUSTOMER_APP) {
+    return true;
+  }
+  if (userType === USER_TYPE_CUSTOMER && data.email && data.firstName) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Create Auth user, or reuse Auth created by the Flutter client.
+ *
+ * @param {{
+ *   normalizedEmail: string,
+ *   password: string,
+ *   displayName: string,
+ * }} params
+ * @returns {Promise<{ userRecord: import("firebase-admin/auth").UserRecord, createdAuth: boolean }>}
+ */
+async function resolveAuthUserForRegister(params) {
+  const {normalizedEmail, password, displayName} = params;
+
+  try {
+    const userRecord = await admin.auth().createUser({
+      email: normalizedEmail,
+      password,
+      displayName,
+      emailVerified: false,
+    });
+    return {userRecord, createdAuth: true};
+  } catch (e) {
+    if (e.code === "auth/email-already-exists") {
+      const userRecord = await admin.auth().getUserByEmail(normalizedEmail);
+      const userSnap = await firestore
+          .collection(config.collections.users)
+          .doc(userRecord.uid)
+          .get();
+      if (userSnap.exists && hasCompletedCustomerProfile(userSnap.data())) {
+        const err = new Error("An account already exists for this email");
+        err.statusCode = 409;
+        throw err;
+      }
+      // Flutter (or a prior partial signup) already created Auth — finish profile.
+      try {
+        await admin.auth().updateUser(userRecord.uid, {
+          password,
+          displayName,
+          emailVerified: false,
+        });
+      } catch (updateErr) {
+        console.warn(
+            "registerC2bCustomer updateUser (reuse Auth):",
+            updateErr.code || updateErr.message,
+        );
+      }
+      return {userRecord, createdAuth: false};
+    }
+    if (e.code === "auth/invalid-email") {
+      const err = new Error("Invalid email address");
+      err.statusCode = 400;
+      throw err;
+    }
+    if (e.code === "auth/invalid-password" || e.code === "auth/weak-password") {
+      const err = new Error("Password does not meet security requirements");
+      err.statusCode = 400;
+      throw err;
+    }
+    console.error("registerC2bCustomer createUser:", e.code, e.message);
+    const err = new Error(e.message || "Registration failed");
+    err.statusCode = 400;
+    throw err;
+  }
 }
 
 /**
@@ -84,37 +172,11 @@ async function registerC2bCustomer(body) {
   const normalizedEmail = email.toLowerCase();
   const displayName = `${firstName} ${lastName}`.trim();
 
-  let userRecord;
-  try {
-    // Phone is stored on Firestore only; Auth email/password does not require
-    // Identity Toolkit phone provider linkage for createUser.
-    userRecord = await admin.auth().createUser({
-      email: normalizedEmail,
-      password,
-      displayName,
-      emailVerified: false,
-    });
-  } catch (e) {
-    if (e.code === "auth/email-already-exists") {
-      const err = new Error("An account already exists for this email");
-      err.statusCode = 409;
-      throw err;
-    }
-    if (e.code === "auth/invalid-email") {
-      const err = new Error("Invalid email address");
-      err.statusCode = 400;
-      throw err;
-    }
-    if (e.code === "auth/invalid-password" || e.code === "auth/weak-password") {
-      const err = new Error("Password does not meet security requirements");
-      err.statusCode = 400;
-      throw err;
-    }
-    console.error("registerC2bCustomer createUser:", e.code, e.message);
-    const err = new Error(e.message || "Registration failed");
-    err.statusCode = 400;
-    throw err;
-  }
+  const {userRecord, createdAuth} = await resolveAuthUserForRegister({
+    normalizedEmail,
+    password,
+    displayName,
+  });
 
   const uid = userRecord.uid;
   const userRef = firestore.collection(config.collections.users).doc(uid);
@@ -146,13 +208,16 @@ async function registerC2bCustomer(body) {
         uid,
         firestoreErr.message,
     );
-    try {
-      await admin.auth().deleteUser(uid);
-    } catch (delErr) {
-      console.error(
-          "registerC2bCustomer rollback deleteUser:",
-          delErr.message,
-      );
+    // Only delete Auth if we created it in this request (don't wipe Flutter Auth).
+    if (createdAuth) {
+      try {
+        await admin.auth().deleteUser(uid);
+      } catch (delErr) {
+        console.error(
+            "registerC2bCustomer rollback deleteUser:",
+            delErr.message,
+        );
+      }
     }
     const err = new Error("Could not save user profile; please try again");
     err.statusCode = 500;
@@ -169,4 +234,5 @@ async function registerC2bCustomer(body) {
 
 module.exports = {
   registerC2bCustomer,
+  hasCompletedCustomerProfile,
 };

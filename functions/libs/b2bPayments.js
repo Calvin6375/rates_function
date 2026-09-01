@@ -166,6 +166,25 @@ async function processB2bPaymentWebhook(paymentData, payload, mapping) {
   const creditAmount = Number(amount) > 0 ? Number(amount) : Number(mapping.amount || 0);
   const creditCurrency = String(currency || mapping.currency || "KES").toUpperCase();
 
+  const productPricingService = require("../services/pricing/productPricingService");
+  const pricingProductKey = linkId ? "payment_links" : "checkout";
+  let platformFee = 0;
+  let feeSource = "none";
+  try {
+    const priced = await productPricingService.computeProductFee({
+      productKey: pricingProductKey,
+      amount: creditAmount,
+      currency: creditCurrency,
+    });
+    if (priced.applied) {
+      platformFee = Math.min(Number(priced.feeAmount) || 0, creditAmount);
+      feeSource = priced.source;
+    }
+  } catch (pricingErr) {
+    console.warn("processB2bPaymentWebhook pricing:", pricingErr.message);
+  }
+  const netCredit = Math.max(0, creditAmount - platformFee);
+
   await paymentRecordRef.set({
     ...payload,
     partner_id: partnerId,
@@ -183,7 +202,7 @@ async function processB2bPaymentWebhook(paymentData, payload, mapping) {
           const { previousBalance, newBalance } = await walletService.updatePartnerWalletBalance(
               partnerId,
               creditCurrency,
-              creditAmount,
+              netCredit,
           );
 
           const { transactionId } = await transactionService.createTransactionRecord({
@@ -206,6 +225,10 @@ async function processB2bPaymentWebhook(paymentData, payload, mapping) {
               newBalance,
               source: "intasend",
               completedAt,
+              platformFee,
+              netCredit,
+              feeSource,
+              pricingProductKey,
             },
             logLegacy: false,
           });
@@ -242,6 +265,10 @@ async function processB2bPaymentWebhook(paymentData, payload, mapping) {
             balance_updated: true,
             transaction_id: transactionId,
             new_balance: newBalance,
+            platform_fee: platformFee,
+            net_credit: netCredit,
+            fee_source: feeSource,
+            pricing_product_key: pricingProductKey,
           });
 
           return { transactionId, previousBalance, newBalance };

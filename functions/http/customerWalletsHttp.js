@@ -28,7 +28,9 @@ const exchangeQuoteService = require("../services/exchangeQuoteService");
 const supportedCountriesService = require("../services/supportedCountriesService");
 const customerSelfRegistrationService = require("../services/customerSelfRegistrationService");
 const walletService = require("../services/walletService");
+const c2bSafariTapAdminListService = require("../services/c2bSafariTapAdminListService");
 const { mountFundingRoutes } = require("./fundingHttp");
+const { mountProductPricingRoutes } = require("./productPricingRoutes");
 const { mountFundingOpsRoutes } = require("./fundingOpsHttp");
 const { isPlatformAdmin } = require("../utils/accessControl");
 const { verifyFirebaseAuth } = require("../libs/auth");
@@ -670,6 +672,34 @@ app.post("/p2p/listings", async (req, res) => {
  * List all customer wallets with pagination
  * Authentication: Admin only
  */
+/**
+ * GET /admin/safari-tap/transactions
+ * Admin Safari Tap dashboard tabs: Topups | Pay | Send | Exchange.
+ *
+ * Query:
+ * - type|method (required): topups | pay | send | exchange
+ * - period: today | 7d | 30d | month | custom (default 30d)
+ * - startDate, endDate: ISO (required when period=custom)
+ * - status, currency, userId, search, limit, startAfter
+ */
+app.get("/admin/safari-tap/transactions", requireAdmin, async (req, res) => {
+  try {
+    const data = await c2bSafariTapAdminListService.listSafariTapTransactions(req.query || {});
+    res.status(200).json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    const status = error.httpStatus || (error.code === "VALIDATION_FAILED" ? 400 : 500);
+    console.error("Error listing Safari Tap admin transactions:", error);
+    res.status(status).json({
+      success: false,
+      error: error.code || "Failed to list Safari Tap transactions",
+      message: error.message,
+    });
+  }
+});
+
 app.get("/customer-wallets", requireAdmin, async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 100;
@@ -1177,6 +1207,9 @@ app.put("/config/fees", requireAdmin, async (req, res) => {
     });
   }
 });
+
+// Product pricing (Revenue Calculator) — admin CRUD + preview
+mountProductPricingRoutes(app, {requireAdmin});
 
 // Tourist Payments — funding layer (Paystack, merchant settlement)
 mountFundingRoutes(app);
