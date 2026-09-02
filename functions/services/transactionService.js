@@ -349,12 +349,25 @@ async function listTransactionRecords({
  * @returns {Promise<{ success: boolean, duplicate?: boolean, transactionRecordId?: string, error?: string }>}
  */
 /**
+ * B2B Add Money orders must credit the partner org wallet, never users/{uid} fiat.
+ * Detect by product marker, or by partnerId / portal source if product was dropped.
+ *
  * @param {Object} fundingOrder
  * @returns {boolean}
  */
 function isB2bSelfTopupOrder(fundingOrder) {
-  const product = String(fundingOrder?.metadata?.product || "").toLowerCase();
-  return product === B2B_SELF_TOPUP_PRODUCT || product === "b2b";
+  const meta = fundingOrder?.metadata && typeof fundingOrder.metadata === "object" ?
+    fundingOrder.metadata :
+    {};
+  const product = String(meta.product || "").toLowerCase();
+  if (product === B2B_SELF_TOPUP_PRODUCT || product === "b2b") {
+    return true;
+  }
+  if (meta.partnerId) {
+    return true;
+  }
+  const source = String(meta.source || "").toLowerCase();
+  return source === "b2b_portal_add_money" || source === "b2b_add_money";
 }
 
 /**

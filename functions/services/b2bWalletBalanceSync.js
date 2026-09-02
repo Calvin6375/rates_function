@@ -102,22 +102,24 @@ async function migrateLegacyUserBalancesToPartnerWallet(uid, partnerId) {
   if (!isB2bDashboardUser(userData)) {
     return {migrated: false};
   }
-  if (userData.partnerWalletBalanceMigrated === true) {
-    return {migrated: false};
-  }
 
   const balances = readUserCurrencyBalances(userData);
   const hasLegacy =
     balances.USD > 0 || balances.KES > 0 || balances.USDT > 0;
 
+  // Re-absorb stranded users.* balances even after a prior migration pass.
+  // Mis-routed funding (creditUserFiat on the partner actor) can land AFTER the
+  // one-shot flag was set when balances were zero — Send would stay at KSh 0.
   if (!hasLegacy) {
-    await userRef.set(
-        {
-          partnerWalletBalanceMigrated: true,
-          updatedAt: serverTimestamp(),
-        },
-        {merge: true},
-    );
+    if (userData.partnerWalletBalanceMigrated !== true) {
+      await userRef.set(
+          {
+            partnerWalletBalanceMigrated: true,
+            updatedAt: serverTimestamp(),
+          },
+          {merge: true},
+      );
+    }
     return {migrated: false};
   }
 

@@ -27,6 +27,7 @@ const {
 } = require("../utils/fundingTypes");
 
 const transakProvider = require("../services/funding/providers/transakProvider");
+const c2bFundingBridge = require("../services/funding/c2bFundingBridgeService");
 
 const logger = createLogger({ service: "fundingHttp" });
 
@@ -40,6 +41,36 @@ function mountFundingRoutes(app) {
   app.get("/internal/transak/health", (req, res) => {
     res.set("Cache-Control", "no-store");
     res.status(200).json(transakProvider.getHealthStatus());
+  });
+
+  /**
+   * POST /funding/topup/quote — Local Topup (Paystack) fee breakdown for Deposit Review.
+   * Body: { amount, currency? } — does not create a funding order.
+   */
+  app.post("/funding/topup/quote", async (req, res) => {
+    const auth = await verifyFirebaseAuth(req);
+    if (!auth.success) {
+      res.status(401).json({ success: false, error: "Unauthorized" });
+      return;
+    }
+
+    try {
+      const body = req.body || {};
+      const quote = await c2bFundingBridge.quoteLocalTopupPaystack({
+        amount: body.amount,
+        currency: body.currency || "KES",
+      });
+      res.status(200).json({ success: true, data: quote });
+    } catch (err) {
+      const status = err.statusCode || 400;
+      if (status >= 500) {
+        console.error("POST /funding/topup/quote:", err.message);
+      }
+      res.status(status >= 400 && status < 600 ? status : 400).json({
+        success: false,
+        error: err.message || "Failed to quote top-up",
+      });
+    }
   });
 
   /**

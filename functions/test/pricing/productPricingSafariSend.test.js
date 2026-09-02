@@ -102,7 +102,7 @@ describe("Safari Card + B2B Send pricing precedence", () => {
     expect(result.feeSource).toBe("env_flat_fee");
   });
 
-  it("MPESA_B2C is unaffected by enabled pay products", async () => {
+  it("MPESA_B2C is unaffected by enabled pay products when send_ke off", async () => {
     mockConfig({
       buy_goods: {enabled: true, feePercent: 1.5, flatFeeKes: 0},
       pay_bill: {enabled: true, feePercent: 1.25, flatFeeKes: 10},
@@ -115,6 +115,56 @@ describe("Safari Card + B2B Send pricing precedence", () => {
     });
     expect(result.fee).toBe(10);
     expect(result.feeSource).toBe("env_flat_fee");
+  });
+
+  it("MPESA_B2C uses send_ke pricing when enabled", async () => {
+    mockConfig({
+      send_ke: {enabled: true, feePercent: 0.75, flatFeeKes: 15},
+    });
+    const result = await calculatePayoutFee({
+      userId: "u1",
+      payoutType: "MPESA_B2C",
+      amount: 10,
+      currency: "KES",
+    });
+    // 10 * 0.75% + 15 = 0.075 + 15 = 15.08 → round to money
+    expect(result.fee).toBe(15.08);
+    expect(result.totalDebit).toBe(25.08);
+    expect(result.pricingProductKey).toBe("send_ke");
+    expect(result.pricingApplied).toBe(true);
+  });
+
+  it("SAFARITAP_WALLET uses send_ke pricing when enabled", async () => {
+    mockConfig({
+      send_ke: {enabled: true, feePercent: 0.75, flatFeeKes: 15},
+    });
+    const result = await calculatePayoutFee({
+      userId: "u1",
+      payoutType: "SAFARITAP_WALLET",
+      amount: 1000,
+      currency: "KES",
+    });
+    expect(result.fee).toBe(22.5);
+    expect(result.totalDebit).toBe(1022.5);
+    expect(result.pricingProductKey).toBe("send_ke");
+  });
+
+  it("BANK uses send_ke pricing when enabled", async () => {
+    mockConfig({
+      send_ke: {enabled: true, feePercent: 0.75, flatFeeKes: 15},
+    });
+    const result = await calculatePayoutFee({
+      userId: "u1",
+      payoutType: "BANK",
+      amount: 20,
+      currency: "KES",
+      recipient: {bankCode: "1", accountNumber: "1274563720"},
+    });
+    // 20 * 0.75% + 15 = 0.15 + 15 = 15.15
+    expect(result.fee).toBe(15.15);
+    expect(result.totalDebit).toBe(35.15);
+    expect(result.pricingProductKey).toBe("send_ke");
+    expect(result.pricingApplied).toBe(true);
   });
 
   it("USD_AED keeps corridor flat fee when send_ae enabled", async () => {

@@ -35,6 +35,7 @@ const firebaseWebApiKey = defineSecret(config.secrets.firebaseWebApiKey);
 const emailService = require("../services/emailService");
 const accountPasswordService = require("../services/accountPasswordService");
 const b2bFundingBridgeService = require("../services/funding/b2bFundingBridgeService");
+const c2bFundingBridgeService = require("../services/funding/c2bFundingBridgeService");
 const fundingOrderService = require("../services/funding/fundingOrderService");
 const fundingWebhookService = require("../services/funding/fundingWebhookService");
 const partnerRecipientService = require("../services/partnerRecipientService");
@@ -1901,6 +1902,36 @@ app.get("/platform/send/payments", loadFirebaseUser, requirePlatformAdmin, async
   } catch (err) {
     console.error("b2bPortal GET /platform/send/payments:", err.message);
     res.status(500).json({success: false, error: err.message});
+  }
+});
+
+/**
+ * POST /portal/funding/quote — Add Money fee breakdown (same math as C2B Local Topup).
+ * Body: { amount, currency? } — does not create a checkout.
+ */
+app.post("/portal/funding/quote", loadFirebaseUser, attachPartnerContext, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const quote = await c2bFundingBridgeService.quoteLocalTopupPaystack({
+      amount: body.amount,
+      currency: body.currency || "KES",
+    });
+    res.status(200).json({
+      success: true,
+      data: {
+        ...quote,
+        partnerId: req.partnerId,
+      },
+    });
+  } catch (err) {
+    const status = err.statusCode || 400;
+    if (status >= 500) {
+      console.error("b2bPortal POST /portal/funding/quote:", err.message);
+    }
+    res.status(status >= 400 && status < 600 ? status : 400).json({
+      success: false,
+      error: err.message || "Failed to quote top-up",
+    });
   }
 });
 

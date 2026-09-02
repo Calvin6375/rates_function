@@ -24,6 +24,28 @@ const intaSendPublishableKey = defineSecret(config.secrets.intaSendPublishableKe
 const EXPECTED_FIREBASE_PROJECT = "truepay-72060";
 
 /**
+ * Ensure Firebase secrets are on process.env for intasendClient (reads env only).
+ */
+function ensureIntaSendSecretsOnEnv() {
+  try {
+    const secret = intaSendSecretKey.value();
+    if (secret && !process.env.INTASEND_SECRET_KEY) {
+      process.env.INTASEND_SECRET_KEY = secret;
+    }
+  } catch (_err) {
+    // Secret unavailable outside request context
+  }
+  try {
+    const pub = intaSendPublishableKey.value();
+    if (pub && !process.env.INTASEND_PUBLISHABLE_KEY) {
+      process.env.INTASEND_PUBLISHABLE_KEY = pub;
+    }
+  } catch (_err) {
+    // ignore
+  }
+}
+
+/**
  * Decode JWT payload without verification (debug logging only).
  * @param {string} token
  * @returns {Object|null}
@@ -172,11 +194,20 @@ function mapErrorResponse(err) {
 
   const upstreamAuthFailure = err instanceof IntaSendApiError &&
     (status === 401 || status === 403);
+  const upstreamTimeout = err instanceof IntaSendApiError && status === 408;
 
   if (upstreamAuthFailure) {
     code = ERROR_CODES.PROVIDER_AUTH_ERROR;
     status = 502;
     message = "Payout provider authentication failed. IntaSend API keys or sandbox/production environment may be misconfigured on the server.";
+  } else if (upstreamTimeout) {
+    code = ERROR_CODES.PROVIDER_TIMEOUT;
+    status = 504;
+  } else if (err instanceof IntaSendApiError) {
+    // Non-auth IntaSend failures (float, validation, approve, etc.)
+    code = ERROR_CODES.PROVIDER_ERROR;
+    status = 502;
+    message = err.message || message;
   } else if (!err?.code && (status === 401 || status === 403)) {
     code = ERROR_CODES.PROVIDER_AUTH_ERROR;
     status = 502;
@@ -184,8 +215,30 @@ function mapErrorResponse(err) {
 
   /** @type {Record<string, unknown>} */
   const body = { success: false, error: message, code };
-  if (upstreamAuthFailure && err instanceof IntaSendApiError) {
+  if (err instanceof IntaSendApiError) {
     body.provider = "intasend";
+    const upstreamDetail = require("../services/intasend/intasendClient")
+        .flattenErrorBody(err.body);
+    if (upstreamDetail) {
+      body.providerDetail = upstreamDetail.slice(0, 300);
+    }
+  }
+  if (upstreamAuthFailure && err instanceof IntaSendApiError) {
+    try {
+      const {getIntaSendApiConfig} = require("../services/intasend/intasendClient");
+      const cfg = getIntaSendApiConfig();
+      body.hint =
+        "Use matching IntaSend keys and host: test keys → sandbox.intasend.com " +
+        "(INTASEND_ENV=sandbox); live keys → payment.intasend.com (INTASEND_ENV=live). " +
+        "Confirm firebase secret INTASEND_SECRET_KEY is bound to safariCardApi.";
+      body.diagnostics = {
+        apiHost: cfg.apiHost,
+        isSandbox: cfg.isSandbox,
+        secretKeyConfigured: Boolean(cfg.secretKey),
+      };
+    } catch (_e) {
+      // ignore
+    }
   }
 
   return {
@@ -194,11 +247,43 @@ function mapErrorResponse(err) {
   };
 }
 
+app.use((req, _res, next) => {
+  ensureIntaSendSecretsOnEnv();
+  next();
+});
+
 /** POST /safari-card/payouts/validate-beneficiary */
 app.post("/safari-card/payouts/validate-beneficiary", requireAuth, async (req, res) => {
   try {
     const data = await safariCardPayoutService.validateBeneficiary(req.body || {});
     res.status(200).json({ success: true, data });
+  } catch (err) {
+    const mapped = mapErrorResponse(err);
+    res.status(mapped.status).json(mapped.body);
+  }
+});
+
+/**
+ * POST /safari-card/payouts/quote — Send Money / Pay fee breakdown for Review screen.
+ * Body: { type, amount, currency?, accountType?, recipient? } — does not create a payout.
+ *
+ * Pay Till:    type=MPESA_B2B, accountType=TillNumber  → buy_goods fees
+ * Pay PayBill: type=MPESA_B2B, accountType=PayBill     → pay_bill fees
+ * Send Money:  type=MPESA_B2C | SAFARITAP_WALLET | BANK
+ */
+app.post("/safari-card/payouts/quote", requireAuth, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const {quotePayoutBreakdown} = require("../services/safariCard/safariCardPayoutFeeService");
+    const data = await quotePayoutBreakdown({
+      userId: req.userId,
+      payoutType: body.type || body.payoutType,
+      amount: body.amount,
+      currency: body.currency || "KES",
+      accountType: body.accountType || body.recipient?.accountType,
+      recipient: body.recipient || {},
+    });
+    res.status(200).json({success: true, data});
   } catch (err) {
     const mapped = mapErrorResponse(err);
     res.status(mapped.status).json(mapped.body);
@@ -212,6 +297,16 @@ app.post("/safari-card/payouts", requireAuth, async (req, res) => {
     res.status(201).json({ success: true, data });
   } catch (err) {
     const mapped = mapErrorResponse(err);
+    console.error(JSON.stringify({
+      event: "safariCard.payouts.createFailed",
+      userId: req.userId || null,
+      type: req.body?.type || null,
+      amount: req.body?.amount ?? null,
+      status: mapped.status,
+      code: mapped.body?.code || null,
+      error: mapped.body?.error || (err instanceof Error ? err.message : String(err)),
+      providerDetail: mapped.body?.providerDetail || null,
+    }));
     res.status(mapped.status).json(mapped.body);
   }
 });
@@ -304,12 +399,32 @@ app.get("/safari-card/payouts", requireAuth, async (req, res) => {
   }
 });
 
-/** GET /safari-card/banks */
+/**
+ * GET /safari-card/banks — Kenya PesaLink bank codes for Send Money → Bank.
+ * @see https://developers.intasend.com/reference/api_v1_send_money_bank_codes_retrieve
+ */
 app.get("/safari-card/banks", requireAuth, async (req, res) => {
   try {
-    const banks = await intasendDisbursement.listKenyanBankCodes();
-    res.status(200).json({ success: true, data: banks });
+    const result = await intasendDisbursement.listKenyanBankCodes();
+    const banks = Array.isArray(result) ? result : (result.banks || []);
+    const source = Array.isArray(result) ? "intasend" : (result.source || "intasend");
+    res.status(200).json({
+      success: true,
+      data: banks,
+      meta: {country: "KE", source, count: banks.length},
+    });
   } catch (err) {
+    // Last resort: never block the bank picker on provider auth for the list endpoint.
+    const fallback = intasendDisbursement.FALLBACK_KENYA_BANK_CODES || [];
+    if (fallback.length) {
+      console.warn("GET /safari-card/banks fallback:", err.message);
+      res.status(200).json({
+        success: true,
+        data: [...fallback],
+        meta: {country: "KE", source: "fallback", count: fallback.length},
+      });
+      return;
+    }
     const mapped = mapErrorResponse(err);
     res.status(mapped.status).json(mapped.body);
   }

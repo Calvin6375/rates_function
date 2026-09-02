@@ -11,10 +11,14 @@ jest.mock("../../services/ops/paymentTimelineService", () => ({
 jest.mock("../../services/ops/opsMetricsService", () => ({
   increment: jest.fn().mockResolvedValue(undefined),
 }));
+jest.mock("../../services/pricing/productPricingService", () => ({
+  computeLocalTopupPaystackCharge: jest.fn(),
+}));
 
 const fundingOrderService = require("../../services/funding/fundingOrderService");
 const fundingRailService = require("../../services/funding/fundingRailService");
 const fundingIdempotencyService = require("../../services/funding/fundingIdempotencyService");
+const productPricingService = require("../../services/pricing/productPricingService");
 const b2bFundingBridge = require("../../services/funding/b2bFundingBridgeService");
 
 describe("b2bFundingBridgeService", () => {
@@ -22,6 +26,17 @@ describe("b2bFundingBridgeService", () => {
     jest.clearAllMocks();
     fundingIdempotencyService.lookupIdempotencyKey.mockResolvedValue(null);
     fundingIdempotencyService.claimIdempotencyKey.mockResolvedValue({ duplicate: false });
+    productPricingService.computeLocalTopupPaystackCharge.mockResolvedValue({
+      creditAmountKes: 5000,
+      feeAmount: 0,
+      chargeAmountKes: 5000,
+      applied: false,
+      feePercent: 0,
+      flatFee: 0,
+      pricingProductKey: "local_topup",
+      reason: "not_enabled",
+      source: "defaults",
+    });
     fundingOrderService.generateFundingOrderId.mockReturnValue("fund_b2b_123");
     fundingOrderService.createFundingOrder.mockResolvedValue({
       id: "fund_b2b_123",
@@ -121,5 +136,76 @@ describe("b2bFundingBridgeService", () => {
       amount: 0,
       currency: "KES",
     })).rejects.toThrow(/amount must be/);
+  });
+
+  it("posts face + fee to Paystack and credits face amount when local_topup live", async () => {
+    productPricingService.computeLocalTopupPaystackCharge.mockResolvedValue({
+      creditAmountKes: 50,
+      feeAmount: 1.25,
+      chargeAmountKes: 51.25,
+      applied: true,
+      feePercent: 2.5,
+      flatFee: 0,
+      pricingProductKey: "local_topup",
+      reason: null,
+      source: "config/productPricing",
+    });
+    fundingOrderService.createFundingOrder.mockResolvedValue({
+      id: "fund_b2b_fee",
+      amount: 51.25,
+      currency: "KES",
+      providerReference: "fund_b2b_fee",
+      metadata: {
+        product: "b2b_self_topup",
+        partnerId: "partner_1",
+        requestedAmount: 50,
+        requestedCurrency: "KES",
+        feeAmount: 1.25,
+        pricingProductKey: "local_topup",
+      },
+    });
+    fundingOrderService.updateFundingOrder.mockResolvedValue({
+      id: "fund_b2b_fee",
+      amount: 51.25,
+      currency: "KES",
+      checkoutUrl: "https://checkout.paystack.com/b2b",
+      providerReference: "fund_b2b_fee",
+      metadata: {
+        product: "b2b_self_topup",
+        partnerId: "partner_1",
+        requestedAmount: 50,
+        requestedCurrency: "KES",
+        feeAmount: 1.25,
+        pricingProductKey: "local_topup",
+      },
+    });
+
+    const response = await b2bFundingBridge.createB2bSelfTopupCheckout({
+      partnerId: "partner_1",
+      actorUid: "uid_1",
+      amount: 50,
+      currency: "KES",
+    });
+
+    expect(fundingOrderService.createFundingOrder).toHaveBeenCalledWith(
+        expect.objectContaining({
+          amount: 51.25,
+          metadata: expect.objectContaining({
+            requestedAmount: 50,
+            feeAmount: 1.25,
+            pricingProductKey: "local_topup",
+          }),
+        }),
+    );
+    expect(fundingRailService.initializePayment).toHaveBeenCalledWith(
+        expect.objectContaining({ amount: 51.25 }),
+    );
+    expect(response).toMatchObject({
+      amount: 50,
+      youReceive: 50,
+      paystackAmount: 51.25,
+      totalToPay: 51.25,
+      feeAmount: 1.25,
+    });
   });
 });

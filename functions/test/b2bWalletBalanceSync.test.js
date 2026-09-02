@@ -75,7 +75,43 @@ describe("b2bWalletBalanceSync", () => {
     );
   });
 
-  it("skips when already migrated", async () => {
+  it("re-migrates stranded kesBalance even after prior migration flag", async () => {
+    const set = jest.fn().mockResolvedValue(undefined);
+    collection.mockImplementation((name) => {
+      if (name === "users") {
+        return {
+          doc: () => ({
+            get: jest.fn().mockResolvedValue({
+              exists: true,
+              data: () => ({
+                channel: "B2B",
+                institution: "PartnerDashboard",
+                kesBalance: 50,
+                KES: 50,
+                partnerWalletBalanceMigrated: true,
+              }),
+            }),
+            set,
+          }),
+        };
+      }
+      return {doc: () => ({get: jest.fn(), set: jest.fn()})};
+    });
+
+    const result = await b2bWalletBalanceSync.migrateLegacyUserBalancesToPartnerWallet(
+        "uid_1",
+        "partner_1",
+    );
+    expect(result.migrated).toBe(true);
+    expect(result.moved).toEqual({KES: 50});
+    expect(walletService.updatePartnerWalletBalance).toHaveBeenCalledWith(
+        "partner_1",
+        "KES",
+        50,
+    );
+  });
+
+  it("skips when already migrated and users balances are zero", async () => {
     collection.mockImplementation(() => ({
       doc: () => ({
         get: jest.fn().mockResolvedValue({
@@ -83,7 +119,7 @@ describe("b2bWalletBalanceSync", () => {
           data: () => ({
             channel: "B2B",
             institution: "PartnerDashboard",
-            kesBalance: 50000,
+            kesBalance: 0,
             partnerWalletBalanceMigrated: true,
           }),
         }),

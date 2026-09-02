@@ -33,9 +33,11 @@ function getIntaSendApiConfig() {
     process.env.INTASEND_API_SECRET ||
     null;
   const isSandbox = isIntaSendSandbox();
-  const apiHost = isSandbox ?
+  // Optional override (e.g. https://api.intasend.com) — default hosts match IntaSend docs.
+  const overrideHost = String(process.env.INTASEND_API_HOST || "").trim().replace(/\/$/, "");
+  const apiHost = overrideHost || (isSandbox ?
     "https://sandbox.intasend.com" :
-    "https://payment.intasend.com";
+    "https://payment.intasend.com");
   return { secretKey, apiHost, isSandbox };
 }
 
@@ -143,6 +145,7 @@ function getIntaSendApiErrorDetails(err) {
  * @param {Object} [options]
  * @param {Object|null} [options.body]
  * @param {number} [options.timeoutMs]
+ * @param {boolean} [options.skipAuth] - bank-codes list is documented with empty security
  * @returns {Promise<Object>}
  */
 async function intaSendRequest(method, path, options = {}) {
@@ -152,7 +155,9 @@ async function intaSendRequest(method, path, options = {}) {
 
   const { apiHost } = getIntaSendApiConfig();
   const url = `${apiHost}${path.startsWith("/") ? path : `/${path}`}`;
-  const headers = authHeaders();
+  const headers = options.skipAuth ?
+    {"Content-Type": "application/json"} :
+    authHeaders();
   const timeout = options.timeoutMs || 20000;
 
   try {
@@ -168,23 +173,30 @@ async function intaSendRequest(method, path, options = {}) {
   } catch (err) {
     const details = getIntaSendApiErrorDetails(err);
     if (details) {
-      if (details.httpStatus === 401 || details.httpStatus === 403) {
-        const { secretKey, apiHost, isSandbox } = getIntaSendApiConfig();
-        console.error(JSON.stringify({
-          event: "intasend.apiAuthFailed",
-          method,
-          path,
-          apiHost,
-          isSandbox,
-          intaSendEnv: process.env.INTASEND_ENV || null,
-          secretKeyPrefix: maskSensitive(secretKey),
-          publishableKeyPresent: Boolean(process.env.INTASEND_PUBLISHABLE_KEY),
-          upstreamStatus: details.httpStatus,
-          upstreamDetail: flattenErrorBody(details.body).slice(0, 200),
-        }));
-      }
+      const { secretKey, apiHost: host, isSandbox } = getIntaSendApiConfig();
+      const isAuth = details.httpStatus === 401 || details.httpStatus === 403;
+      console.error(JSON.stringify({
+        event: isAuth ? "intasend.apiAuthFailed" : "intasend.apiRequestFailed",
+        method,
+        path,
+        apiHost: host,
+        isSandbox,
+        skipAuth: Boolean(options.skipAuth),
+        intaSendEnv: process.env.INTASEND_ENV || null,
+        secretKeyConfigured: Boolean(secretKey),
+        secretKeyPrefix: isAuth ? maskSensitive(secretKey) : undefined,
+        publishableKeyPresent: Boolean(process.env.INTASEND_PUBLISHABLE_KEY),
+        upstreamStatus: details.httpStatus,
+        upstreamDetail: flattenErrorBody(details.body).slice(0, 400),
+      }));
       throw new IntaSendApiError(details.message, details.httpStatus, details.body);
     }
+    console.error(JSON.stringify({
+      event: "intasend.apiRequestFailed",
+      method,
+      path,
+      error: err instanceof Error ? err.message : String(err),
+    }));
     throw err;
   }
 }

@@ -190,6 +190,23 @@ describe("productPricingService", () => {
     expect(buyGoods.suggested).toEqual({feePercent: 1.5, flatFeeKes: 0});
     expect(buyGoods.enabled).toBe(false);
     expect(view.formula).toContain("feePercent");
+    const localTopup = view.products.find((p) => p.key === "local_topup");
+    expect(localTopup.category).toBe("topup");
+    expect(localTopup.feeModel).toBe("checkout_surcharge");
+    expect(view.feeModelLabels.checkout_surcharge.customerChargeLabel).toMatch(/Paystack/);
+  });
+
+  it("computeLocalTopupPaystackCharge surcharges when enabled", async () => {
+    mockConfigDoc(true, {
+      products: {
+        local_topup: {enabled: true, feePercent: 2.5, flatFeeKes: 0},
+      },
+    });
+    const result = await productPricingService.computeLocalTopupPaystackCharge(50);
+    expect(result.creditAmountKes).toBe(50);
+    expect(result.feeAmount).toBe(1.25);
+    expect(result.chargeAmountKes).toBe(51.25);
+    expect(result.applied).toBe(true);
   });
 
   it("resolveSafariPayProductKey maps Till and PayBill", () => {

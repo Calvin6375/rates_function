@@ -25,6 +25,8 @@ const CATALOG = Object.freeze({
     currency: "KES",
     suggested: Object.freeze({feePercent: 1.5, flatFeeKes: 0}),
     liveChargePath: "safari_card_mpesa_b2b_till",
+    feeModel: "wallet_debit_surcharge",
+    adminHint: "Fee is added to the Safari Card Pay debit (customer pays amount + fee from wallet).",
   }),
   pay_bill: Object.freeze({
     key: "pay_bill",
@@ -33,6 +35,8 @@ const CATALOG = Object.freeze({
     currency: "KES",
     suggested: Object.freeze({feePercent: 1.25, flatFeeKes: 10}),
     liveChargePath: "safari_card_mpesa_b2b_paybill",
+    feeModel: "wallet_debit_surcharge",
+    adminHint: "Fee is added to the Safari Card Pay debit (customer pays amount + fee from wallet).",
   }),
   pochi: Object.freeze({
     key: "pochi",
@@ -41,6 +45,8 @@ const CATALOG = Object.freeze({
     currency: "KES",
     suggested: Object.freeze({feePercent: 1, flatFeeKes: 5}),
     liveChargePath: "none",
+    feeModel: "none",
+    adminHint: "Catalog only — no live charge path yet.",
   }),
   send_ke: Object.freeze({
     key: "send_ke",
@@ -48,7 +54,11 @@ const CATALOG = Object.freeze({
     category: "send",
     currency: "KES",
     suggested: Object.freeze({feePercent: 0.75, flatFeeKes: 15}),
-    liveChargePath: "b2b_send_kes_kes",
+    liveChargePath: "c2b_send_money_and_b2b_send_kes",
+    feeModel: "wallet_debit_surcharge",
+    adminHint:
+      "Fee is added to the sender wallet debit. Applies to C2B Send Money " +
+      "(M-Pesa B2C, bank/PesaLink, SafariTap wallet) and B2B Send Kenya corridor.",
   }),
   send_et: Object.freeze({
     key: "send_et",
@@ -57,6 +67,8 @@ const CATALOG = Object.freeze({
     currency: "KES",
     suggested: Object.freeze({feePercent: 1.8, flatFeeKes: 25}),
     liveChargePath: "b2b_send_kes_etb",
+    feeModel: "wallet_debit_surcharge",
+    adminHint: "Fee is added to partner wallet debit on B2B Send.",
   }),
   send_ug: Object.freeze({
     key: "send_ug",
@@ -65,6 +77,8 @@ const CATALOG = Object.freeze({
     currency: "KES",
     suggested: Object.freeze({feePercent: 1.6, flatFeeKes: 20}),
     liveChargePath: "b2b_send_kes_ugx",
+    feeModel: "wallet_debit_surcharge",
+    adminHint: "Fee is added to partner wallet debit on B2B Send.",
   }),
   send_tz: Object.freeze({
     key: "send_tz",
@@ -73,6 +87,8 @@ const CATALOG = Object.freeze({
     currency: "KES",
     suggested: Object.freeze({feePercent: 1.7, flatFeeKes: 22}),
     liveChargePath: "b2b_send_kes_tzs",
+    feeModel: "wallet_debit_surcharge",
+    adminHint: "Fee is added to partner wallet debit on B2B Send.",
   }),
   send_ae: Object.freeze({
     key: "send_ae",
@@ -81,6 +97,21 @@ const CATALOG = Object.freeze({
     currency: "KES",
     suggested: Object.freeze({feePercent: 2, flatFeeKes: 30}),
     liveChargePath: "b2b_send_kes_aed",
+    feeModel: "wallet_debit_surcharge",
+    adminHint: "Fee is added to partner wallet debit on B2B Send.",
+  }),
+  local_topup: Object.freeze({
+    key: "local_topup",
+    label: "Local Topup (Paystack)",
+    category: "topup",
+    currency: "KES",
+    suggested: Object.freeze({feePercent: 2.5, flatFeeKes: 0}),
+    liveChargePath: "paystack_local_topup",
+    feeModel: "checkout_surcharge",
+    adminHint:
+      "User enters amount to receive on SafariTap / partner virtual card. " +
+      "Paystack is charged amount + fee; wallet is credited the face amount. " +
+      "Applies to C2B Local Topup and partner Add Money (not payment links).",
   }),
   payment_links: Object.freeze({
     key: "payment_links",
@@ -89,6 +120,10 @@ const CATALOG = Object.freeze({
     currency: "KES",
     suggested: Object.freeze({feePercent: 2.5, flatFeeKes: 0}),
     liveChargePath: "b2b_payment_link_credit",
+    feeModel: "merchant_credit_deduction",
+    adminHint:
+      "Customer still pays the link face amount. Platform fee is deducted from " +
+      "what the partner receives (not added to Paystack / IntaSend checkout).",
   }),
   checkout: Object.freeze({
     key: "checkout",
@@ -97,8 +132,15 @@ const CATALOG = Object.freeze({
     currency: "KES",
     suggested: Object.freeze({feePercent: 2.5, flatFeeKes: 0}),
     liveChargePath: "b2b_checkout_credit",
+    feeModel: "merchant_credit_deduction",
+    adminHint:
+      "Customer still pays the checkout face amount. Platform fee is deducted from " +
+      "partner credit after settlement.",
   }),
 });
+
+/** Shared product key for C2B Local Topup + partner Add Money (Paystack KES). */
+const LOCAL_TOPUP_PRODUCT_KEY = "local_topup";
 
 const PRODUCT_KEYS = Object.freeze(Object.keys(CATALOG));
 
@@ -148,6 +190,8 @@ function getCatalog() {
         currency: item.currency,
         suggested: {...item.suggested},
         liveChargePath: item.liveChargePath,
+        feeModel: item.feeModel || "none",
+        adminHint: item.adminHint || null,
       };
     }),
   };
@@ -586,6 +630,8 @@ async function getAdminPricingView() {
       flatFeeKes: Number(live.flatFeeKes) || 0,
       suggested: {...catalog.suggested},
       liveChargePath: catalog.liveChargePath,
+      feeModel: catalog.feeModel || "none",
+      adminHint: catalog.adminHint || null,
       updatedAt: live.updatedAt || null,
       updatedBy: live.updatedBy || null,
     };
@@ -595,6 +641,43 @@ async function getAdminPricingView() {
     products,
     source: cfg.source,
     formula: FORMULA,
+    /**
+     * Preview labels by feeModel — dashboard should bind these so admins
+     * are not confused between top-up surcharge vs collection take-rate.
+     */
+    feeModelLabels: {
+      checkout_surcharge: {
+        amountLabel: "Wallet credit (face amount)",
+        feeLabel: "Platform fee",
+        customerChargeLabel: "Paystack / checkout charge",
+        netLabel: "Credited to wallet",
+        summary:
+          "Customer pays face + fee at checkout; wallet receives the face amount.",
+      },
+      merchant_credit_deduction: {
+        amountLabel: "Customer pays (face amount)",
+        feeLabel: "Platform fee (from merchant)",
+        customerChargeLabel: "Customer pays",
+        netLabel: "Partner receives",
+        summary:
+          "Customer pays the face amount; fee is taken from the partner credit.",
+      },
+      wallet_debit_surcharge: {
+        amountLabel: "Transfer amount",
+        feeLabel: "Platform fee",
+        customerChargeLabel: "Total wallet debit",
+        netLabel: "Recipient / merchant gets",
+        summary:
+          "Fee is added on top of the transfer and debited from the sender wallet.",
+      },
+      none: {
+        amountLabel: "Amount",
+        feeLabel: "Fee",
+        customerChargeLabel: "Customer charge",
+        netLabel: "Net amount",
+        summary: "No live charge path.",
+      },
+    },
     updatedAt: cfg.updatedAt,
     updatedBy: cfg.updatedBy,
     schemaVersion: cfg.schemaVersion,
@@ -617,6 +700,36 @@ function resolveSafariPayProductKey(payoutType, recipient) {
 }
 
 /**
+ * Resolve Safari Card Send Money product key (C2B M-Pesa / bank / SafariTap).
+ *
+ * @param {string} payoutType
+ * @returns {string|null}
+ */
+function resolveSafariSendProductKey(payoutType) {
+  const type = String(payoutType || "");
+  if (
+    type === "MPESA_B2C" ||
+    type === "BANK" ||
+    type === "SAFARITAP_WALLET"
+  ) {
+    return "send_ke";
+  }
+  return null;
+}
+
+/**
+ * Resolve any Safari Card payout product key (Pay Till/PayBill, then Send).
+ *
+ * @param {string} payoutType
+ * @param {Object} [recipient]
+ * @returns {string|null}
+ */
+function resolveSafariPayoutProductKey(payoutType, recipient) {
+  return resolveSafariPayProductKey(payoutType, recipient) ||
+    resolveSafariSendProductKey(payoutType);
+}
+
+/**
  * @param {string} corridorKey
  * @returns {string|null}
  */
@@ -624,21 +737,73 @@ function resolveSendProductKey(corridorKey) {
   return SEND_PRODUCT_BY_CORRIDOR[String(corridorKey || "").toUpperCase()] || null;
 }
 
+/**
+ * Paystack Local Topup surcharge: wallet credits face KES; checkout charges face + fee.
+ *
+ * @param {number|string} creditAmountKes - Amount the user entered to receive
+ * @returns {Promise<{
+ *   creditAmountKes: number,
+ *   feeAmount: number,
+ *   chargeAmountKes: number,
+ *   applied: boolean,
+ *   feePercent: number,
+ *   flatFee: number,
+ *   pricingProductKey: string,
+ *   reason: string|null,
+ *   source: string,
+ * }>}
+ */
+async function computeLocalTopupPaystackCharge(creditAmountKes) {
+  const credit = Number(creditAmountKes);
+  if (!Number.isFinite(credit) || credit < 0) {
+    const err = new Error("creditAmountKes must be a number >= 0");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const creditRounded = Number(roundAmount(credit, "KES"));
+  const priced = await computeProductFee({
+    productKey: LOCAL_TOPUP_PRODUCT_KEY,
+    amount: creditRounded,
+    currency: "KES",
+  });
+  const feeAmount = priced.applied ? Number(priced.feeAmount) || 0 : 0;
+  const chargeAmountKes = Number(
+      roundAmount(new Decimal(creditRounded).plus(feeAmount), "KES"),
+  );
+
+  return {
+    creditAmountKes: creditRounded,
+    feeAmount,
+    chargeAmountKes,
+    applied: priced.applied === true && feeAmount > 0,
+    feePercent: Number(priced.feePercent) || 0,
+    flatFee: Number(priced.flatFee) || 0,
+    pricingProductKey: LOCAL_TOPUP_PRODUCT_KEY,
+    reason: priced.reason,
+    source: priced.source,
+  };
+}
+
 module.exports = {
   CONFIG_DOC,
   FORMULA,
   CATALOG,
   PRODUCT_KEYS,
+  LOCAL_TOPUP_PRODUCT_KEY,
   SEND_PRODUCT_BY_CORRIDOR,
   getCatalog,
   getPricingConfig,
   getProductPricing,
   computeProductFee,
+  computeLocalTopupPaystackCharge,
   previewCharge,
   updateProductPricing,
   resetToDefaults,
   getAdminPricingView,
   resolveSafariPayProductKey,
+  resolveSafariSendProductKey,
+  resolveSafariPayoutProductKey,
   resolveSendProductKey,
   clearCache,
   buildLiveDefaults,

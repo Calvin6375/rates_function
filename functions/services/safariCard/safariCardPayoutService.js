@@ -601,15 +601,41 @@ async function createPayout(userId, body) {
       batchReference: payoutId,
     });
   } catch (providerErr) {
+    const detail = providerErr instanceof Error ?
+      providerErr.message :
+      "Provider initiation failed";
+    console.error(JSON.stringify({
+      event: "safariCard.payout.providerInitFailed",
+      payoutId,
+      userId,
+      type: parsed.type,
+      amount: feeBreakdown.amount,
+      fee: feeBreakdown.fee,
+      totalDebit: feeBreakdown.totalDebit,
+      pricingProductKey: feeBreakdown.pricingProductKey || null,
+      error: detail,
+      httpStatus: providerErr?.httpStatus || null,
+      isIntaSendApiError: providerErr?.name === "IntaSendApiError",
+    }));
     await handlePayoutFailure({
       payoutId,
       requestId,
-      failureReason: providerErr.message || "Provider initiation failed",
-      providerPayload: null,
+      failureReason: detail,
+      providerPayload: providerErr?.body || null,
+    }).catch((cleanupErr) => {
+      console.error(JSON.stringify({
+        event: "safariCard.payout.failureCleanupFailed",
+        payoutId,
+        error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+      }));
     });
+    // Preserve IntaSend auth/timeout errors for mapErrorResponse (502 PROVIDER_AUTH_ERROR etc.)
+    if (providerErr?.name === "IntaSendApiError" && providerErr.httpStatus) {
+      throw providerErr;
+    }
     throw payoutError(
         ERROR_CODES.PROVIDER_ERROR,
-        "Failed to initiate payout with provider",
+        detail || "Failed to initiate payout with provider",
         502,
     );
   }

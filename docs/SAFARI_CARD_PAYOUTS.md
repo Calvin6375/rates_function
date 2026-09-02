@@ -401,12 +401,19 @@ firebase deploy --only functions:safariCardApi,functions:handleIntaSendDisbursem
 
 ### IntaSend 401 `PROVIDER_AUTH_ERROR` troubleshooting
 
-If validate-beneficiary returns `502` / `PROVIDER_AUTH_ERROR` (previously surfaced as HTTP 401):
+If validate-beneficiary / create payout returns `502` / `PROVIDER_AUTH_ERROR`:
 
 1. **Sandbox vs live** — Test keys (`ISSecretKey_test_…`) must hit `sandbox.intasend.com`. Live keys (`…_live_…`) must hit `payment.intasend.com`. Set `INTASEND_ENV=sandbox` or `live` if auto-detection is wrong.
-2. **Secret on deployed revision** — Confirm `safariCardApi` binds `INTASEND_SECRET_KEY` and `INTASEND_PUBLISHABLE_KEY` (both required on the function after latest deploy).
-3. **Send Money enabled** — IntaSend dashboard → enable disbursement / fund working wallet.
+2. **Secret on deployed revision** — Confirm `safariCardApi` binds `INTASEND_SECRET_KEY` and `INTASEND_PUBLISHABLE_KEY`. Re-set secrets if unsure:
+   ```bash
+   firebase functions:secrets:set INTASEND_SECRET_KEY
+   firebase functions:secrets:set INTASEND_PUBLISHABLE_KEY
+   firebase deploy --only functions:safariCardApi
+   ```
+3. **Send Money enabled** — IntaSend dashboard → enable disbursement / fund working wallet ([Bank Payouts](https://developers.intasend.com/docs/bank)).
 4. **Cloud Logs** — Search `intasend.apiAuthFailed` for `apiHost`, `isSandbox`, and masked key prefix.
+
+`GET /safari-card/banks` uses IntaSend [List Bank Codes](https://developers.intasend.com/reference/api_v1_send_money_bank_codes_retrieve) and falls back to the documented Kenya list if the provider call fails, so the bank picker should still load. **Validate** and **Send** still require a working secret key ([Validate Account Name](https://developers.intasend.com/reference/api_v1_send_money_validate_accounts_create)).
 
 ## IntaSend dashboard setup (production)
 

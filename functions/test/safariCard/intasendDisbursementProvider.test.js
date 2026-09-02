@@ -14,10 +14,11 @@ describe("intasendDisbursementProvider", () => {
   });
 
   it("lists stub Kenyan banks", async () => {
-    const banks = await intasendDisbursement.listKenyanBankCodes();
-    expect(Array.isArray(banks)).toBe(true);
-    expect(banks.length).toBeGreaterThan(0);
-    expect(banks[0]).toHaveProperty("bank_code");
+    const result = await intasendDisbursement.listKenyanBankCodes();
+    expect(result.source).toBe("stub");
+    expect(Array.isArray(result.banks)).toBe(true);
+    expect(result.banks.length).toBeGreaterThan(0);
+    expect(result.banks[0]).toHaveProperty("bank_code");
   });
 
   it("validates account in stub mode", async () => {
@@ -71,5 +72,22 @@ describe("intasendDisbursementProvider", () => {
     });
     expect(tx.account_type).toBe("TillNumber");
     expect(tx.account_reference).toBeUndefined();
+  });
+
+  it("formats B2C amounts as whole KES and includes phone_number", () => {
+    delete process.env.INTASEND_DISBURSEMENT_STUB_MODE;
+    const tx = intasendDisbursement.buildMpesaB2cTransaction({
+      name: "Jane",
+      account: "+254 712 345 678",
+      amount: 10,
+      narrative: "Send",
+      requestReferenceId: "payout_b2c",
+    });
+    expect(tx.account).toBe("254712345678");
+    expect(tx.phone_number).toBe("254712345678");
+    expect(tx.amount).toBe("10");
+    expect(intasendDisbursement.formatDisbursementAmount(10.4, {wholeKes: true})).toBe("10");
+    expect(intasendDisbursement.formatDisbursementAmount(10)).toBe("10");
+    expect(intasendDisbursement.formatDisbursementAmount(10.5)).toBe("10.50");
   });
 });

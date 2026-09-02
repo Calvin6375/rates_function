@@ -12,11 +12,15 @@ jest.mock("../../services/ops/paymentTimelineService", () => ({
 jest.mock("../../services/ops/opsMetricsService", () => ({
   increment: jest.fn().mockResolvedValue(undefined),
 }));
+jest.mock("../../services/pricing/productPricingService", () => ({
+  computeLocalTopupPaystackCharge: jest.fn(),
+}));
 
 const fundingOrderService = require("../../services/funding/fundingOrderService");
 const fundingRailService = require("../../services/funding/fundingRailService");
 const fundingIdempotencyService = require("../../services/funding/fundingIdempotencyService");
 const { convertToKesForPaystack } = require("../../services/funding/c2bFundingFxService");
+const productPricingService = require("../../services/pricing/productPricingService");
 const c2bFundingBridge = require("../../services/funding/c2bFundingBridgeService");
 
 describe("c2bFundingBridgeService", () => {
@@ -25,6 +29,17 @@ describe("c2bFundingBridgeService", () => {
     fundingIdempotencyService.lookupIdempotencyKey.mockResolvedValue(null);
     fundingIdempotencyService.claimIdempotencyKey.mockResolvedValue({ duplicate: false });
     fundingOrderService.generateFundingOrderId.mockReturnValue("fund_test_123");
+    productPricingService.computeLocalTopupPaystackCharge.mockImplementation(async (amountKes) => ({
+      creditAmountKes: Number(amountKes),
+      feeAmount: 0,
+      chargeAmountKes: Number(amountKes),
+      applied: false,
+      feePercent: 0,
+      flatFee: 0,
+      pricingProductKey: "local_topup",
+      reason: "not_enabled",
+      source: "defaults",
+    }));
     convertToKesForPaystack.mockResolvedValue({
       requestedAmount: 25,
       requestedCurrency: "USD",

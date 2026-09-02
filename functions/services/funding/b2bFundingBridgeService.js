@@ -8,6 +8,7 @@ const fundingIdempotencyService = require("./fundingIdempotencyService");
 const { resolveB2bPaystackCallbackUrl } = require("./fundingCallbackService");
 const { recordEvent } = require("../ops/paymentTimelineService");
 const opsMetrics = require("../ops/opsMetricsService");
+const productPricingService = require("../pricing/productPricingService");
 const { createPaymentContext } = require("../../utils/paymentContext");
 const { createLogger } = require("../../utils/paymentOpsLogger");
 const {
@@ -77,6 +78,11 @@ async function createB2bSelfTopupCheckout(params) {
     throw err;
   }
 
+  // Face amount → wallet; Paystack charge = face + local_topup fee when live.
+  const topupCharge = await productPricingService.computeLocalTopupPaystackCharge(amountKes);
+  const creditKes = topupCharge.creditAmountKes;
+  const chargeKes = topupCharge.chargeAmountKes;
+
   const provider = FUNDING_PROVIDERS.paystack;
   const idempotencyOwner = `partner:${partnerId}`;
 
@@ -102,7 +108,7 @@ async function createB2bSelfTopupCheckout(params) {
     id: orderId,
     userId: actorUid,
     provider,
-    amount: amountKes,
+    amount: chargeKes,
     currency: B2B_PAYSTACK_CURRENCY,
     correlationId: ctx.correlationId,
     fundingRequestId: idempotencyKey,
@@ -114,9 +120,14 @@ async function createB2bSelfTopupCheckout(params) {
       correlationId: ctx.correlationId,
       provider,
       source: "b2b_portal_add_money",
-      requestedAmount: amountKes,
+      requestedAmount: creditKes,
       requestedCurrency: B2B_PAYSTACK_CURRENCY,
       paystackCurrency: B2B_PAYSTACK_CURRENCY,
+      platformFee: topupCharge.feeAmount,
+      feeAmount: topupCharge.feeAmount,
+      pricingProductKey: topupCharge.pricingProductKey,
+      pricingApplied: topupCharge.applied,
+      chargeAmount: chargeKes,
     },
   });
 
@@ -126,7 +137,7 @@ async function createB2bSelfTopupCheckout(params) {
   try {
     const session = await fundingRailService.initializePayment({
       provider,
-      amount: amountKes,
+      amount: chargeKes,
       currency: B2B_PAYSTACK_CURRENCY,
       email: email || null,
       callbackUrl: resolvedCallback,
@@ -166,7 +177,9 @@ async function createB2bSelfTopupCheckout(params) {
     provider,
     status: updated.status,
     metadata: {
-      amount: amountKes,
+      amount: chargeKes,
+      creditAmount: creditKes,
+      feeAmount: topupCharge.feeAmount,
       currency: B2B_PAYSTACK_CURRENCY,
       partnerId,
       product: B2B_SELF_TOPUP_PRODUCT,
@@ -238,14 +251,23 @@ async function claimIdempotency(ownerKey, idempotencyKey, orderId) {
 function mapB2bCheckoutResponse(order, extra = {}) {
   const reference = order.providerReference || order.id;
   const checkoutUrl = order.checkoutUrl || "";
+  const creditAmount = order.metadata?.requestedAmount ?? order.amount;
+  const feeAmount = Number(order.metadata?.feeAmount ?? order.metadata?.platformFee ?? 0) || 0;
   return {
     orderId: order.id,
     fundingOrderId: order.id,
     invoiceId: reference,
     paymentId: reference,
-    amount: order.metadata?.requestedAmount ?? order.amount,
+    /** Face amount credited to partner virtual KES card after success */
+    amount: creditAmount,
+    youReceive: creditAmount,
     currency: order.metadata?.requestedCurrency ?? order.currency,
+    /** Amount posted to Paystack (face + platform fee when local_topup is live) */
     paystackAmount: order.amount,
+    totalToPay: order.amount,
+    feeAmount,
+    platformFee: feeAmount,
+    pricingProductKey: order.metadata?.pricingProductKey || null,
     paystackCurrency: order.currency,
     status: order.status || FUNDING_STATUSES.pending,
     checkoutUrl,

@@ -11,6 +11,7 @@ const { convertToKesForPaystack } = require("./c2bFundingFxService");
 const { resolvePaystackCallbackUrl } = require("./fundingCallbackService");
 const { recordEvent } = require("../ops/paymentTimelineService");
 const opsMetrics = require("../ops/opsMetricsService");
+const productPricingService = require("../pricing/productPricingService");
 const { createPaymentContext } = require("../../utils/paymentContext");
 const { createLogger } = require("../../utils/paymentOpsLogger");
 const {
@@ -72,11 +73,19 @@ async function createC2bPaystackTopupCheckout(params) {
 
   const provider = FUNDING_PROVIDERS.paystack;
   const charge = await convertToKesForPaystack(amount, currency);
+  // Fee on Paystack KES leg; wallet still credits requestedAmount/currency.
+  const topupCharge = await productPricingService.computeLocalTopupPaystackCharge(
+      charge.amountKes,
+  );
+  const paystackChargeKes = topupCharge.chargeAmountKes;
+
   logger.info("c2b.checkout.fx", {
     userId,
     requestedAmount: charge.requestedAmount,
     requestedCurrency: charge.requestedCurrency,
     amountKes: charge.amountKes,
+    paystackChargeKes,
+    feeAmount: topupCharge.feeAmount,
     fxRate: charge.fxRate,
   });
 
@@ -102,7 +111,7 @@ async function createC2bPaystackTopupCheckout(params) {
     id: orderId,
     userId,
     provider,
-    amount: charge.amountKes,
+    amount: paystackChargeKes,
     currency: C2B_PAYSTACK_CURRENCY,
     correlationId: ctx.correlationId,
     fundingRequestId: idempotencyKey,
@@ -117,6 +126,12 @@ async function createC2bPaystackTopupCheckout(params) {
       requestedCurrency: charge.requestedCurrency,
       fxRate: charge.fxRate,
       paystackCurrency: charge.paystackCurrency,
+      faceAmountKes: topupCharge.creditAmountKes,
+      platformFee: topupCharge.feeAmount,
+      feeAmount: topupCharge.feeAmount,
+      pricingProductKey: topupCharge.pricingProductKey,
+      pricingApplied: topupCharge.applied,
+      chargeAmount: paystackChargeKes,
     },
   });
 
@@ -124,7 +139,7 @@ async function createC2bPaystackTopupCheckout(params) {
     provider,
     order,
     ctx,
-    amount: charge.amountKes,
+    amount: paystackChargeKes,
     currency: C2B_PAYSTACK_CURRENCY,
     email,
     callbackUrl: resolvePaystackCallbackUrl(callbackUrl),
@@ -136,11 +151,13 @@ async function createC2bPaystackTopupCheckout(params) {
     correlationId: ctx.correlationId,
     provider,
     status: updated.status,
-    amount: charge.amountKes,
+    amount: paystackChargeKes,
     currency: C2B_PAYSTACK_CURRENCY,
     metadata: {
       requestedAmount: charge.requestedAmount,
       requestedCurrency: charge.requestedCurrency,
+      faceAmountKes: topupCharge.creditAmountKes,
+      feeAmount: topupCharge.feeAmount,
       fxRate: charge.fxRate,
       source: "createPayment",
     },
@@ -426,6 +443,101 @@ async function recordCheckoutTimeline(params) {
  * @param {Object} [extra]
  * @returns {Object}
  */
+/**
+ * Quote Local Topup (Paystack) breakdown for the Deposit Review screen.
+ * Does not create a funding order or open checkout.
+ *
+ * @param {Object} params
+ * @param {number} params.amount - Face amount the user wants to receive
+ * @param {string} [params.currency="KES"]
+ * @returns {Promise<Object>}
+ */
+async function quoteLocalTopupPaystack(params) {
+  const amount = Number(params.amount);
+  const currency = String(params.currency || "KES").toUpperCase();
+  if (!Number.isFinite(amount) || amount <= 0) {
+    const err = new Error("amount must be a positive number");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const charge = await convertToKesForPaystack(amount, currency);
+  const topupCharge = await productPricingService.computeLocalTopupPaystackCharge(
+      charge.amountKes,
+  );
+
+  const youDeposit = charge.requestedAmount;
+  const depositCurrency = charge.requestedCurrency;
+  const processingFees = topupCharge.feeAmount;
+  const paymentMethodFees = 0;
+  const youWillPay = topupCharge.chargeAmountKes;
+  const paystackCurrency = C2B_PAYSTACK_CURRENCY;
+
+  const formatLine = (value, cur) => {
+    const n = Number(value) || 0;
+    if (n <= 0) return "Free";
+    return `${n.toFixed(2)} ${cur}`;
+  };
+
+  return {
+    method: "local_topup",
+    provider: FUNDING_PROVIDERS.paystack,
+    checkoutProvider: "Paystack",
+    /** Face amount credited after success (same currency as user entered) */
+    youDeposit,
+    youReceive: youDeposit,
+    amount: youDeposit,
+    currency: depositCurrency,
+    /** Platform fee (KES) from local_topup when live */
+    processingFees,
+    processingFeesCurrency: paystackCurrency,
+    paymentMethodFees,
+    paymentMethodFeesCurrency: paystackCurrency,
+    /** Total charged on Paystack (KES) */
+    youWillPay,
+    totalToPay: youWillPay,
+    paystackAmount: youWillPay,
+    paystackCurrency,
+    faceAmountKes: topupCharge.creditAmountKes,
+    feeAmount: processingFees,
+    feePercent: topupCharge.feePercent,
+    flatFeeKes: topupCharge.flatFee,
+    pricingApplied: topupCharge.applied,
+    pricingProductKey: topupCharge.pricingProductKey,
+    fxRate: charge.fxRate,
+    lines: [
+      {
+        key: "you_deposit",
+        label: "You deposit",
+        amount: youDeposit,
+        currency: depositCurrency,
+        display: formatLine(youDeposit, depositCurrency),
+      },
+      {
+        key: "processing_fees",
+        label: "Processing fees",
+        amount: processingFees,
+        currency: paystackCurrency,
+        display: formatLine(processingFees, paystackCurrency),
+      },
+      {
+        key: "payment_method_fees",
+        label: "Payment method fees",
+        amount: paymentMethodFees,
+        currency: paystackCurrency,
+        display: formatLine(paymentMethodFees, paystackCurrency),
+      },
+      {
+        key: "you_will_pay",
+        label: "You will pay",
+        amount: youWillPay,
+        currency: paystackCurrency,
+        display: formatLine(youWillPay, paystackCurrency),
+      },
+    ],
+  };
+}
+
 function mapFundingOrderToCreatePaymentResponse(order, extra = {}) {
   const reference = order.providerReference || order.id;
   const requestedAmount = order.metadata?.requestedAmount ?? order.amount;
@@ -434,6 +546,7 @@ function mapFundingOrderToCreatePaymentResponse(order, extra = {}) {
   const provider = order.provider || config.funding.defaultProvider || FUNDING_PROVIDERS.paystack;
   const providerAmount = order.amount;
   const providerCurrency = order.currency;
+  const feeAmount = Number(order.metadata?.feeAmount ?? order.metadata?.platformFee ?? 0) || 0;
 
   return {
     success: true,
@@ -442,9 +555,16 @@ function mapFundingOrderToCreatePaymentResponse(order, extra = {}) {
     fundingOrderId: order.id,
     invoiceId: reference,
     paymentId: reference,
+    /** Face amount credited to SafariTap after success */
     amount: requestedAmount,
+    youReceive: requestedAmount,
     currency: requestedCurrency,
+    /** Amount posted to Paystack (KES face + local_topup fee when live) */
     paystackAmount: providerAmount,
+    totalToPay: providerAmount,
+    feeAmount,
+    platformFee: feeAmount,
+    pricingProductKey: order.metadata?.pricingProductKey || null,
     paystackCurrency: providerCurrency,
     status: order.status || "pending",
     checkoutUrl,
@@ -461,6 +581,7 @@ module.exports = {
   createC2bTopupCheckout,
   createC2bPaystackTopupCheckout,
   createC2bTransakTopupCheckout,
+  quoteLocalTopupPaystack,
   mapFundingOrderToCreatePaymentResponse,
   resolveFundingProvider,
 };

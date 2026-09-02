@@ -6,7 +6,6 @@
 const {
   intaSendRequest,
   isDisbursementStubMode,
-  getIntaSendApiConfig,
 } = require("./intasendClient");
 
 /** IntaSend send-money provider identifiers. */
@@ -21,6 +20,36 @@ const DISBURSEMENT_PROVIDERS = Object.freeze({
  */
 function getDeviceId() {
   return process.env.INTASEND_DEVICE_ID || null;
+}
+
+/**
+ * @returns {string|null}
+ */
+function getWalletId() {
+  const id = String(process.env.INTASEND_WALLET_ID || "").trim();
+  return id || null;
+}
+
+/**
+ * IntaSend / Safaricom B2C rejects fractional KES more often than B2B.
+ * Whole amounts are sent without trailing decimals (10 not 10.00).
+ * @param {unknown} amount
+ * @param {{ wholeKes?: boolean }} [opts]
+ * @returns {string}
+ */
+function formatDisbursementAmount(amount, opts = {}) {
+  const n = Number(amount);
+  if (!Number.isFinite(n) || n <= 0) {
+    return "0";
+  }
+  if (opts.wholeKes) {
+    return String(Math.round(n));
+  }
+  const rounded = Math.round(n * 100) / 100;
+  if (Number.isInteger(rounded)) {
+    return String(rounded);
+  }
+  return rounded.toFixed(2);
 }
 
 /**
@@ -81,6 +110,10 @@ async function initiateSendMoney(params) {
   if (deviceId) {
     body.device_id = deviceId;
   }
+  const walletId = getWalletId();
+  if (walletId) {
+    body.wallet_id = walletId;
+  }
   if (batchReference) {
     body.batch_reference = String(batchReference).slice(0, 70);
   }
@@ -114,8 +147,15 @@ async function approveSendMoney(initiateResponse) {
     };
   }
 
+  const payload = (initiateResponse && typeof initiateResponse === "object") ?
+    {...initiateResponse} :
+    {};
+  const deviceId = getDeviceId();
+  if (deviceId && (payload.device_id == null || payload.device_id === "")) {
+    payload.device_id = deviceId;
+  }
   return intaSendRequest("POST", "/api/v1/send-money/approve/", {
-    body: initiateResponse,
+    body: payload,
   });
 }
 
@@ -126,14 +166,38 @@ async function approveSendMoney(initiateResponse) {
  */
 async function initiateAndApproveSendMoney(params) {
   const initiated = await initiateSendMoney(params);
-  if (params.requiresApproval === "YES") {
-    return approveSendMoney(initiated);
+  const needsApprove = params.requiresApproval === "YES" ||
+    initiated.requires_approval === "YES" ||
+    String(initiated.status_code || "").toUpperCase() === "BP103";
+
+  console.log(JSON.stringify({
+    event: "intasend.sendMoney.initiated",
+    provider: params.provider,
+    status: initiated.status || null,
+    statusCode: initiated.status_code || null,
+    trackingId: initiated.tracking_id || null,
+    needsApprove,
+    hasDeviceId: Boolean(getDeviceId()),
+  }));
+
+  if (!needsApprove) {
+    return initiated;
   }
-  if (initiated.requires_approval === "YES" ||
-      initiated.status_code === "BP103") {
-    return approveSendMoney(initiated);
+
+  try {
+    return await approveSendMoney(initiated);
+  } catch (approveErr) {
+    console.error(JSON.stringify({
+      event: "intasend.sendMoney.approveFailed",
+      provider: params.provider,
+      trackingId: initiated.tracking_id || null,
+      statusCode: initiated.status_code || null,
+      error: approveErr instanceof Error ? approveErr.message : String(approveErr),
+      httpStatus: approveErr?.httpStatus || null,
+      hasDeviceId: Boolean(getDeviceId()),
+    }));
+    throw approveErr;
   }
-  return initiated;
 }
 
 /**
@@ -204,20 +268,108 @@ async function validateAccount(params) {
 }
 
 /**
- * @returns {Promise<Array<{ bank_name: string, bank_code: string }>>}
+ * Static Kenya PesaLink bank codes from IntaSend docs (fallback when API auth fails).
+ * @see https://developers.intasend.com/docs/bank
+ * @type {Array<{ bank_name: string, bank_code: string }>}
+ */
+const FALLBACK_KENYA_BANK_CODES = Object.freeze([
+  {bank_name: "KCB", bank_code: "1"},
+  {bank_name: "Standard Charted Bank KE", bank_code: "2"},
+  {bank_name: "Absa Bank Kenya", bank_code: "3"},
+  {bank_name: "NCBA", bank_code: "7"},
+  {bank_name: "Prime Bank", bank_code: "10"},
+  {bank_name: "Cooperative Bank", bank_code: "11"},
+  {bank_name: "National Bank", bank_code: "12"},
+  {bank_name: "Citibank", bank_code: "16"},
+  {bank_name: "Habib Bank AG Zurich", bank_code: "17"},
+  {bank_name: "Middle East Bank", bank_code: "18"},
+  {bank_name: "Bank of Africa", bank_code: "19"},
+  {bank_name: "Consolidated Bank", bank_code: "23"},
+  {bank_name: "Credit Bank Ltd", bank_code: "25"},
+  {bank_name: "Stanbic Bank", bank_code: "31"},
+  {bank_name: "ABC Bank", bank_code: "35"},
+  {bank_name: "Spire Bank", bank_code: "49"},
+  {bank_name: "Paramount Universal Bank", bank_code: "50"},
+  {bank_name: "Kingdom Bank", bank_code: "51"},
+  {bank_name: "Guaranty Bank", bank_code: "53"},
+  {bank_name: "Victoria Commercial Bank", bank_code: "54"},
+  {bank_name: "Guardian Bank", bank_code: "55"},
+  {bank_name: "I&M Bank", bank_code: "57"},
+  {bank_name: "Housing Finance Company Limited (HFCK)", bank_code: "61"},
+  {bank_name: "DTB", bank_code: "63"},
+  {bank_name: "Mayfair Bank Limited", bank_code: "65"},
+  {bank_name: "Sidian Bank", bank_code: "66"},
+  {bank_name: "Equity Bank", bank_code: "68"},
+  {bank_name: "Family Bank", bank_code: "70"},
+  {bank_name: "Gulf African Bank", bank_code: "72"},
+  {bank_name: "First Community Bank", bank_code: "74"},
+  {bank_name: "KWFT Bank", bank_code: "78"},
+]);
+
+/**
+ * @param {unknown} data
+ * @returns {Array<{ bank_name: string, bank_code: string }>}
+ */
+function normalizeBankCodesResponse(data) {
+  let rows = [];
+  if (Array.isArray(data)) {
+    rows = data;
+  } else if (data && typeof data === "object") {
+    const obj = /** @type {Record<string, unknown>} */ (data);
+    if (Array.isArray(obj.results)) rows = obj.results;
+    else if (Array.isArray(obj.banks)) rows = obj.banks;
+    else if (Array.isArray(obj.data)) rows = obj.data;
+  }
+
+  return rows
+      .map((row) => {
+        if (!row || typeof row !== "object") return null;
+        const r = /** @type {Record<string, unknown>} */ (row);
+        const bankCode = String(r.bank_code ?? r.bankCode ?? r.code ?? "").trim();
+        const bankName = String(r.bank_name ?? r.bankName ?? r.name ?? "").trim();
+        if (!bankCode || !bankName) return null;
+        return {bank_name: bankName, bank_code: bankCode};
+      })
+      .filter(Boolean);
+}
+
+/**
+ * List Kenya bank codes for PesaLink Send Money.
+ * Uses IntaSend GET /api/v1/send-money/bank-codes/ke/ (docs allow unauthenticated).
+ * Falls back to the published Kenya list if the API returns auth/network errors.
+ *
+ * @returns {Promise<{ banks: Array<{ bank_name: string, bank_code: string }>, source: string }>}
  */
 async function listKenyanBankCodes() {
   if (isDisbursementStubMode()) {
-    return [
-      { bank_name: "KCB", bank_code: "1" },
-      { bank_name: "Equity Bank", bank_code: "68" },
-      { bank_name: "Cooperative Bank", bank_code: "11" },
-    ];
+    return {
+      banks: FALLBACK_KENYA_BANK_CODES.slice(0, 3),
+      source: "stub",
+    };
   }
 
-  const { apiHost } = getIntaSendApiConfig();
-  const data = await intaSendRequest("GET", "/api/v1/send-money/bank-codes/ke/");
-  return Array.isArray(data) ? data : [];
+  const paths = [
+    "/api/v1/send-money/bank-codes/ke/",
+    "/api/v1/send-money/bank-codes/KE/",
+  ];
+
+  for (const path of paths) {
+    // Prefer no-auth first — OpenAPI marks this route with empty security.
+    for (const skipAuth of [true, false]) {
+      try {
+        const data = await intaSendRequest("GET", path, {skipAuth});
+        const banks = normalizeBankCodesResponse(data);
+        if (banks.length) {
+          return {banks, source: skipAuth ? "intasend_public" : "intasend"};
+        }
+      } catch (err) {
+        console.warn("listKenyanBankCodes:", path, skipAuth ? "noauth" : "auth", err.message);
+      }
+    }
+  }
+
+  console.warn("listKenyanBankCodes: using static Kenya fallback (IntaSend list unavailable)");
+  return {banks: [...FALLBACK_KENYA_BANK_CODES], source: "fallback"};
 }
 
 /**
@@ -225,10 +377,12 @@ async function listKenyanBankCodes() {
  * @returns {Object}
  */
 function buildMpesaB2cTransaction(tx) {
+  const account = String(tx.account || "").replace(/\D/g, "");
   return {
     name: tx.name || "Safari Card Customer",
-    account: String(tx.account),
-    amount: String(Number(tx.amount).toFixed(2)),
+    account,
+    phone_number: account,
+    amount: formatDisbursementAmount(tx.amount, {wholeKes: true}),
     narrative: tx.narrative || "Safari Card transfer",
     request_reference_id: tx.requestReferenceId || undefined,
   };
@@ -244,7 +398,7 @@ function buildMpesaB2bTransaction(tx) {
     name: tx.name || "Safari Card Merchant",
     account: String(tx.account),
     account_type: tx.accountType,
-    amount: String(Number(tx.amount).toFixed(2)),
+    amount: formatDisbursementAmount(tx.amount),
     narrative: tx.narrative || "Safari Card payment",
     request_reference_id: tx.requestReferenceId || undefined,
   };
@@ -263,7 +417,7 @@ function buildBankTransaction(tx) {
     name: tx.name || "Safari Card Beneficiary",
     account: String(tx.account),
     bank_code: String(tx.bankCode),
-    amount: String(Number(tx.amount).toFixed(2)),
+    amount: formatDisbursementAmount(tx.amount),
     narrative: tx.narrative || "Safari Card bank transfer",
     request_reference_id: tx.requestReferenceId || undefined,
   };
@@ -271,14 +425,17 @@ function buildBankTransaction(tx) {
 
 module.exports = {
   DISBURSEMENT_PROVIDERS,
+  FALLBACK_KENYA_BANK_CODES,
   initiateSendMoney,
   approveSendMoney,
   initiateAndApproveSendMoney,
   getSendMoneyStatus,
   validateAccount,
   listKenyanBankCodes,
+  normalizeBankCodesResponse,
   buildMpesaB2cTransaction,
   buildMpesaB2bTransaction,
   buildBankTransaction,
+  formatDisbursementAmount,
   getDisbursementCallbackUrl,
 };

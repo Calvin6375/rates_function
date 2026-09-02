@@ -14,7 +14,6 @@ const {
   FUNDING_STATUSES,
   WEBHOOK_RECEIPT_STATUSES,
   TIMELINE_EVENT_TYPES,
-  B2B_SELF_TOPUP_PRODUCT,
 } = require("../../utils/fundingTypes");
 const { createLogger } = require("../../utils/paymentOpsLogger");
 
@@ -23,8 +22,8 @@ const { createLogger } = require("../../utils/paymentOpsLogger");
  * @returns {boolean}
  */
 function isB2bSelfTopup(fundingOrder) {
-  const product = String(fundingOrder?.metadata?.product || "").toLowerCase();
-  return product === B2B_SELF_TOPUP_PRODUCT || product === "b2b";
+  // Keep in lockstep with transactionService.isB2bSelfTopupOrder (partner wallet path).
+  return transactionService.isB2bSelfTopupOrder(fundingOrder);
 }
 
 const logger = createLogger({ service: "fundingWebhook" });

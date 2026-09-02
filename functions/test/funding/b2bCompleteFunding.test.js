@@ -91,4 +91,48 @@ describe("completeFundingOrder B2B self-topup", () => {
       metadata: { product: "tourist" },
     })).toBe(false);
   });
+
+  it("isB2bSelfTopupOrder treats partnerId / portal source as B2B", () => {
+    expect(transactionService.isB2bSelfTopupOrder({
+      metadata: { partnerId: "partner_1" },
+    })).toBe(true);
+    expect(transactionService.isB2bSelfTopupOrder({
+      metadata: { source: "b2b_portal_add_money" },
+    })).toBe(true);
+  });
+
+  it("credits partner wallet when product missing but partnerId present", async () => {
+    const result = await transactionService.completeFundingOrder({
+      fundingOrder: {
+        id: "fund_b2b_2",
+        userId: "uid_1",
+        provider: "paystack",
+        amount: 50,
+        currency: "KES",
+        status: "pending",
+        providerReference: "fund_b2b_2",
+        metadata: {
+          partnerId: "partner_1",
+          source: "b2b_portal_add_money",
+          requestedAmount: 50,
+          requestedCurrency: "KES",
+        },
+      },
+      verifiedEvent: {
+        providerReference: "fund_b2b_2",
+        providerTransactionId: "txn_2",
+        amount: 50,
+        currency: "KES",
+        status: "success",
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(walletService.updatePartnerWalletBalance).toHaveBeenCalledWith(
+        "partner_1",
+        "KES",
+        50,
+    );
+    expect(walletService.creditUserFiat).not.toHaveBeenCalled();
+  });
 });

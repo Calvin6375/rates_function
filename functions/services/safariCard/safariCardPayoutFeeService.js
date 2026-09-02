@@ -1,9 +1,13 @@
 /**
  * @fileoverview Safari Card payout fee calculation.
  *
- * Precedence for Pay (MPESA_B2B Till / PayBill):
+ * Precedence:
  *   product pricing (enabled) → env flat fee → 0
- * Other payout types keep env flat fees only.
+ *
+ * Product keys:
+ *   MPESA_B2B Till → buy_goods
+ *   MPESA_B2B PayBill → pay_bill
+ *   MPESA_B2C / BANK / SAFARITAP_WALLET → send_ke
  */
 
 const config = require("../../config");
@@ -44,12 +48,15 @@ function getConfiguredFlatFee(payoutType) {
  *   currency: string,
  *   feeSource: string,
  *   pricingProductKey: string|null,
+ *   feePercent: number,
+ *   flatFeeKes: number,
+ *   pricingApplied: boolean,
  * }>}
  */
 async function calculatePayoutFee(params) {
   const amount = Number(params.amount);
   const currency = String(params.currency || "KES").toUpperCase();
-  const productKey = productPricingService.resolveSafariPayProductKey(
+  const productKey = productPricingService.resolveSafariPayoutProductKey(
       params.payoutType,
       params.recipient,
   );
@@ -68,6 +75,9 @@ async function calculatePayoutFee(params) {
         currency,
         feeSource: priced.source,
         pricingProductKey: productKey,
+        feePercent: Number(priced.feePercent) || 0,
+        flatFeeKes: Number(priced.flatFee) || 0,
+        pricingApplied: true,
       };
     }
   }
@@ -80,10 +90,131 @@ async function calculatePayoutFee(params) {
     currency,
     feeSource: "env_flat_fee",
     pricingProductKey: productKey,
+    feePercent: 0,
+    flatFeeKes: fee,
+    pricingApplied: false,
+  };
+}
+
+/**
+ * Quote fee breakdown for C2B Send Money or Pay Review screens (no payout created).
+ *
+ * Pay (Till / PayBill): type=MPESA_B2B + recipient.accountType
+ * Send Money: type=MPESA_B2C | SAFARITAP_WALLET | BANK
+ *
+ * @param {Object} params
+ * @param {string} params.payoutType - e.g. MPESA_B2C, MPESA_B2B
+ * @param {number} params.amount
+ * @param {string} [params.currency="KES"]
+ * @param {Object} [params.recipient]
+ * @param {string} [params.accountType] - TillNumber | PayBill (Pay flow; merged into recipient)
+ * @returns {Promise<Object>}
+ */
+async function quotePayoutBreakdown(params) {
+  const payoutType = String(params.payoutType || "").trim();
+  const amount = Number(params.amount);
+  const currency = String(params.currency || "KES").toUpperCase();
+  const recipient = {
+    ...(params.recipient && typeof params.recipient === "object" ? params.recipient : {}),
+  };
+  if (params.accountType && !recipient.accountType) {
+    recipient.accountType = String(params.accountType);
+  }
+
+  if (!payoutType) {
+    const err = new Error("type (payoutType) is required");
+    err.statusCode = 400;
+    throw err;
+  }
+  if (!Number.isFinite(amount) || amount <= 0) {
+    const err = new Error("amount must be a positive number");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const feeBreakdown = await calculatePayoutFee({
+    userId: params.userId || null,
+    payoutType,
+    amount,
+    currency,
+    recipient,
+  });
+
+  const faceAmount = feeBreakdown.amount;
+  const platformFee = feeBreakdown.fee;
+  const paymentMethodFees = 0;
+  const youWillPay = feeBreakdown.totalDebit;
+  const isPay = payoutType === PAYOUT_TYPES.MPESA_B2B;
+  const accountType = recipient.accountType ?
+    String(recipient.accountType) :
+    null;
+
+  const formatLine = (value, cur) => {
+    const n = Number(value) || 0;
+    if (n <= 0) return "Free";
+    return `${n.toFixed(2)} ${cur}`;
+  };
+
+  const faceLabel = isPay ? "You pay" : "You send";
+  const faceKey = isPay ? "you_pay" : "you_send";
+
+  return {
+    type: payoutType,
+    method: isPay ? "pay" : "send_money",
+    accountType,
+    /** Face amount to merchant / recipient */
+    youPay: faceAmount,
+    youSend: faceAmount,
+    amount: faceAmount,
+    recipientGets: faceAmount,
+    currency,
+    /** Platform fee (buy_goods / pay_bill / send_ke when live) */
+    artoFees: platformFee,
+    processingFees: platformFee,
+    paymentMethodFees,
+    youWillPay,
+    totalDebit: youWillPay,
+    feeAmount: platformFee,
+    feePercent: feeBreakdown.feePercent,
+    flatFeeKes: feeBreakdown.flatFeeKes,
+    pricingApplied: feeBreakdown.pricingApplied,
+    pricingProductKey: feeBreakdown.pricingProductKey,
+    feeSource: feeBreakdown.feeSource,
+    lines: [
+      {
+        key: faceKey,
+        label: faceLabel,
+        amount: faceAmount,
+        currency,
+        display: formatLine(faceAmount, currency),
+      },
+      {
+        key: "arto_fees",
+        label: "Arto+ fees",
+        amount: platformFee,
+        currency,
+        display: formatLine(platformFee, currency),
+      },
+      {
+        key: "payment_method_fees",
+        label: "Payment method fees",
+        amount: paymentMethodFees,
+        currency,
+        display: formatLine(paymentMethodFees, currency),
+      },
+      {
+        key: "you_will_pay",
+        label: "You will pay",
+        amount: youWillPay,
+        currency,
+        display: formatLine(youWillPay, currency),
+      },
+    ],
   };
 }
 
 module.exports = {
   calculatePayoutFee,
   getConfiguredFlatFee,
+  quotePayoutBreakdown,
 };
