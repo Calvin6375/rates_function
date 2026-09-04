@@ -5,7 +5,13 @@
 jest.mock("../../services/funding/fundingOrderService");
 jest.mock("../../services/funding/fundingRailService");
 jest.mock("../../services/funding/fundingIdempotencyService");
-jest.mock("../../services/funding/c2bFundingFxService");
+jest.mock("../../services/funding/c2bFundingFxService", () => {
+  const actual = jest.requireActual("../../services/funding/c2bFundingFxService");
+  return {
+    ...actual,
+    convertToKesForPaystack: jest.fn(),
+  };
+});
 jest.mock("../../services/ops/paymentTimelineService", () => ({
   recordEvent: jest.fn().mockResolvedValue(undefined),
 }));

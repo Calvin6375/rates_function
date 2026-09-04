@@ -267,6 +267,8 @@ const config = {
     defaultProvider: getEnv("FUNDING_DEFAULT_PROVIDER", "paystack"),
     /** USD only — TruePay owns FX at settlement */
     currency: "USD",
+    /** C2B Local Topup / createPayment maximum wallet credit, in KES */
+    maxTopupKes: Number(getEnv("C2B_MAX_TOPUP_KES", "50000")),
     /** Idempotency key TTL (hours) */
     idempotencyTtlHours: Number(getEnv("FUNDING_IDEMPOTENCY_TTL_HOURS", "24")),
     /** Stale pending order threshold for reconciliation (minutes) */

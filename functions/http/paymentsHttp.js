@@ -176,6 +176,9 @@ exports.createPayment = onCall(
         }
 
         const msg = String(error.message || "Failed to create payment order");
+        if (msg.includes("maximum top-up") || error.code === "TOPUP_LIMIT_EXCEEDED") {
+          throw new HttpsError("invalid-argument", msg);
+        }
         if (
           msg.includes("FX rate") ||
           msg.includes("Invalid currency") ||

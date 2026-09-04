@@ -5,7 +5,13 @@
 jest.mock("../../services/funding/fundingOrderService");
 jest.mock("../../services/funding/fundingRailService");
 jest.mock("../../services/funding/fundingIdempotencyService");
-jest.mock("../../services/funding/c2bFundingFxService");
+jest.mock("../../services/funding/c2bFundingFxService", () => {
+  const actual = jest.requireActual("../../services/funding/c2bFundingFxService");
+  return {
+    ...actual,
+    convertToKesForPaystack: jest.fn(),
+  };
+});
 jest.mock("../../services/ops/paymentTimelineService", () => ({
   recordEvent: jest.fn().mockResolvedValue(undefined),
 }));
@@ -113,6 +119,23 @@ describe("c2bFundingBridgeService", () => {
           currency: "KES",
         }),
     );
+  });
+
+  it("rejects createPayment when KES equivalent exceeds 50,000", async () => {
+    convertToKesForPaystack.mockResolvedValue({
+      requestedAmount: 600,
+      requestedCurrency: "USD",
+      amountKes: 78000,
+      paystackCurrency: "KES",
+      fxRate: 130,
+    });
+
+    await expect(c2bFundingBridge.createC2bTopupCheckout({
+      userId: "user_1",
+      amount: 600,
+      currency: "USD",
+    })).rejects.toThrow(/384\.61 USD or less/);
+    expect(fundingOrderService.createFundingOrder).not.toHaveBeenCalled();
   });
 
   it("converts KES input for Paystack", async () => {

@@ -27,6 +27,9 @@ const CUSTOMER_RATES_META_KEYS = new Set([
 /** Paystack Kenya hosted checkout rejects sub-shilling charges. */
 const MIN_PAYSTACK_KES = 1;
 
+/** Default C2B top-up cap (wallet credit, KES equivalent). */
+const DEFAULT_C2B_MAX_TOPUP_KES = 50000;
+
 /**
  * @param {number} amount
  * @returns {number}
@@ -210,12 +213,102 @@ async function convertToKesForPaystack(amount, currency = "USD") {
   };
 }
 
+/**
+ * @returns {number}
+ */
+function getC2bMaxTopupKes() {
+  const n = Number(config.funding && config.funding.maxTopupKes);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_C2B_MAX_TOPUP_KES;
+}
+
+/**
+ * Format an amount for customer-facing errors (grouped thousands).
+ * @param {number} amount
+ * @param {string} currency
+ * @returns {string}
+ */
+function formatCustomerAmount(amount, currency) {
+  const n = Number(amount);
+  const code = String(currency || "KES").toUpperCase();
+  const fraction = code === "KES" && Number.isInteger(n) ? 0 : 2;
+  const formatted = n.toLocaleString("en-US", {
+    minimumFractionDigits: fraction,
+    maximumFractionDigits: fraction,
+  });
+  return `${formatted} ${code}`;
+}
+
+/**
+ * Largest amount in `currency` that still converts to ≤ maxKes.
+ * @param {number} maxKes
+ * @param {number} fxRate KES per 1 unit
+ * @returns {number}
+ */
+function maxAmountForCurrency(maxKes, fxRate) {
+  const rate = Number(fxRate);
+  if (!Number.isFinite(rate) || rate <= 0 || rate === 1) {
+    return roundMajorUnits(maxKes);
+  }
+  return Math.floor((maxKes / rate) * 100) / 100;
+}
+
+/**
+ * Reject C2B top-ups whose KES equivalent exceeds the cap.
+ * Message names the limit in KES and in the currency the customer entered.
+ *
+ * @param {{
+ *   amountKes: number,
+ *   requestedAmount?: number,
+ *   requestedCurrency?: string,
+ *   fxRate?: number,
+ * }} charge
+ * @param {number} [maxKes]
+ */
+function assertC2bTopupWithinMaxKes(charge, maxKes = getC2bMaxTopupKes()) {
+  const amountKes = Number(charge && charge.amountKes);
+  if (!Number.isFinite(amountKes) || amountKes <= maxKes) {
+    return;
+  }
+
+  const requestedCurrency = String(
+      (charge && charge.requestedCurrency) || C2B_PAYSTACK_CURRENCY,
+  ).toUpperCase();
+  const fxRate = Number(charge && charge.fxRate) || 1;
+  const maxKesLabel = formatCustomerAmount(maxKes, C2B_PAYSTACK_CURRENCY);
+
+  let message;
+  if (requestedCurrency === C2B_PAYSTACK_CURRENCY) {
+    message =
+      `The maximum top-up is ${maxKesLabel}. ` +
+      `Enter ${maxKesLabel} or less.`;
+  } else {
+    const maxInCcy = maxAmountForCurrency(maxKes, fxRate);
+    const maxCcyLabel = formatCustomerAmount(maxInCcy, requestedCurrency);
+    message =
+      `The maximum top-up is ${maxKesLabel} ` +
+      `(${maxCcyLabel} at the current rate). ` +
+      `Enter ${maxCcyLabel} or less.`;
+  }
+
+  const err = new Error(message);
+  err.statusCode = 400;
+  err.code = "TOPUP_LIMIT_EXCEEDED";
+  err.maxTopupKes = maxKes;
+  err.maxTopupCurrency = requestedCurrency;
+  throw err;
+}
+
 module.exports = {
   USDT_PEGGED,
   MIN_PAYSTACK_KES,
+  DEFAULT_C2B_MAX_TOPUP_KES,
   convertToKesForPaystack,
   resolveKesPerUnit,
   roundMajorUnits,
   extractRatesMap,
   kesChargeRateFromRow,
+  getC2bMaxTopupKes,
+  formatCustomerAmount,
+  maxAmountForCurrency,
+  assertC2bTopupWithinMaxKes,
 };

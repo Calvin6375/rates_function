@@ -206,7 +206,7 @@ async function requireCustomerAuth(req, res, next) {
 
 /**
  * Shared handler for GET /accounts and GET /wallets.
- * Authenticated C2B wallet list (fiat + crypto). Replaces direct Flutter RTDB
+ * Authenticated C2B wallet list (KES, USD, USDT, USDC). Replaces direct Flutter RTDB
  * reads of wallet/{uid}/fiat and wallet/{uid}/crypto.
  * Balances come from Firestore + USDC ledger — never from RTDB.
  */

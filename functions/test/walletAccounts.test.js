@@ -57,34 +57,32 @@ const {
 } = require("../services/walletService");
 
 describe("buildAccountBalancesFromUserData", () => {
-  it("maps users doc fields to fiat + crypto maps (RTDB-parity currencies)", () => {
+  it("exposes only C2B wallets: KES, USD, USDT, USDC", () => {
     const {fiat, crypto} = buildAccountBalancesFromUserData(
         {
           usdBalance: 10,
           kesBalance: 1500,
           etbBalance: 200,
           usdtBalance: 3,
-          wallets: {GBP: 5},
+          wallets: {GBP: 5, ETB: 200},
         },
         {usdc: 12.5},
     );
 
-    expect(fiat.USD).toBe(10);
-    expect(fiat.KES).toBe(1500);
-    expect(fiat.ETB).toBe(200);
-    expect(fiat.GBP).toBe(5);
-    expect(fiat.EUR).toBe(0);
+    expect(fiat).toEqual({USD: 10, KES: 1500});
     expect(crypto).toEqual({USDT: 3, USDC: 12.5});
-    expect(Object.keys(fiat).sort()).toEqual(
-        expect.arrayContaining([...STANDARD_FIAT_CURRENCIES]),
-    );
+    expect(Object.keys(fiat).sort()).toEqual(["KES", "USD"]);
+    expect(STANDARD_FIAT_CURRENCIES).toEqual(["USD", "KES"]);
   });
 
-  it("includes extra wallets.* fiat codes", () => {
+  it("does not surface extra wallets.* fiat codes on C2B accounts", () => {
     const {fiat} = buildAccountBalancesFromUserData({
-      wallets: {UGX: 1000},
+      wallets: {UGX: 1000, ETB: 50},
     });
-    expect(fiat.UGX).toBe(1000);
+    expect(fiat.UGX).toBeUndefined();
+    expect(fiat.ETB).toBeUndefined();
+    expect(fiat.KES).toBe(0);
+    expect(fiat.USD).toBe(0);
   });
 
   it("does not treat missing user data as crash", () => {

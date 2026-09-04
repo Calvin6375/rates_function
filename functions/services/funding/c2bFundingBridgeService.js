@@ -7,7 +7,7 @@ const config = require("../../config");
 const fundingOrderService = require("./fundingOrderService");
 const fundingRailService = require("./fundingRailService");
 const fundingIdempotencyService = require("./fundingIdempotencyService");
-const { convertToKesForPaystack } = require("./c2bFundingFxService");
+const { convertToKesForPaystack, assertC2bTopupWithinMaxKes, getC2bMaxTopupKes, maxAmountForCurrency } = require("./c2bFundingFxService");
 const { resolvePaystackCallbackUrl } = require("./fundingCallbackService");
 const { recordEvent } = require("../ops/paymentTimelineService");
 const opsMetrics = require("../ops/opsMetricsService");
@@ -73,6 +73,7 @@ async function createC2bPaystackTopupCheckout(params) {
 
   const provider = FUNDING_PROVIDERS.paystack;
   const charge = await convertToKesForPaystack(amount, currency);
+  assertC2bTopupWithinMaxKes(charge);
   // Fee on Paystack KES leg; wallet still credits requestedAmount/currency.
   const topupCharge = await productPricingService.computeLocalTopupPaystackCharge(
       charge.amountKes,
@@ -462,6 +463,7 @@ async function quoteLocalTopupPaystack(params) {
   }
 
   const charge = await convertToKesForPaystack(amount, currency);
+  assertC2bTopupWithinMaxKes(charge);
   const topupCharge = await productPricingService.computeLocalTopupPaystackCharge(
       charge.amountKes,
   );
@@ -472,6 +474,10 @@ async function quoteLocalTopupPaystack(params) {
   const paymentMethodFees = 0;
   const youWillPay = topupCharge.chargeAmountKes;
   const paystackCurrency = C2B_PAYSTACK_CURRENCY;
+  const maxTopupKes = getC2bMaxTopupKes();
+  const maxTopupAmount = depositCurrency === paystackCurrency ?
+    maxTopupKes :
+    maxAmountForCurrency(maxTopupKes, charge.fxRate);
 
   const formatLine = (value, cur) => {
     const n = Number(value) || 0;
@@ -505,6 +511,9 @@ async function quoteLocalTopupPaystack(params) {
     pricingApplied: topupCharge.applied,
     pricingProductKey: topupCharge.pricingProductKey,
     fxRate: charge.fxRate,
+    maxTopupKes,
+    maxTopupAmount,
+    maxTopupCurrency: depositCurrency,
     lines: [
       {
         key: "you_deposit",

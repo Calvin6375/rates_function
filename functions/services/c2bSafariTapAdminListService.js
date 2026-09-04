@@ -9,6 +9,7 @@
 const admin = require("../admin");
 const config = require("../config");
 const {collection} = require("../libs/firestore");
+const {dedupeSafariTapAdminRows} = require("../utils/transactionDedupe");
 
 const firestore = admin.firestore();
 
@@ -269,6 +270,7 @@ function mapTopupRows(docs, users) {
     const type = String(data.type || data.orderType || "funding").toLowerCase();
     const userId = data.userId || null;
     const client = clientFromUserMap(users, userId);
+    const source = data.orderType ? "orders" : (data.provider ? "fundingOrders" : "transactionRecords");
     rows.push(buildRow({
       id,
       orderId: id,
@@ -282,8 +284,12 @@ function mapTopupRows(docs, users) {
       status: data.status || "unknown",
       userId,
       method: METHOD_TYPES.TOPUPS,
-      source: data.orderType ? "orders" : (data.provider ? "fundingOrders" : "transactionRecords"),
-      metadata: meta,
+      source,
+      metadata: {
+        ...meta,
+        fundingOrderId: meta.fundingOrderId || (source === "fundingOrders" ? id : null),
+        transactionRecordId: data.transactionRecordId || meta.transactionRecordId || null,
+      },
     }));
   }
   return rows;
@@ -331,7 +337,14 @@ function mapPayRows(docs, users) {
       userId,
       method: METHOD_TYPES.PAY,
       source: isB2bPayout ? "safariCardPayouts" : "transactionRecords",
-      metadata: {...meta, recipient},
+      metadata: {
+        ...meta,
+        recipient,
+        payoutId: meta.payoutId || (isB2bPayout ? id : null),
+        transactionId: data.transactionId || meta.transactionId || null,
+        merchantPaymentId: meta.merchantPaymentId || data.merchantPaymentId || null,
+        mpesaReference: meta.mpesaReference || data.providerReference || null,
+      },
     }));
   }
   return rows;
@@ -376,6 +389,8 @@ function mapSendRows(docs, users) {
       recipient.phoneNumber ||
       null;
 
+    const rowSource = data.orderType ? "orders" :
+      (data.provider || data.recipient ? "safariCardPayouts" : "transactionRecords");
     rows.push(buildRow({
       id,
       orderId: id,
@@ -389,9 +404,15 @@ function mapSendRows(docs, users) {
       status: data.status || "unknown",
       userId,
       method: METHOD_TYPES.SEND,
-      source: data.orderType ? "orders" :
-        (data.provider || data.recipient ? "safariCardPayouts" : "transactionRecords"),
-      metadata: {...meta, recipient, recipientUserId},
+      source: rowSource,
+      metadata: {
+        ...meta,
+        recipient,
+        recipientUserId,
+        payoutId: meta.payoutId || (rowSource === "safariCardPayouts" ? id : null),
+        transactionId: data.transactionId || meta.transactionId || null,
+        mpesaReference: meta.mpesaReference || data.providerReference || null,
+      },
     }));
   }
   return rows;
@@ -577,7 +598,8 @@ async function listSafariTapTransactions(query = {}) {
     });
   }
 
-  // Dedupe by id (same event may appear in txr + payouts)
+  // Same event is stored as txr_ + fund_ / safariCardPayout with different ids.
+  rows = dedupeSafariTapAdminRows(rows, method);
   const seen = new Set();
   rows = rows.filter((row) => {
     if (seen.has(row.id)) return false;

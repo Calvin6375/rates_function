@@ -117,6 +117,8 @@ Response fields for the Review screen:
 
 Then create checkout with the same `amount` + `currency` via `createPayment` / `POST /funding/orders`.
 
+C2B top-up is capped at **50,000 KES** (wallet credit). Over that, quote and `createPayment` return an error naming the max in the customer's currency (e.g. `Enter 384.61 USD or less`).
+
 ### C2B Send Money / Pay quote (Review screens)
 
 Same endpoint for **Send Money** and **Pay** (Till / PayBill). Call **before** confirm. Does not create a payout.

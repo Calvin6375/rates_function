@@ -21,6 +21,7 @@ const rateService = require("../../services/rateService");
 const {
   convertToKesForPaystack,
   extractRatesMap,
+  assertC2bTopupWithinMaxKes,
 } = require("../../services/funding/c2bFundingFxService");
 
 describe("c2bFundingFxService", () => {
@@ -131,6 +132,36 @@ describe("c2bFundingFxService", () => {
 
   it("rejects non-positive amounts", async () => {
     await expect(convertToKesForPaystack(0, "KES")).rejects.toThrow("positive number");
+  });
+});
+
+describe("assertC2bTopupWithinMaxKes", () => {
+  it("allows amounts at the 50,000 KES cap", () => {
+    expect(() => assertC2bTopupWithinMaxKes({
+      amountKes: 50000,
+      requestedCurrency: "KES",
+      fxRate: 1,
+    })).not.toThrow();
+  });
+
+  it("tells KES customers the exact KES maximum", () => {
+    expect(() => assertC2bTopupWithinMaxKes({
+      amountKes: 50000.01,
+      requestedAmount: 50000.01,
+      requestedCurrency: "KES",
+      fxRate: 1,
+    })).toThrow(/The maximum top-up is 50,000 KES\. Enter 50,000 KES or less\./);
+  });
+
+  it("tells USD customers the equivalent maximum in USD", () => {
+    expect(() => assertC2bTopupWithinMaxKes({
+      amountKes: 65000,
+      requestedAmount: 500,
+      requestedCurrency: "USD",
+      fxRate: 130,
+    })).toThrow(
+        /The maximum top-up is 50,000 KES \(384\.61 USD at the current rate\)\. Enter 384\.61 USD or less\./,
+    );
   });
 });
 

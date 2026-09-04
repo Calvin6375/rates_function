@@ -13,6 +13,7 @@ const {
   enrichTransactionWithSafariCardPayout,
   enrichTransactionsWithSafariCardPayouts,
 } = require("../utils/safariCardTransactionEnrichment");
+const {dedupeC2bTransactionFeed} = require("../utils/transactionDedupe");
 const {
   C2B_ENCRYPTION_SECRETS,
   C2B_ENCRYPTION_ALLOW_HEADERS,
@@ -618,7 +619,9 @@ async function getTransactionsFromFirestore(userId, options = {}) {
       return timeB - timeA;
     });
 
-    let filtered = await enrichTransactionsWithSafariCardPayouts(transactions);
+    const uniqueByEvent = dedupeC2bTransactionFeed(transactions);
+
+    let filtered = uniqueByEvent.map((tx) => enrichTransactionForFeed(tx));
     if (type) {
       filtered = filtered.filter((tx) => matchesTypeFilter(tx, type));
     }
@@ -781,15 +784,17 @@ app.get("/transactions", async (req, res) => {
       }
     });
 
+    const uniqueByEvent = dedupeC2bTransactionFeed(uniqueTransactions);
+
     // Sort by timestamp descending
-    uniqueTransactions.sort((a, b) => {
+    uniqueByEvent.sort((a, b) => {
       const timeA = new Date(a.timestamp || a.createdAt || 0).getTime();
       const timeB = new Date(b.timestamp || b.createdAt || 0).getTime();
       return timeB - timeA;
     });
 
     let enrichedTransactions = await enrichTransactionsWithSafariCardPayouts(
-        uniqueTransactions,
+        uniqueByEvent,
     );
     if (type) {
       enrichedTransactions = enrichedTransactions.filter((tx) =>

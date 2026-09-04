@@ -10,7 +10,7 @@ const fundingOrderService = require("../services/funding/fundingOrderService");
 const fundingRailService = require("../services/funding/fundingRailService");
 const fundingWebhookService = require("../services/funding/fundingWebhookService");
 const fundingIdempotencyService = require("../services/funding/fundingIdempotencyService");
-const { convertToKesForPaystack } = require("../services/funding/c2bFundingFxService");
+const { convertToKesForPaystack, assertC2bTopupWithinMaxKes } = require("../services/funding/c2bFundingFxService");
 const merchantSettlementService = require("../services/settlement/merchantSettlementService");
 const { resolvePaystackCallbackUrl, buildAppReturnDeepLink, apiBaseUrl } =
   require("../services/funding/fundingCallbackService");
@@ -173,6 +173,7 @@ function mountFundingRoutes(app) {
     if (provider === FUNDING_PROVIDERS.paystack) {
       try {
         const charge = await convertToKesForPaystack(amount, inputCurrency);
+        assertC2bTopupWithinMaxKes(charge);
         chargeAmount = charge.amountKes;
         chargeCurrency = C2B_PAYSTACK_CURRENCY;
         chargeMeta = {

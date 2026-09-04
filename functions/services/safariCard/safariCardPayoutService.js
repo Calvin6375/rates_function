@@ -715,7 +715,7 @@ async function finalizePayoutSuccess(params) {
   if (!payout) {
     throw payoutError(ERROR_CODES.NOT_FOUND, "Payout not found", 404);
   }
-  if (payout.status === PAYOUT_STATUS.SUCCESS) {
+  if (payout.status === PAYOUT_STATUS.SUCCESS && payout.transactionId) {
     return serializePayoutForClient(payout);
   }
 
@@ -739,6 +739,18 @@ async function finalizePayoutSuccess(params) {
   await fiatReservationService.confirmReservation(requestId || payout.requestId);
 
   const firstTx = providerPayload?.transactions?.[0] || null;
+
+  const afterDebit = await getPayoutById(payoutId);
+  if (afterDebit && afterDebit.transactionId) {
+    if (afterDebit.status !== PAYOUT_STATUS.SUCCESS) {
+      await collection(PAYOUTS_COL).doc(payoutId).update({
+        status: PAYOUT_STATUS.SUCCESS,
+        completedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
+    return serializePayoutForClient(await getPayoutById(payoutId));
+  }
 
   const { transactionId } = await transactionService.createTransactionRecord({
     type: transactionService.TRANSACTION_TYPES.withdrawal,
@@ -927,6 +939,10 @@ async function applyProviderStatusUpdate(providerPayload) {
   });
 
   if (mapped === PAYOUT_STATUS.SUCCESS) {
+    const latest = await getPayoutById(payout.payoutId);
+    if (latest && TERMINAL_STATUSES.has(latest.status) && latest.transactionId) {
+      return {handled: true, payout: serializePayoutForClient(latest), duplicate: true};
+    }
     const result = await finalizePayoutSuccess({
       payoutId: payout.payoutId,
       requestId: payout.requestId,

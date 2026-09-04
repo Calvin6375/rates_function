@@ -77,7 +77,7 @@ Ops is expected to send AED to the IBAN outside the platform, then (later) mark 
 - No Emirates NBD, local UAE switch, or other **AED disbursement API**.
 - No C2B `createPayment` / Paystack path for AED (Paystack checkout is KES; other fiats convert to KES then credit the requested C2B wallet — AED is not in that tourist rates flow unless added to `customerRates`).
 - Safari Card payouts are **KES** (M-Pesa, Kenya bank, SafariTap wallet), not AED.
-- C2B `STANDARD_FIAT_CURRENCIES` does not include AED (USD, KES, TZS, ETB, GBP, EUR, NGN, GHS).
+- C2B accounts are only KES, USD, USDT, and USDC — AED is not a C2B wallet.
 - Partner default wallet balances are `{ USD, KES, USDT }` — send debit uses `balances.USD` or `balances.KES`.
 
 ---

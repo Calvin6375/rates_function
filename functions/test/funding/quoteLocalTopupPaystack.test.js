@@ -2,7 +2,13 @@
  * @fileoverview Unit tests for Local Topup quote breakdown.
  */
 
-jest.mock("../../services/funding/c2bFundingFxService");
+jest.mock("../../services/funding/c2bFundingFxService", () => {
+  const actual = jest.requireActual("../../services/funding/c2bFundingFxService");
+  return {
+    ...actual,
+    convertToKesForPaystack: jest.fn(),
+  };
+});
 jest.mock("../../services/pricing/productPricingService", () => ({
   computeLocalTopupPaystackCharge: jest.fn(),
 }));
@@ -36,6 +42,9 @@ describe("quoteLocalTopupPaystack", () => {
 
     const quote = await quoteLocalTopupPaystack({amount: 180, currency: "KES"});
     expect(quote.youDeposit).toBe(180);
+    expect(quote.maxTopupKes).toBe(50000);
+    expect(quote.maxTopupAmount).toBe(50000);
+    expect(quote.maxTopupCurrency).toBe("KES");
     expect(quote.youWillPay).toBe(180);
     expect(quote.lines.find((l) => l.key === "processing_fees").display).toBe("Free");
     expect(quote.lines.find((l) => l.key === "you_will_pay").display).toBe("180.00 KES");
@@ -69,5 +78,18 @@ describe("quoteLocalTopupPaystack", () => {
     });
     expect(quote.lines.find((l) => l.key === "processing_fees").display).toBe("1.25 KES");
     expect(quote.lines.find((l) => l.key === "you_will_pay").display).toBe("51.25 KES");
+  });
+
+  it("rejects quotes above 50,000 KES with a customer-facing limit", async () => {
+    convertToKesForPaystack.mockResolvedValue({
+      requestedAmount: 60000,
+      requestedCurrency: "KES",
+      amountKes: 60000,
+      paystackCurrency: "KES",
+      fxRate: 1,
+    });
+
+    await expect(quoteLocalTopupPaystack({amount: 60000, currency: "KES"}))
+        .rejects.toThrow(/maximum top-up is 50,000 KES/);
   });
 });

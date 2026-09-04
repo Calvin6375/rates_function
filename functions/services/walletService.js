@@ -18,12 +18,15 @@ const circleRailAdapter = require("./circle/circleRailAdapter");
 const OWNER_TYPES = Object.freeze({ user: "user", partner: "partner" });
 const DEFAULT_BALANCES = { USD: 0, KES: 0, USDT: 0 };
 
-/** Fiat currencies projected to RTDB `wallet/{uid}/fiat/*` (parity with sync). */
-const STANDARD_FIAT_CURRENCIES = Object.freeze([
-  "USD", "KES", "TZS", "ETB", "GBP", "EUR", "NGN", "GHS",
-]);
-/** Crypto currencies projected to RTDB `wallet/{uid}/crypto/*`. */
-const STANDARD_CRYPTO_CURRENCIES = Object.freeze(["USDT", "USDC"]);
+/**
+ * C2B Safari Tap wallets: exactly four accounts.
+ * Fiat: KES, USD. Crypto: USDT, USDC.
+ */
+const C2B_FIAT_CURRENCIES = Object.freeze(["USD", "KES"]);
+/** @deprecated Use C2B_FIAT_CURRENCIES — C2B account list, not the rates book. */
+const STANDARD_FIAT_CURRENCIES = C2B_FIAT_CURRENCIES;
+const C2B_CRYPTO_CURRENCIES = Object.freeze(["USDT", "USDC"]);
+const STANDARD_CRYPTO_CURRENCIES = C2B_CRYPTO_CURRENCIES;
 
 /**
  * Read a currency balance from a users/{uid} document body.
@@ -52,17 +55,8 @@ function buildAccountBalancesFromUserData(userData, opts = {}) {
   const wallets = data.wallets && typeof data.wallets === "object" ? data.wallets : {};
   const fiat = {};
 
-  for (const code of STANDARD_FIAT_CURRENCIES) {
+  for (const code of C2B_FIAT_CURRENCIES) {
     fiat[code] = readUserCurrencyBalance(data, code);
-  }
-
-  for (const rawKey of Object.keys(wallets)) {
-    const code = String(rawKey || "").toUpperCase();
-    if (!/^[A-Z]{2,10}$/.test(code)) continue;
-    if (STANDARD_CRYPTO_CURRENCIES.includes(code)) continue;
-    if (fiat[code] === undefined) {
-      fiat[code] = Number(wallets[rawKey] ?? 0) || 0;
-    }
   }
 
   const crypto = {
@@ -250,6 +244,7 @@ async function getBalances(userId) {
 
 /**
  * List C2B customer accounts (owned wallets) for HTTP clients.
+ * Always KES + USD (fiat) and USDT + USDC (crypto) — never rates-book extras.
  * Source of truth: Firestore users/{uid} + USDC ledger — never RTDB.
  *
  * @param {string} userId
@@ -600,6 +595,8 @@ async function debitUserFiat(userId, amount, currency = "USD", options = {}) {
 
 module.exports = {
   OWNER_TYPES,
+  C2B_FIAT_CURRENCIES,
+  C2B_CRYPTO_CURRENCIES,
   STANDARD_FIAT_CURRENCIES,
   STANDARD_CRYPTO_CURRENCIES,
   FIAT_LEDGER_ASSETS,

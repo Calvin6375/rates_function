@@ -206,7 +206,7 @@ Authorization: Bearer <Firebase ID token>
 
 Alias: `GET /api/wallets` (same payload).
 
-**Server source of truth:** Firestore `users/{uid}` + USDC ledger. **Never RTDB.**
+**C2B wallets:** exactly four accounts — fiat `KES` + `USD`, crypto `USDT` + `USDC`. Rates-book currencies (ETB, GBP, …) are for quotes/exchange, not extra wallets.
 
 ```json
 {
@@ -222,7 +222,7 @@ Alias: `GET /api/wallets` (same payload).
     ],
     "accounts": [ "...flat fiat+crypto..." ],
     "balances": {
-      "fiat": { "KES": 1500, "USD": 0, "ETB": 0 },
+      "fiat": { "KES": 1500, "USD": 0 },
       "crypto": { "USDT": 0, "USDC": 12.5 }
     }
   }
