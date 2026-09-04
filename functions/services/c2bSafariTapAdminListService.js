@@ -10,6 +10,7 @@ const admin = require("../admin");
 const config = require("../config");
 const {collection} = require("../libs/firestore");
 const {dedupeSafariTapAdminRows} = require("../utils/transactionDedupe");
+const {resolveFundingDisplayMoney} = require("../utils/fundingTypes");
 
 const firestore = admin.firestore();
 
@@ -271,6 +272,7 @@ function mapTopupRows(docs, users) {
     const userId = data.userId || null;
     const client = clientFromUserMap(users, userId);
     const source = data.orderType ? "orders" : (data.provider ? "fundingOrders" : "transactionRecords");
+    const display = resolveFundingDisplayMoney(data);
     rows.push(buildRow({
       id,
       orderId: id,
@@ -278,8 +280,8 @@ function mapTopupRows(docs, users) {
       recipientName: client.name,
       date: toIso(data.createdAt || data.updatedAt),
       type,
-      amount: data.amount,
-      currency: data.currency || meta.currency || "KES",
+      amount: display.amount,
+      currency: display.currency,
       phone: data.phoneNumber || client.phone,
       status: data.status || "unknown",
       userId,

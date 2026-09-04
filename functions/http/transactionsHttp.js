@@ -14,6 +14,7 @@ const {
   enrichTransactionsWithSafariCardPayouts,
 } = require("../utils/safariCardTransactionEnrichment");
 const {dedupeC2bTransactionFeed} = require("../utils/transactionDedupe");
+const {resolveFundingDisplayMoney} = require("../utils/fundingTypes");
 const {
   C2B_ENCRYPTION_SECRETS,
   C2B_ENCRYPTION_ALLOW_HEADERS,
@@ -237,12 +238,13 @@ async function fetchUserFundingOrdersForTransactionFeed(
     if (meta.product === "b2b_self_topup") {
       return null;
     }
+    const display = resolveFundingDisplayMoney(d, "USD");
     return {
       id: `funding_order_${orderId}`,
       type: "funding",
       status: d.status || "pending",
-      amount: Number(d.amount) || 0,
-      currency: d.currency || "USD",
+      amount: display.amount,
+      currency: display.currency,
       timestamp: d.createdAt?.toDate?.()?.toISOString() || null,
       fundingOrderId: orderId,
       provider: d.provider || null,

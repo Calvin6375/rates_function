@@ -368,19 +368,60 @@ function expandRatesWithCrosses(rates) {
  * Admin write normalization: canonical currency keys + explicit overrides only.
  * Does NOT write USDT/C or C/KES mirrors.
  *
+ * Drop canonical keys and any pair that includes a removed currency (USDT/UGX, UGX/KES, ETB/UGX).
+ *
+ * @param {Record<string, unknown>} rates
+ * @param {unknown} removeCurrencies
+ * @returns {{ rates: Record<string, unknown>, removedKeys: string[], codes: string[] }}
+ */
+function omitCurrenciesFromRates(rates, removeCurrencies) {
+  const codes = [];
+  if (Array.isArray(removeCurrencies)) {
+    for (const raw of removeCurrencies) {
+      const code = normalizeCurrencyCode(raw);
+      if (isCurrencyCode(code) && !codes.includes(code)) codes.push(code);
+    }
+  }
+  const codeSet = new Set(codes);
+  const src = rates && typeof rates === "object" ? rates : {};
+  if (!codeSet.size) {
+    return {rates: {...src}, removedKeys: [], codes};
+  }
+
+  const out = {};
+  const removedKeys = [];
+  for (const [rawKey, row] of Object.entries(src)) {
+    const key = String(rawKey || "").toUpperCase().trim();
+    let drop = codeSet.has(key);
+    if (!drop && key.includes("/")) {
+      const [left, right] = key.split("/");
+      drop = codeSet.has(left) || codeSet.has(right);
+    }
+    if (drop) {
+      removedKeys.push(rawKey);
+      continue;
+    }
+    out[rawKey] = row;
+  }
+  return {rates: out, removedKeys, codes};
+}
+
+/**
  * @param {Record<string, unknown>} incomingRates
  * @param {Record<string, unknown>} [existingRates]
- * @param {{ rateVersion?: number }} [options]
+ * @param {{ rateVersion?: number, removeCurrencies?: unknown }} [options]
  * @returns {{
  *   rates: Record<string, { buyRate: number, sellRate: number }>,
  *   baseCurrency: string,
  *   rateMeaning: string,
  *   rateVersion: number,
  *   conflicts: Array<Object>,
+ *   removedKeys: string[],
  * }}
  */
 function normalizeRatesForStorage(incomingRates, existingRates = {}, options = {}) {
-  const mergedRaw = {...(existingRates || {}), ...(incomingRates || {})};
+  const omitted = omitCurrenciesFromRates(existingRates || {}, options.removeCurrencies);
+  const mergedRaw = {...omitted.rates, ...(incomingRates || {})};
   const {book, exactPairs, conflicts} = normalizeKesBook(mergedRaw);
   const rates = {};
 
@@ -405,6 +446,7 @@ function normalizeRatesForStorage(incomingRates, existingRates = {}, options = {
     rateMeaning: RATE_MEANING,
     rateVersion,
     conflicts,
+    removedKeys: omitted.removedKeys,
   };
 }
 
@@ -551,6 +593,7 @@ module.exports = {
   resolveCustomerPair,
   listCurrenciesFromRates,
   expandRatesWithCrosses,
+  omitCurrenciesFromRates,
   normalizeRatesForStorage,
   parseSendGetQuery,
   buildSendGetRatePayload,

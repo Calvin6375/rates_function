@@ -99,6 +99,45 @@ describe("c2bFundingFxService", () => {
     expect(rateService.getRates).not.toHaveBeenCalled();
   });
 
+  it("inverts UGX street quotes (units per KES) to KES per UGX", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    admin.firestore.__state.snap = {
+      exists: true,
+      data: () => ({
+        rates: {
+          UGX: {buyRate: 28.47, sellRate: 28.47},
+        },
+      }),
+    };
+
+    const result = await convertToKesForPaystack(100000, "UGX");
+
+    expect(result.requestedAmount).toBe(100000);
+    expect(result.requestedCurrency).toBe("UGX");
+    expect(result.paystackCurrency).toBe("KES");
+    expect(result.fxRate).toBeCloseTo(1 / 28.47, 8);
+    expect(result.amountKes).toBeCloseTo(round2(100000 / 28.47), 2);
+    expect(result.amountKes).toBeCloseTo(3512.47, 2);
+    expect(warn).toHaveBeenCalled();
+    expect(rateService.getRates).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("keeps canonical UGX rates that are already KES per unit", async () => {
+    admin.firestore.__state.snap = {
+      exists: true,
+      data: () => ({
+        rates: {
+          UGX: {buyRate: 0.035125, sellRate: 0.035125},
+        },
+      }),
+    };
+
+    const result = await convertToKesForPaystack(100000, "UGX");
+    expect(result.fxRate).toBe(0.035125);
+    expect(result.amountKes).toBe(3512.5);
+  });
+
   it("converts ETB using a one-sided book row", async () => {
     admin.firestore.__state.snap = {
       exists: true,

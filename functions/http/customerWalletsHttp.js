@@ -1045,17 +1045,19 @@ app.get("/config/fees", async (req, res) => {
 /**
  * PUT /config/fees
  * Update customer rates (admin). Values = KES per 1 unit of currency.
- * Accepts currency keys ("ETB") or legacy ("USDT/ETB"). Persists both + metadata.
+ * Accepts currency keys ("ETB") or legacy ("USDT/ETB"), or removeCurrencies: ["UGX"].
+ * Persists canonical keys on config/customerRates (not config/fees).
  */
 app.put("/config/fees", requireAdmin, async (req, res) => {
   try {
     const adminId = req.adminId;
 
-    const { currencyPair, buyRate, sellRate, rates } = req.body || {};
+    const {currencyPair, buyRate, sellRate, rates, removeCurrencies} = req.body || {};
+    const hasRemove = Array.isArray(removeCurrencies) && removeCurrencies.length > 0;
 
     const configRef = db.collection(config.collections.config).doc("customerRates");
     const configDoc = await configRef.get();
-    const beforeData = configDoc.exists ? configDoc.data() : { rates: {} };
+    const beforeData = configDoc.exists ? configDoc.data() : {rates: {}};
 
     /** @type {Record<string, { buyRate: number, sellRate: number }>} */
     const incoming = {};
@@ -1121,17 +1123,18 @@ app.put("/config/fees", requireAdmin, async (req, res) => {
       }
 
       incoming[pair] = {buyRate: buy, sellRate: sell};
-    } else {
+    } else if (!hasRemove) {
       res.status(400).json({
         success: false,
         error: "Invalid request",
-        message: "Either provide 'rates' object or 'buyRate' and 'sellRate' with optional 'currencyPair'",
+        message: "Either provide 'rates' object, 'buyRate' and 'sellRate' with optional 'currencyPair', or 'removeCurrencies'",
       });
       return;
     }
 
     const normalized = normalizeRatesForStorage(incoming, beforeData.rates || {}, {
       rateVersion: beforeData.rateVersion,
+      removeCurrencies: hasRemove ? removeCurrencies : [],
     });
     const updateData = {
       rates: normalized.rates,
@@ -1184,6 +1187,7 @@ app.put("/config/fees", requireAdmin, async (req, res) => {
 
     console.log(`✅ Admin ${adminId} updated customer rates via REST API`, {
       currencies: listCurrenciesFromRates(updateData.rates),
+      removedKeys: normalized.removedKeys,
     });
 
     res.status(200).json({
@@ -1193,10 +1197,13 @@ app.put("/config/fees", requireAdmin, async (req, res) => {
         book: toCurrencyBook(afterData.rates || {}),
         baseCurrency: afterData.baseCurrency || BASE_CURRENCY,
         rateMeaning: afterData.rateMeaning || RATE_MEANING,
+        removedKeys: normalized.removedKeys,
         updatedAt: afterData.updatedAt?.toDate?.()?.toISOString() || new Date().toISOString(),
         updatedBy: adminId,
       },
-      message: "Customer rates updated successfully (KES per unit)",
+      message: hasRemove && Object.keys(incoming).length === 0 ?
+        "Customer rates updated (currency removed)" :
+        "Customer rates updated successfully (KES per unit)",
     });
   } catch (error) {
     console.error("Error updating customer rates config:", error);

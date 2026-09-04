@@ -125,6 +125,15 @@ PUT /api/config/fees
 
 Accepts `ETB` or legacy `USDT/ETB` on input; persists **canonical keys** + bumps `rateVersion`.
 
+Remove a currency (and `USDT/UGX`, `UGX/KES`, … aliases):
+
+```http
+PUT /api/config/fees
+{ "removeCurrencies": ["UGX"] }
+```
+
+Rates live in Firestore **`config/customerRates`**, not `config/fees` (`config/fees` holds commission/`arbitrageFee` only).
+
 ### Binance (separate)
 
 ```http

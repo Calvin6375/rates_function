@@ -24,6 +24,12 @@ const CUSTOMER_RATES_META_KEYS = new Set([
   "createdBy",
 ]);
 
+/**
+ * Street quotes for these currencies are usually units per 1 KES (e.g. 28.47 UGX/KES).
+ * Canonical book is KES per 1 unit (~0.035 KES/UGX). If the stored rate is > 1, invert.
+ */
+const UNITS_PER_KES_STREET_QUOTES = new Set(["UGX", "TZS"]);
+
 /** Paystack Kenya hosted checkout rejects sub-shilling charges. */
 const MIN_PAYSTACK_KES = 1;
 
@@ -60,6 +66,25 @@ function kesChargeRateFromRow(row) {
   if (Number.isFinite(sellRate) && sellRate > 0) return sellRate;
   if (Number.isFinite(buyRate) && buyRate > 0) return buyRate;
   return null;
+}
+
+/**
+ * @param {string} currency
+ * @param {number} rate
+ * @returns {number}
+ */
+function toCanonicalKesPerUnit(currency, rate) {
+  const n = Number(rate);
+  if (!Number.isFinite(n) || n <= 0) return n;
+  if (UNITS_PER_KES_STREET_QUOTES.has(currency) && n > 1) {
+    const kesPerUnit = 1 / n;
+    console.warn(
+        `c2bFundingFx: ${currency} book rate ${n} looks like units per KES; ` +
+        `using ${kesPerUnit} KES per 1 ${currency}`,
+    );
+    return kesPerUnit;
+  }
+  return n;
 }
 
 /**
@@ -103,10 +128,12 @@ function kesPerUnitFromCustomerBook(customerRates, currency) {
   const {book} = normalizeKesBook(customerRates);
   const fromBook = getKesPerUnit(book, currency);
   const fromCanonical = kesChargeRateFromRow(fromBook);
-  if (fromCanonical) return fromCanonical;
+  if (fromCanonical) return toCanonicalKesPerUnit(currency, fromCanonical);
 
   const raw = customerRates[currency] || customerRates[currency.toLowerCase()];
-  return kesChargeRateFromRow(raw);
+  const fromRaw = kesChargeRateFromRow(raw);
+  if (fromRaw) return toCanonicalKesPerUnit(currency, fromRaw);
+  return null;
 }
 
 /**
@@ -302,6 +329,8 @@ module.exports = {
   USDT_PEGGED,
   MIN_PAYSTACK_KES,
   DEFAULT_C2B_MAX_TOPUP_KES,
+  UNITS_PER_KES_STREET_QUOTES,
+  toCanonicalKesPerUnit,
   convertToKesForPaystack,
   resolveKesPerUnit,
   roundMajorUnits,

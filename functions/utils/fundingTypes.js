@@ -124,6 +124,37 @@ function isTerminalFundingStatus(status) {
   return s === FUNDING_STATUSES.completed || s === FUNDING_STATUSES.failed;
 }
 
+/**
+ * Customer-facing funding amount/currency (wallet credit), not the Paystack
+ * charge. FX top-ups store charge in order.amount (KES) and the deposit in
+ * metadata.requestedAmount / requestedCurrency.
+ *
+ * @param {Object|null|undefined} data fundingOrders / transactionRecords / orders doc
+ * @param {string} [fallbackCurrency]
+ * @returns {{ amount: number, currency: string }}
+ */
+function resolveFundingDisplayMoney(data, fallbackCurrency = "KES") {
+  const meta = data && data.metadata && typeof data.metadata === "object" ?
+    data.metadata :
+    {};
+  const requestedAmount = Number(meta.requestedAmount);
+  const requestedCurrency = meta.requestedCurrency ?
+    String(meta.requestedCurrency).toUpperCase() :
+    "";
+  const hasRequested = Number.isFinite(requestedAmount) && requestedAmount > 0;
+  const fallback = String(fallbackCurrency || "KES").toUpperCase();
+  const orderCurrency = data && data.currency ? String(data.currency).toUpperCase() : "";
+  const metaCurrency = meta.currency ? String(meta.currency).toUpperCase() : "";
+
+  if (hasRequested && requestedCurrency) {
+    return {amount: requestedAmount, currency: requestedCurrency};
+  }
+  return {
+    amount: hasRequested ? requestedAmount : (Number(data && data.amount) || 0),
+    currency: requestedCurrency || orderCurrency || metaCurrency || fallback,
+  };
+}
+
 module.exports = {
   FUNDING_PROVIDERS,
   FUNDING_STATUSES,
@@ -140,4 +171,5 @@ module.exports = {
   WEBHOOK_RECEIPT_STATUSES,
   isKnownFundingProvider,
   isTerminalFundingStatus,
+  resolveFundingDisplayMoney,
 };

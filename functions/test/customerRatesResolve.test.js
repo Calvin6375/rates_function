@@ -190,6 +190,38 @@ describe("normalizeRatesForStorage", () => {
     expect(stored.rates["ETB/USDC"].sellRate).toBe(0.019);
     expect(stored.rates.ETB.buyRate).toBe(1.4415);
   });
+
+  it("removes UGX and USDT/UGX aliases via removeCurrencies", () => {
+    const stored = normalizeRatesForStorage(
+        {},
+        {
+          ...canonicalRates,
+          UGX: {buyRate: 0.035, sellRate: 0.035},
+          "USDT/UGX": {buyRate: 0.035, sellRate: 0.034},
+        },
+        {removeCurrencies: ["UGX"], rateVersion: 8},
+    );
+    expect(stored.rates.UGX).toBeUndefined();
+    expect(stored.rates["USDT/UGX"]).toBeUndefined();
+    expect(stored.rates.ETB.buyRate).toBe(1.4415);
+    expect(stored.removedKeys).toEqual(expect.arrayContaining(["UGX", "USDT/UGX"]));
+    expect(stored.rateVersion).toBe(9);
+  });
+
+  it("drops AED and UAE alias keys together", () => {
+    const stored = normalizeRatesForStorage(
+        {},
+        {
+          AED: {buyRate: 35.45, sellRate: 36.78},
+          UAE: {buyRate: 35.45, sellRate: 36.78},
+          ETB: canonicalRates.ETB,
+        },
+        {removeCurrencies: ["AED", "UAE"]},
+    );
+    expect(stored.rates.AED).toBeUndefined();
+    expect(stored.rates.UAE).toBeUndefined();
+    expect(stored.rates.ETB).toEqual(canonicalRates.ETB);
+  });
 });
 
 describe("money quoteAmounts", () => {
