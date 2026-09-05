@@ -454,7 +454,102 @@ Lists all members under **`partners/{partnerId}/members`**.
 }
 ```
 
-**Note:** For **writes** (balance, KYC, profile) continue to use existing **admin callables** (`adminHttp`). This route is for **listing / overview** alongside B2B partners.
+**Note:** List / overview only. To **edit** a Safari Tap / C2B profile from the Users table use **`PATCH /platform/users/:userId`**. Balance adjustments remain on admin callables (`updateUserBalance`).
+
+---
+
+#### `PATCH /platform/users/:userId`
+
+**Super-admin dashboard.** Edit a Firestore `users/{userId}` profile and sync Firebase Auth (email, display name, phone, disabled).
+
+**Auth:** Bearer Firebase ID token + **super admin only** (master email or `userType: admin` + `role: super_admin`). Other platform admin roles get `403`.
+
+**Body** (at least one field):
+
+```json
+{
+  "firstName": "Abdullahi",
+  "lastName": "Hassan",
+  "name": "Abdullahi Hassan",
+  "email": "abdalaalifanax@gmail.com",
+  "phoneNumber": "+254712137171",
+  "country": "KE",
+  "status": "active"
+}
+```
+
+| Field | Notes |
+|-------|--------|
+| `email` | Same C2B validation as `POST /api/register` (rejects `gmail.coma`) |
+| `phoneNumber` | E.164, e.g. `+254712137171` |
+| `status` | `active` or `inactive` (also accepts `Active` / `Inactive`). Inactive disables Auth. |
+| `name` | Optional; otherwise rebuilt from `firstName` + `lastName` |
+
+Does **not** change balances, `channel`, `institution`, or partner roles.
+
+**Response** `200`
+
+```json
+{
+  "success": true,
+  "data": {
+    "userId": "...",
+    "updatedFields": ["email"],
+    "user": { "userId": "...", "email": "...", "status": "active" }
+  }
+}
+```
+
+**Errors:** `400` invalid fields, `403` cannot edit owner/admin (unless super-admin) or deactivate yourself, `404` missing user, `409` email already in Auth.
+
+---
+
+#### `POST /platform/notifications`
+
+**Super admin only.** Compose a custom in-app notification + FCM push.
+
+**Auth:** Bearer Firebase ID token + super admin.
+
+**Body**
+
+```json
+{
+  "title": "Rates update",
+  "message": "UGX top-ups are live in Safari Tap.",
+  "userId": "vFEshV4ZdYOrnEGKKAwWRq6K44G2",
+  "userIds": ["uid_2", "uid_3"],
+  "audience": "c2b",
+  "actionUrl": "/wallet"
+}
+```
+
+| Field | Required | Notes |
+|-------|----------|--------|
+| `title` | Yes | Max 80 chars |
+| `message` | Yes | Max 500 chars |
+| `userId` | One of | Single recipient |
+| `userIds` | One of | Up to 100 explicit UIDs |
+| `audience` | One of | `"c2b"` (or `"all"`) — up to 300 C2B `users` |
+| `actionUrl` | No | Optional deep link for the app |
+
+Push is sent only when `users/{uid}.fcmToken` is set. Inbox row is always written.
+
+**Response** `200`
+
+```json
+{
+  "success": true,
+  "data": {
+    "requested": 1,
+    "inboxWritten": 1,
+    "pushSent": 1,
+    "failed": 0,
+    "results": [{ "userId": "...", "notificationId": "...", "pushSent": true }]
+  }
+}
+```
+
+**Errors:** `400` missing title/message/targets, `403` not super admin.
 
 ---
 

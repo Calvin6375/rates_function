@@ -348,7 +348,7 @@ app.post("/register", async (req, res) => {
     console.error("POST /register:", status, err.message);
     res.status(status).json({
       success: false,
-      error: status === 409 ? "Already exists" : "Registration failed",
+      error: status === 409 ? "Already exists" : (err.code || "Registration failed"),
       message: err.message || "Registration failed",
     });
   }

@@ -27,6 +27,8 @@ const NOTIFICATION_TYPES = {
   BALANCE_LOW: "balance_low",
   SECURITY_ALERT: "security_alert",
   SYSTEM_ALERT: "system_alert",
+  /** Super-admin composed push to C2B users */
+  ADMIN_CUSTOM: "admin_custom",
 };
 
 /**

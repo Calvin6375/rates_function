@@ -9,6 +9,11 @@ const config = require("../../../config");
 const { createLogger } = require("../../../utils/paymentOpsLogger");
 const { resolvePaystackCallbackUrl } = require("../fundingCallbackService");
 const {
+  FALLBACK_PAYSTACK_EMAIL,
+  resolvePaystackCustomerEmail,
+  isPaystackInvalidEmailError,
+} = require("../../../utils/paystackEmail");
+const {
   FUNDING_PROVIDERS,
   FUNDING_CURRENCY,
   C2B_PAYSTACK_CURRENCY,
@@ -146,8 +151,19 @@ async function initializePayment(params) {
     );
   }
 
+  const resolvedEmail = resolvePaystackCustomerEmail(email);
+  if (resolvedEmail.corrected || resolvedEmail.usedFallback) {
+    logger.warn("paystack.initialize.email_sanitized", {
+      correlationId,
+      fundingOrderId,
+      userId,
+      usedFallback: resolvedEmail.usedFallback,
+      corrected: resolvedEmail.corrected,
+    });
+  }
+
   const payload = {
-    email: email || "tourist@truepay.africa",
+    email: resolvedEmail.email,
     amount: toPaystackAmount(amount),
     currency: cur,
     reference,
@@ -170,38 +186,80 @@ async function initializePayment(params) {
     payload.split_code = splitCode;
   }
 
-  let response;
-  try {
-    response = await axios.post(
-        `${config.paystack.baseUrl}/transaction/initialize`,
-        payload,
-        {
-          headers: {
-            Authorization: `Bearer ${secretKey}`,
-            "Content-Type": "application/json",
-          },
-          timeout: 15000,
+  const postInitialize = async () => axios.post(
+      `${config.paystack.baseUrl}/transaction/initialize`,
+      payload,
+      {
+        headers: {
+          Authorization: `Bearer ${secretKey}`,
+          "Content-Type": "application/json",
         },
-    );
-  } catch (err) {
-    const errorMessage = formatPaystackError(err);
-    logger.error("paystack.initialize.failed", {
+        timeout: 15000,
+      },
+  );
+
+  const retryWithFallbackEmail = async (reason) => {
+    if (payload.email === FALLBACK_PAYSTACK_EMAIL) {
+      return false;
+    }
+    logger.warn("paystack.initialize.retry_fallback_email", {
       correlationId,
       fundingOrderId,
-      providerReference: reference,
-      provider: PROVIDER_ID,
-      executionTimeMs: Date.now() - started,
-      error: errorMessage,
-      paystackStatus: err.response?.status || null,
-      paystackCode: err.response?.data?.code || null,
-      splitCodeAttached: true,
+      userId,
+      reason,
     });
-    const wrapped = new Error(errorMessage);
-    wrapped.cause = err;
-    throw wrapped;
+    payload.email = FALLBACK_PAYSTACK_EMAIL;
+    return true;
+  };
+
+  let response;
+  try {
+    response = await postInitialize();
+  } catch (err) {
+    const errorMessage = formatPaystackError(err);
+    if (isPaystackInvalidEmailError(errorMessage) && await retryWithFallbackEmail(errorMessage)) {
+      try {
+        response = await postInitialize();
+      } catch (retryErr) {
+        const retryMessage = formatPaystackError(retryErr);
+        logger.error("paystack.initialize.failed", {
+          correlationId,
+          fundingOrderId,
+          providerReference: reference,
+          provider: PROVIDER_ID,
+          executionTimeMs: Date.now() - started,
+          error: retryMessage,
+          paystackStatus: retryErr.response?.status || null,
+        });
+        const wrapped = new Error(retryMessage);
+        wrapped.cause = retryErr;
+        throw wrapped;
+      }
+    } else {
+      logger.error("paystack.initialize.failed", {
+        correlationId,
+        fundingOrderId,
+        providerReference: reference,
+        provider: PROVIDER_ID,
+        executionTimeMs: Date.now() - started,
+        error: errorMessage,
+        paystackStatus: err.response?.status || null,
+        paystackCode: err.response?.data?.code || null,
+        splitCodeAttached: true,
+      });
+      const wrapped = new Error(errorMessage);
+      wrapped.cause = err;
+      throw wrapped;
+    }
   }
 
-  const body = response.data || {};
+  let body = response.data || {};
+  if ((!body.status || !body.data) &&
+      isPaystackInvalidEmailError(body.message) &&
+      await retryWithFallbackEmail(body.message)) {
+    response = await postInitialize();
+    body = response.data || {};
+  }
   if (!body.status || !body.data) {
     const message = body.message || "Paystack initialize failed";
     logger.error("paystack.initialize.rejected", {

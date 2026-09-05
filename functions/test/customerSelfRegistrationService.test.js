@@ -146,4 +146,26 @@ describe("registerC2bCustomer", () => {
       message: expect.stringMatching(/already exists/i),
     });
   });
+
+  it("rejects typo emails like gmail.coma", async () => {
+    await expect(registerC2bCustomer({
+      ...baseBody,
+      email: "abdalaalifanax@gmail.coma",
+    })).rejects.toMatchObject({
+      statusCode: 400,
+      code: "INVALID_EMAIL",
+      message: expect.stringMatching(/did you mean abdalaalifanax@gmail\.com/i),
+    });
+    expect(Object.keys(admin.__state.authUsers)).toHaveLength(0);
+  });
+
+  it("rejects missing email", async () => {
+    await expect(registerC2bCustomer({
+      ...baseBody,
+      email: "",
+    })).rejects.toMatchObject({
+      statusCode: 400,
+      message: "A valid email is required",
+    });
+  });
 });

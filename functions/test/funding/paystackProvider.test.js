@@ -75,6 +75,29 @@ describe("paystackProvider", () => {
       custom: "value",
     });
     expect(options.headers.Authorization).toBe("Bearer test_secret");
+    expect(payload.email).toBe("tourist@example.com");
+  });
+
+  it("corrects gmail.coma before initialize", async () => {
+    axios.post.mockResolvedValue({
+      data: {
+        status: true,
+        data: {
+          authorization_url: "https://checkout.paystack.com/abc",
+          reference: "fund_email",
+          access_code: "access_abc",
+        },
+      },
+    });
+
+    await paystackProvider.initializePayment({
+      amount: 1000,
+      currency: "KES",
+      email: "abdalaalifanax@gmail.coma",
+      providerReference: "fund_email",
+    });
+
+    expect(axios.post.mock.calls[0][1].email).toBe("abdalaalifanax@gmail.com");
   });
 
   it("throws when split code is not configured", async () => {

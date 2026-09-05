@@ -166,8 +166,11 @@ function serializeConsumerUserSummary(doc) {
   return {
     userId: doc.id,
     email: d.email ?? null,
+    firstName: d.firstName ?? null,
+    lastName: d.lastName ?? null,
     name: d.name ?? d.firstName ?? null,
     phoneNumber: d.phoneNumber ?? null,
+    status: d.status ?? null,
     country: d.country ?? null,
     kycStatus: d.kycStatus ?? null,
     balance: d.balance != null ? Number(d.balance) : null,
@@ -203,8 +206,11 @@ function serializeConsumerUserDetail(doc) {
   return {
     userId: doc.id,
     email: d.email ?? null,
+    firstName: d.firstName ?? null,
+    lastName: d.lastName ?? null,
     name: d.name ?? d.firstName ?? null,
     phoneNumber: d.phoneNumber ?? null,
+    status: d.status ?? null,
     country: d.country ?? null,
     kycStatus: d.kycStatus ?? null,
     kycData: kycSummary,

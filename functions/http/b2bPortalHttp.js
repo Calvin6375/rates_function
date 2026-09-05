@@ -16,6 +16,8 @@ const b2bOnboardingService = require("../services/b2bOnboardingService");
 const b2bPortalSandboxService = require("../services/b2bPortalSandboxService");
 const platformConsumerService = require("../services/platformConsumerService");
 const dashboardUserDeletionService = require("../services/dashboardUserDeletionService");
+const platformUserAdminService = require("../services/platformUserAdminService");
+const platformNotificationService = require("../services/platformNotificationService");
 const partnerDeletionService = require("../services/partnerDeletionService");
 const paymentLinkService = require("../services/paymentLinkService");
 const b2bPaymentLinkCheckoutService = require("../services/b2bPaymentLinkCheckoutService");
@@ -152,6 +154,22 @@ async function requirePlatformAdmin(req, res, next) {
   } catch (err) {
     console.error("requirePlatformAdmin:", err.message);
     res.status(500).json({ success: false, error: "Authorization check failed" });
+  }
+}
+
+/**
+ * Built-in super admin only (master email or userType admin + role super_admin).
+ */
+async function requireSuperAdmin(req, res, next) {
+  try {
+    if (await isSuperAdmin(req.decodedToken, req.userId)) {
+      next();
+      return;
+    }
+    res.status(403).json({success: false, error: "Super admin access required"});
+  } catch (err) {
+    console.error("requireSuperAdmin:", err.message);
+    res.status(500).json({success: false, error: "Authorization check failed"});
   }
 }
 
@@ -877,6 +895,51 @@ app.get("/platform/consumer-users/:userId", loadFirebaseUser, requirePlatformAdm
   } catch (err) {
     console.error("b2bPortal GET /platform/consumer-users/:userId:", err.message);
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /platform/notifications
+ * Super admin only. Custom in-app + FCM push to C2B users (needs users.fcmToken).
+ */
+app.post("/platform/notifications", loadFirebaseUser, requireSuperAdmin, async (req, res) => {
+  try {
+    const data = await platformNotificationService.sendCustomNotification(
+        req.userId,
+        req.body || {},
+    );
+    res.status(200).json({success: true, data});
+  } catch (err) {
+    const msg = err.message || "Send failed";
+    const status = err.statusCode || 400;
+    console.error("b2bPortal POST /platform/notifications:", msg);
+    res.status(status).json({success: false, error: msg, message: msg});
+  }
+});
+
+/**
+ * PATCH /platform/users/:userId
+ * Super admin only. Edit Safari Tap / C2B profile (name, email, phone, status, country).
+ */
+app.patch("/platform/users/:userId", loadFirebaseUser, requireSuperAdmin, async (req, res) => {
+  try {
+    const data = await platformUserAdminService.updatePlatformUser(
+        req.userId,
+        req.params.userId,
+        req.body || {},
+        {actorIsSuperAdmin: true},
+    );
+    res.status(200).json({success: true, data});
+  } catch (err) {
+    const msg = err.message || "Update failed";
+    const status = err.statusCode ||
+      (msg.includes("not found") ? 404 : 400);
+    console.error("b2bPortal PATCH /platform/users/:userId:", msg);
+    res.status(status).json({
+      success: false,
+      error: err.code || msg,
+      message: msg,
+    });
   }
 });
 

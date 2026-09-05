@@ -243,6 +243,7 @@ async function fetchUserFundingOrdersForTransactionFeed(
       id: `funding_order_${orderId}`,
       type: "funding",
       status: d.status || "pending",
+      failureReason: d.failureReason || meta.reason || meta.failureReason || null,
       amount: display.amount,
       currency: display.currency,
       timestamp: d.createdAt?.toDate?.()?.toISOString() || null,
@@ -256,6 +257,7 @@ async function fetchUserFundingOrdersForTransactionFeed(
         providerReference: d.providerReference || null,
         checkoutUrl: d.checkoutUrl || null,
         ...meta,
+        failureReason: d.failureReason || meta.reason || meta.failureReason || null,
       },
     };
   };

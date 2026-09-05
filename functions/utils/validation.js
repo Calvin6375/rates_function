@@ -32,9 +32,8 @@ function isValidTransactionType(type) {
  * @returns {boolean} True if valid
  */
 function isValidEmail(email) {
-  if (typeof email !== "string") return false;
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return emailRegex.test(email);
+  const {isValidCustomerEmail} = require("./emailValidation");
+  return isValidCustomerEmail(email);
 }
 
 /**

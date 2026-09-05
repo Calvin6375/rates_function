@@ -5,6 +5,7 @@
 const {
   normalizeMethodType,
   resolveSafariTapPeriod,
+  resolveFailureReason,
   METHOD_TYPES,
 } = require("../services/c2bSafariTapAdminListService");
 
@@ -39,5 +40,26 @@ describe("resolveSafariTapPeriod", () => {
     });
     expect(period.key).toBe("custom");
     expect(period.from.toISOString()).toContain("2026-08-01");
+  });
+});
+
+describe("resolveFailureReason", () => {
+  it("uses fundingOrders.failureReason", () => {
+    expect(resolveFailureReason({
+      status: "failed",
+      failureReason: "The transaction was not completed",
+      metadata: {product: "tourist"},
+    })).toBe("The transaction was not completed");
+  });
+
+  it("falls back to metadata.reason", () => {
+    expect(resolveFailureReason({
+      status: "failed",
+      metadata: {reason: "Insufficient funds"},
+    })).toBe("Insufficient funds");
+  });
+
+  it("returns null when no reason is stored", () => {
+    expect(resolveFailureReason({status: "failed", metadata: {}})).toBeNull();
   });
 });

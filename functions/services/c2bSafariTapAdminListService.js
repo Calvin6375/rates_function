@@ -159,6 +159,32 @@ async function loadUsersByIds(userIds) {
  * @param {Object} params
  * @returns {Object}
  */
+/**
+ * Provider / ledger failure copy for Failed rows.
+ * @param {Object|null|undefined} data
+ * @returns {string|null}
+ */
+function resolveFailureReason(data) {
+  const meta = data && data.metadata && typeof data.metadata === "object" ? data.metadata : {};
+  const candidates = [
+    data && data.failureReason,
+    data && data.statusReason,
+    data && data.status_description,
+    data && data.errorMessage,
+    data && data.error,
+    meta.failureReason,
+    meta.reason,
+    meta.error,
+    meta.gatewayResponse,
+    meta.gateway_response,
+  ];
+  for (const value of candidates) {
+    const s = String(value == null ? "" : value).trim();
+    if (s) return s;
+  }
+  return null;
+}
+
 function buildRow(params) {
   const {
     id,
@@ -175,6 +201,7 @@ function buildRow(params) {
     userId = null,
     method = null,
     source = null,
+    failureReason = null,
     metadata = null,
   } = params;
 
@@ -190,6 +217,7 @@ function buildRow(params) {
     phone,
     channel,
     status,
+    failureReason: failureReason ? String(failureReason) : null,
     userId,
     method,
     source,
@@ -273,6 +301,7 @@ function mapTopupRows(docs, users) {
     const client = clientFromUserMap(users, userId);
     const source = data.orderType ? "orders" : (data.provider ? "fundingOrders" : "transactionRecords");
     const display = resolveFundingDisplayMoney(data);
+    const failureReason = resolveFailureReason(data);
     rows.push(buildRow({
       id,
       orderId: id,
@@ -284,6 +313,7 @@ function mapTopupRows(docs, users) {
       currency: display.currency,
       phone: data.phoneNumber || client.phone,
       status: data.status || "unknown",
+      failureReason,
       userId,
       method: METHOD_TYPES.TOPUPS,
       source,
@@ -291,6 +321,7 @@ function mapTopupRows(docs, users) {
         ...meta,
         fundingOrderId: meta.fundingOrderId || (source === "fundingOrders" ? id : null),
         transactionRecordId: data.transactionRecordId || meta.transactionRecordId || null,
+        failureReason: failureReason || meta.failureReason || null,
       },
     }));
   }
@@ -336,6 +367,7 @@ function mapPayRows(docs, users) {
       currency: data.currency || "KES",
       phone: recipient.phoneNumber || client.phone,
       status: data.status || "unknown",
+      failureReason: resolveFailureReason(data),
       userId,
       method: METHOD_TYPES.PAY,
       source: isB2bPayout ? "safariCardPayouts" : "transactionRecords",
@@ -404,6 +436,7 @@ function mapSendRows(docs, users) {
       currency: data.currency || "KES",
       phone: recipient.phoneNumber || data.phoneNumber || client.phone,
       status: data.status || "unknown",
+      failureReason: resolveFailureReason(data),
       userId,
       method: METHOD_TYPES.SEND,
       source: rowSource,
@@ -448,6 +481,7 @@ function mapExchangeRows(docs, users) {
       currency: from || data.currency || "KES",
       phone: client.phone,
       status: data.status || "completed",
+      failureReason: resolveFailureReason(data),
       userId,
       method: METHOD_TYPES.EXCHANGE,
       source: "orders",
@@ -594,6 +628,7 @@ async function listSafariTapTransactions(query = {}) {
         row.phone,
         row.type,
         row.status,
+        row.failureReason,
         row.userId,
       ].map((v) => String(v || "").toLowerCase()).join(" ");
       return hay.includes(search);
@@ -646,4 +681,5 @@ module.exports = {
   resolveSafariTapPeriod,
   listSafariTapTransactions,
   buildRow,
+  resolveFailureReason,
 };

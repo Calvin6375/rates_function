@@ -15,20 +15,9 @@ const {
   parseCustomerAppProvisioningFields,
 } = require("../utils/customerAppProvisioning");
 const { setCustomerAccessClaims, USER_TYPE_CUSTOMER } = require("../utils/accessControl");
+const {validateCustomerEmail} = require("../utils/emailValidation");
 
 const firestore = admin.firestore();
-
-/**
- * @param {string} email
- * @return {boolean}
- */
-function isValidEmailShape(email) {
-  const s = String(email).trim();
-  if (s.length < 5 || s.length > 254) {
-    return false;
-  }
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
-}
 
 /**
  * E.164: + then country code and subscriber digits (rough ITU bounds).
@@ -151,9 +140,11 @@ async function registerC2bCustomer(body) {
     err.statusCode = 400;
     throw err;
   }
-  if (!email || !isValidEmailShape(email)) {
-    const err = new Error("A valid email is required");
+  const emailCheck = validateCustomerEmail(email);
+  if (!emailCheck.ok) {
+    const err = new Error(emailCheck.error);
     err.statusCode = 400;
+    err.code = "INVALID_EMAIL";
     throw err;
   }
   if (!phoneNumber || !isValidE164(phoneNumber)) {
@@ -169,7 +160,7 @@ async function registerC2bCustomer(body) {
     throw err;
   }
 
-  const normalizedEmail = email.toLowerCase();
+  const normalizedEmail = emailCheck.email;
   const displayName = `${firstName} ${lastName}`.trim();
 
   const {userRecord, createdAuth} = await resolveAuthUserForRegister({
