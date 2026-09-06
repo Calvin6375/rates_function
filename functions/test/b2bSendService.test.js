@@ -9,8 +9,9 @@ jest.mock("../libs/firestore", () => ({
 jest.mock("../services/walletService");
 jest.mock("../services/transactionService", () => ({
   TRANSACTION_TYPES: {b2b_send: "b2b_send"},
-  STATUSES: {pending: "pending", completed: "completed"},
+  STATUSES: {pending: "pending", completed: "completed", failed: "failed"},
   createTransactionRecord: jest.fn().mockResolvedValue({transactionId: "txr_1"}),
+  updateTransactionStatus: jest.fn().mockResolvedValue(undefined),
 }));
 jest.mock("../services/partnerRecipientService");
 jest.mock("../services/partnerService");
@@ -157,5 +158,84 @@ describe("b2bSendService.createSendPayment", () => {
       toCurrency: "AED",
       recipientId: "rcpt_1",
     })).rejects.toMatchObject({code: "INSUFFICIENT_BALANCE"});
+  });
+});
+
+describe("b2bSendService.resolveSendPayment", () => {
+  const pendingData = {
+    partnerId: "partner_1",
+    status: "pending",
+    fromCurrency: "KES",
+    toCurrency: "AED",
+    youSend: 20000,
+    recipientGets: 565,
+    totalDeduction: 20000,
+    transactionRecordId: "txr_send_1",
+    paymentReference: "bmw tyers",
+  };
+
+  let stored;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    stored = {...pendingData};
+    const get = jest.fn().mockImplementation(async () => ({
+      exists: true,
+      id: "spay_1",
+      data: () => stored,
+    }));
+    const set = jest.fn().mockImplementation(async (patch) => {
+      stored = {...stored, ...patch};
+    });
+    collection.mockReturnValue({
+      doc: () => ({get, set}),
+    });
+    walletService.updatePartnerWalletBalance.mockResolvedValue({
+      previousBalance: 0,
+      newBalance: 20000,
+    });
+  });
+
+  it("marks success without crediting the wallet", async () => {
+    const result = await b2bSendService.resolveSendPayment({
+      paymentId: "spay_1",
+      status: "success",
+      actorUid: "admin_1",
+    });
+
+    expect(result.payment.status).toBe("completed");
+    expect(result.reversal).toBeNull();
+    expect(walletService.updatePartnerWalletBalance).not.toHaveBeenCalled();
+  });
+
+  it("fails and credits totalDeduction back", async () => {
+    const result = await b2bSendService.resolveSendPayment({
+      paymentId: "spay_1",
+      status: "failed",
+      actorUid: "admin_1",
+      failureReason: "Bank rejected",
+    });
+
+    expect(result.payment.status).toBe("failed");
+    expect(result.payment.reversed).toBe(true);
+    expect(result.reversal).toEqual({
+      amount: 20000,
+      currency: "KES",
+      previousBalance: 0,
+      newBalance: 20000,
+    });
+    expect(walletService.updatePartnerWalletBalance).toHaveBeenCalledWith(
+        "partner_1",
+        "KES",
+        20000,
+    );
+  });
+
+  it("rejects changing an already completed send", async () => {
+    stored.status = "completed";
+    await expect(b2bSendService.resolveSendPayment({
+      paymentId: "spay_1",
+      status: "failed",
+    })).rejects.toMatchObject({code: "ALREADY_RESOLVED", statusCode: 409});
   });
 });

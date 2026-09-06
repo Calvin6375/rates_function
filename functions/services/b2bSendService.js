@@ -383,7 +383,10 @@ function serializePayment(id, data) {
     transactionRecordId: data.transactionRecordId || null,
     notificationId: data.notificationId || null,
     requestedByUid: data.requestedByUid || null,
+    resolvedByUid: data.resolvedByUid || null,
     failureReason: data.failureReason || null,
+    reversed: Boolean(data.reversed),
+    reversal: data.reversal || null,
     createdAt: data.createdAt?.toDate?.()?.toISOString?.() ?? null,
     updatedAt: data.updatedAt?.toDate?.()?.toISOString?.() ?? null,
     completedAt: data.completedAt?.toDate?.()?.toISOString?.() ?? null,
@@ -634,6 +637,129 @@ async function listPlatformSendPayments(opts = {}) {
   return {payments};
 }
 
+/**
+ * @param {unknown} raw
+ * @returns {"completed"|"failed"|null}
+ */
+function normalizeResolveStatus(raw) {
+  const s = String(raw || "").toLowerCase().trim();
+  if (s === "success" || s === "completed" || s === "complete") {
+    return "completed";
+  }
+  if (s === "fail" || s === "failed" || s === "failure") {
+    return "failed";
+  }
+  return null;
+}
+
+/**
+ * Super admin: mark a pending send completed (ops fulfilled) or failed (auto-reversal).
+ *
+ * @param {Object} params
+ * @param {string} params.paymentId
+ * @param {string} params.status
+ * @param {string} [params.actorUid]
+ * @param {string} [params.failureReason]
+ * @returns {Promise<{ payment: Object, reversal: Object|null, alreadyResolved: boolean }>}
+ */
+async function resolveSendPayment(params) {
+  const paymentId = String(params.paymentId || "").trim();
+  const actorUid = params.actorUid ? String(params.actorUid) : null;
+  const target = normalizeResolveStatus(params.status);
+  if (!paymentId) {
+    const err = new Error("paymentId is required");
+    err.statusCode = 400;
+    err.code = "INVALID_ARGUMENT";
+    throw err;
+  }
+  if (!target) {
+    const err = new Error("status must be success or failed");
+    err.statusCode = 400;
+    err.code = "INVALID_STATUS";
+    throw err;
+  }
+
+  const ref = collection(PAYMENTS_COL).doc(paymentId);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    const err = new Error("Payment not found");
+    err.statusCode = 404;
+    err.code = "NOT_FOUND";
+    throw err;
+  }
+
+  const data = snap.data() || {};
+  const current = String(data.status || "").toLowerCase();
+  const currentNormalized = current === "success" ? "completed" : current;
+
+  if (currentNormalized === target) {
+    return {
+      payment: serializePayment(snap.id, data),
+      reversal: data.reversal || null,
+      alreadyResolved: true,
+    };
+  }
+  if (currentNormalized !== "pending") {
+    const err = new Error(`Payment is already ${currentNormalized}`);
+    err.statusCode = 409;
+    err.code = "ALREADY_RESOLVED";
+    throw err;
+  }
+
+  let reversal = null;
+  if (target === "failed") {
+    const amount = Number(data.totalDeduction) || 0;
+    const currency = String(data.fromCurrency || "").toUpperCase();
+    if (amount > 0 && currency) {
+      const wallet = await walletService.updatePartnerWalletBalance(
+          data.partnerId,
+          currency,
+          amount,
+      );
+      reversal = {
+        amount,
+        currency,
+        previousBalance: wallet.previousBalance,
+        newBalance: wallet.newBalance,
+      };
+    }
+  }
+
+  const reason = target === "failed" ?
+    (params.failureReason ? String(params.failureReason).trim().slice(0, 300) : "Marked failed by admin") :
+    null;
+
+  await ref.set({
+    status: target,
+    resolvedByUid: actorUid,
+    failureReason: reason,
+    completedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    reversed: target === "failed",
+    reversal,
+  }, {merge: true});
+
+  if (data.transactionRecordId) {
+    try {
+      await transactionService.updateTransactionStatus(
+          data.transactionRecordId,
+          target === "failed" ?
+            transactionService.STATUSES.failed :
+            transactionService.STATUSES.completed,
+      );
+    } catch (txErr) {
+      console.warn("resolveSendPayment transaction record:", txErr.message);
+    }
+  }
+
+  const updated = await ref.get();
+  return {
+    payment: serializePayment(updated.id, updated.data() || {...data, status: target, reversal}),
+    reversal,
+    alreadyResolved: false,
+  };
+}
+
 module.exports = {
   DEFAULT_CORRIDORS,
   loadSendConfig,
@@ -643,6 +769,8 @@ module.exports = {
   getSendPayment,
   listSendPayments,
   listPlatformSendPayments,
+  resolveSendPayment,
+  normalizeResolveStatus,
   serializePayment,
   notifySendPaymentAdmins,
 };

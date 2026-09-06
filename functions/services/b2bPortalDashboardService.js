@@ -574,6 +574,7 @@ module.exports = {
   resolveDashboardPeriod,
   resolveDashboardTypes,
   getPartnerDashboard,
+  loadDashboardTransactions,
   formatRecentSendRow,
   formatRecentCollectionRow,
 };

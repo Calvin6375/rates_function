@@ -274,7 +274,35 @@ Call this on Send page load and again after a successful `POST /portal/send/paym
 - Notification type: `b2b_send_admin_alert` (system bucket — same as go-live alerts)
 - List queue: `GET /platform/send/payments?status=pending`
 
-Ops fulfills the bank transfer offline, then can mark complete in a follow-up (status update endpoint can be added when needed).
+### Resolve pending send (dashboard Recent Sends)
+
+Super admin only. Use the payment `id` from `recentSends` / send history (`spay_…`).
+
+```http
+PATCH /platform/send/payments/:paymentId
+Authorization: Bearer <Firebase ID token>
+Content-Type: application/json
+
+{ "status": "success" }
+```
+
+```http
+PATCH /platform/send/payments/:paymentId
+Content-Type: application/json
+
+{ "status": "failed", "failureReason": "Bank rejected the transfer" }
+```
+
+`status` accepts `success` / `completed` or `failed` / `fail`.
+
+| Action | Wallet | Payment + `b2b_send` record |
+|--------|--------|------------------------------|
+| **Success** | No change (already debited on create) | `completed` |
+| **Fail** | Credit back `totalDeduction` in `fromCurrency` | `failed`, `reversed: true` |
+
+Same status again is idempotent (`alreadyResolved: true`). Changing a completed/failed row returns `409 ALREADY_RESOLVED`.
+
+Then refresh `GET /platform/dashboard` or `GET /platform/send/payments`.
 
 ---
 

@@ -3,36 +3,9 @@
  * Thin controllers that delegate to business logic in libs/rates.js
  */
 
-const {onSchedule} = require("firebase-functions/v2/scheduler");
 const {onCall, onRequest, HttpsError} = require("firebase-functions/v2/https");
 const config = require("../config");
 const ratesLib = require("../libs/rates");
-
-/**
- * Scheduled function: Fetch Binance P2P rates
- * Supports multiple currency pairs (KES, NGN, GHS, etc.)
- */
-exports.fetchBinanceRates = onSchedule(
-    {
-      schedule: "0 0 * * *",
-      region: config.region,
-      cpu: config.resources.cpu,
-      memory: config.resources.memory,
-      minInstances: 0, // Scheduled functions don't need min instances
-    },
-    async () => {
-      const currencyPairs = [
-        {fiat: "KES", asset: "USDT"},
-        {fiat: "NGN", asset: "USDT"},
-        {fiat: "GHS", asset: "USDT"},
-        // Add more pairs as needed
-      ];
-
-      const {results, errors} = await ratesLib.fetchMultipleRates(currencyPairs);
-
-      return null;
-    },
-);
 
 /**
  * Callable function: Get Binance rates for a specific currency pair

@@ -43,6 +43,7 @@ const fundingWebhookService = require("../services/funding/fundingWebhookService
 const partnerRecipientService = require("../services/partnerRecipientService");
 const b2bSendService = require("../services/b2bSendService");
 const b2bPortalDashboardService = require("../services/b2bPortalDashboardService");
+const platformReportsService = require("../services/platformReportsService");
 const partnerWalletAdminService = require("../services/partnerWalletAdminService");
 const b2bWalletBalanceSync = require("../services/b2bWalletBalanceSync");
 const partnerAdminProvisioningService = require("../services/partnerAdminProvisioningService");
@@ -1969,6 +1970,37 @@ app.get("/platform/send/payments", loadFirebaseUser, requirePlatformAdmin, async
 });
 
 /**
+ * Super admin: mark a pending send success (ops fulfilled) or failed (wallet reversal).
+ * Body: { status: "success"|"failed", failureReason? }
+ */
+app.patch("/platform/send/payments/:paymentId", loadFirebaseUser, requireSuperAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const result = await b2bSendService.resolveSendPayment({
+      paymentId: req.params.paymentId,
+      status: body.status,
+      actorUid: req.userId,
+      failureReason: body.failureReason || body.reason || null,
+    });
+    res.status(200).json({
+      success: true,
+      data: result,
+      message: result.payment.status === "failed" ?
+        "Send marked failed. Partner wallet was credited back." :
+        "Send marked completed.",
+    });
+  } catch (err) {
+    const status = err.statusCode || 500;
+    console.error("b2bPortal PATCH /platform/send/payments/:id:", err.message);
+    res.status(status).json({
+      success: false,
+      error: err.code || "RESOLVE_SEND_FAILED",
+      message: err.message,
+    });
+  }
+});
+
+/**
  * POST /portal/funding/quote — Add Money fee breakdown (same math as C2B Local Topup).
  * Body: { amount, currency? } — does not create a checkout.
  */
@@ -2171,6 +2203,43 @@ app.get("/platform/dashboard", loadFirebaseUser, requirePlatformAdmin, async (re
     res.status(200).json({ success: true, data });
   } catch (err) {
     console.error("b2bPortal GET /platform/dashboard:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/** Fee-revenue reports (collection / pay / send / exchange). */
+app.get("/portal/reports", loadFirebaseUser, attachPartnerContextOrPlatformAdmin, async (req, res) => {
+  try {
+    const platformScope = Boolean(req.platformTransactionScope);
+    const period = req.query.period ? String(req.query.period) : "month";
+    let partnerId = req.partnerId || null;
+    if (platformScope && req.query.partnerId) {
+      partnerId = String(req.query.partnerId);
+    }
+    const data = await platformReportsService.getRevenueReport({
+      partnerId,
+      platformScope,
+      periodKey: period,
+    });
+    res.status(200).json({ success: true, data });
+  } catch (err) {
+    console.error("b2bPortal GET /portal/reports:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/platform/reports", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+  try {
+    const period = req.query.period ? String(req.query.period) : "month";
+    const partnerId = req.query.partnerId ? String(req.query.partnerId) : null;
+    const data = await platformReportsService.getRevenueReport({
+      partnerId,
+      platformScope: true,
+      periodKey: period,
+    });
+    res.status(200).json({ success: true, data });
+  } catch (err) {
+    console.error("b2bPortal GET /platform/reports:", err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });

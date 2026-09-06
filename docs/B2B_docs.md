@@ -398,6 +398,67 @@ Lists all members under **`partners/{partnerId}/members`**.
 
 ---
 
+#### `GET /platform/reports`
+
+**Super-admin Reports & Analytics.** Revenue is **TruePay service fees** (not face amounts), broken down by **collection**, **pay**, **send**, and **exchange**. Same host and Bearer token as `GET /platform/dashboard`.
+
+Do **not** reuse `GET /platform/dashboard` for this page — that overview sums transaction face amounts.
+
+**Partner:** `GET /portal/reports` (same `period`; scoped to the caller’s `partnerId`; no `channel=all`).
+
+**Query**
+
+| Parameter | Default | Notes |
+|-----------|---------|--------|
+| `period` | `month` | `month` (calendar this month), `7d`, `30d`, `90d` |
+| `partnerId` | — | Super admin only; restrict to one partner |
+
+**What counts as revenue**
+
+| Bucket | Sources | Fee field |
+|--------|---------|-----------|
+| `collection` | B2B payment links / checkout (`b2b_payment`) | `metadata.platformFee` |
+| `pay` | C2B Till / PayBill (`MPESA_B2B`, `merchant_payment`) | payout `fee` |
+| `send` | C2B B2C / bank / SafariTap and B2B send | payout `fee` or `fees.ourFee` (not rail `paymentFee`) |
+| `exchange` | Swap orders | order `fee` (converted to KES when `exchangeRate` is present) |
+
+Local top-up / Add Money surcharge is **not** included.
+
+**Response** `200` — map KPIs from `data.kpis` / `data.summary`; Sales Overview from `data.salesChart` (`amount` is fee revenue); Revenue by Channel from `data.revenueByChannel`. Export can download this JSON.
+
+```json
+{
+  "success": true,
+  "data": {
+    "scope": "platform",
+    "period": { "key": "month", "label": "This month" },
+    "currency": "KES",
+    "revenueMeaning": "service_fee",
+    "summary": {
+      "totalRevenue": 0,
+      "previousRevenue": 0,
+      "transactionCount": 0,
+      "completedCount": 0,
+      "conversionRate": 0,
+      "averageOrder": 0,
+      "averageFee": 0
+    },
+    "breakdown": {
+      "collection": { "revenue": 0, "count": 0, "unconverted": 0, "currency": "KES" },
+      "pay": { "revenue": 0, "count": 0, "unconverted": 0, "currency": "KES" },
+      "send": { "revenue": 0, "count": 0, "unconverted": 0, "currency": "KES" },
+      "exchange": { "revenue": 0, "count": 0, "unconverted": 0, "currency": "KES" }
+    },
+    "revenueByChannel": [
+      { "key": "collection", "label": "Collection", "revenue": 0, "count": 0, "currency": "KES" }
+    ],
+    "salesChart": { "granularity": "day", "current": [], "previous": [] }
+  }
+}
+```
+
+---
+
 #### `GET /platform/overview`
 
 **Super-admin dashboard.** Aggregate **read-only** counts: customer-app users (Firestore `users`) and B2B partners (`partners`).
@@ -850,7 +911,8 @@ Partner Send UI: recipients, corridor quote, create payment.
 | `POST` | `/portal/send/quote` |
 | `GET` | `/portal/send/corridors` |
 | `POST/GET` | `/portal/send/payments` |
-| `GET` | `/platform/send/payments` (super admin) |
+| `GET` | `/platform/send/payments` (platform admin) |
+| `PATCH` | `/platform/send/payments/:paymentId` (super admin — success or fail + reversal) |
 
 Full contract: [`B2B_SEND.md`](./B2B_SEND.md).
 

@@ -5,7 +5,6 @@
 
 // Import HTTP handlers
 const ratesHttp = require("./http/ratesHttp");
-const arbitrageHttp = require("./http/arbitrageHttp");
 const paymentsHttp = require("./http/paymentsHttp");
 const webhookApi = require("./http/webhookApi");
 const partnerApi = require("./http/partnerApi");
@@ -36,13 +35,8 @@ const userBootstrap = require("./triggers/userBootstrap");
 const authUserCleanup = require("./triggers/authUserCleanup");
 
 // Export rates functions
-exports.fetchBinanceRates = ratesHttp.fetchBinanceRates;
 exports.fetchBinanceRatesHttp = ratesHttp.fetchBinanceRatesHttp;
 exports.getBinanceRates = ratesHttp.getBinanceRates;
-
-// Export arbitrage functions
-exports.fetchArbitrageRates = arbitrageHttp.fetchArbitrageRates;
-exports.getArbitrageRates = arbitrageHttp.getArbitrageRates;
 
 // Export payment functions (callables: paymentsHttp; webhooks: webhookApi)
 exports.handleTopUpWebhook = webhookApi.handleTopUpWebhook;
