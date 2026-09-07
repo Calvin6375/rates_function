@@ -8,6 +8,15 @@ const config = require("../config");
 const { collection, serverTimestamp } = require("../libs/firestore");
 const paymentLinkService = require("./paymentLinkService");
 const paymentRailService = require("./paymentRailService");
+const fundingOrderService = require("./funding/fundingOrderService");
+const fundingRailService = require("./funding/fundingRailService");
+const { convertToKesForPaystack } = require("./funding/c2bFundingFxService");
+const {
+  B2B_PAYMENT_LINK_PRODUCT,
+  B2B_PAYSTACK_CURRENCY,
+  FUNDING_PROVIDERS,
+  FUNDING_STATUSES,
+} = require("../utils/fundingTypes");
 
 const firestore = admin.firestore();
 const B2B_PURPOSE = "b2b_payment_link";
@@ -112,10 +121,216 @@ async function lookupCheckoutMapping(checkoutId) {
  * @param {string} [rail]
  * @returns {Promise<Object>}
  */
+/**
+ * Persist checkout order + invoice mapping used by webhook/reconcile lookup.
+ *
+ * @param {Object} params
+ * @returns {Promise<string>} orderId
+ */
+async function persistCheckoutRecords(params) {
+  const {
+    partnerId,
+    linkId,
+    link,
+    identity,
+    checkoutId,
+    invoiceId,
+    checkoutUrl,
+    rail,
+    apiRef,
+    extraMapping = {},
+  } = params;
+
+  const orderRef = firestore.collection(config.collections.orders).doc();
+  const orderId = orderRef.id;
+
+  const orderData = {
+    partnerId,
+    linkId,
+    orderType: B2B_PURPOSE,
+    status: "pending",
+    amount: link.amount,
+    currency: link.currency,
+    invoiceId,
+    checkoutId,
+    checkoutUrl,
+    rail,
+    bookingReference: link.bookingReference || null,
+    payerName: identity.payerName,
+    metadata: {
+      purpose: B2B_PURPOSE,
+      partnerId,
+      linkId,
+      orderId,
+      invoiceId,
+      checkoutId,
+      checkoutUrl,
+      rail,
+      bookingReference: link.bookingReference || null,
+      payerName: identity.payerName,
+      apiRef,
+      createdAt: new Date().toISOString(),
+      ...extraMapping.metadata,
+    },
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+  await orderRef.set(orderData);
+
+  /** @type {Record<string, unknown>} */
+  const mappingData = {
+    purpose: B2B_PURPOSE,
+    partnerId,
+    linkId,
+    orderId,
+    amount: link.amount,
+    currency: link.currency,
+    checkoutId,
+    invoiceId,
+    checkoutUrl,
+    rail,
+    status: "pending",
+    bookingReference: link.bookingReference || null,
+    payerName: identity.payerName,
+    apiRef,
+    createdAt: serverTimestamp(),
+    ...extraMapping,
+  };
+  delete mappingData.metadata;
+
+  const mappingsCol = firestore.collection(config.collections.invoiceMappings);
+  await mappingsCol.doc(checkoutId).set(mappingData);
+
+  await collection("paymentLinks").doc(linkId).update({
+    lastCheckoutAt: serverTimestamp(),
+    lastCheckoutRail: rail,
+    lastCheckoutId: checkoutId,
+    updatedAt: serverTimestamp(),
+    ...(link.status === "paid" ? { status: "active" } : {}),
+  });
+
+  return orderId;
+}
+
+/**
+ * @param {string} linkId
+ * @param {string} partnerId
+ * @param {Object} link
+ * @param {Object} identity
+ * @param {Object} payer
+ * @returns {Promise<Object>}
+ */
+async function startPaystackCheckout(linkId, partnerId, link, identity, payer) {
+  const redirectUrl = paymentLinkService.buildHostedSuccessUrl(linkId);
+  const fx = await convertToKesForPaystack(link.amount, link.currency);
+  const fundingOrderId = fundingOrderService.generateFundingOrderId();
+  const apiRef = fundingOrderId;
+
+  const fundingOrder = await fundingOrderService.createFundingOrder({
+    id: fundingOrderId,
+    userId: `partner:${partnerId}`,
+    provider: FUNDING_PROVIDERS.paystack,
+    amount: fx.amountKes,
+    currency: B2B_PAYSTACK_CURRENCY,
+    providerReference: fundingOrderId,
+    correlationId: fundingOrderId,
+    metadata: {
+      product: B2B_PAYMENT_LINK_PRODUCT,
+      purpose: B2B_PURPOSE,
+      partnerId: String(partnerId),
+      linkId,
+      source: B2B_PAYMENT_LINK_PRODUCT,
+      requestedAmount: Number(link.amount),
+      requestedCurrency: String(link.currency).toUpperCase(),
+      paystackCurrency: B2B_PAYSTACK_CURRENCY,
+      fxRate: fx.fxRate,
+      chargeAmount: fx.amountKes,
+      payerName: identity.payerName,
+      bookingReference: link.bookingReference || null,
+      apiRef,
+    },
+  });
+
+  let session;
+  try {
+    session = await fundingRailService.initializePayment({
+      provider: FUNDING_PROVIDERS.paystack,
+      amount: fx.amountKes,
+      currency: B2B_PAYSTACK_CURRENCY,
+      email: payer.email || null,
+      callbackUrl: redirectUrl,
+      providerReference: fundingOrder.providerReference,
+      fundingOrderId: fundingOrder.id,
+      userId: `partner:${partnerId}`,
+      correlationId: fundingOrder.id,
+      metadata: fundingOrder.metadata,
+    });
+  } catch (err) {
+    await fundingOrderService.updateFundingOrder(fundingOrder.id, {
+      status: FUNDING_STATUSES.failed,
+      failureReason: err.message,
+    });
+    throw err;
+  }
+
+  const checkoutId = session.providerReference || fundingOrder.providerReference;
+  const invoiceId = session.providerTransactionId || checkoutId;
+
+  await fundingOrderService.updateFundingOrder(fundingOrder.id, {
+    providerReference: checkoutId,
+    providerTransactionId: session.providerTransactionId || null,
+    checkoutUrl: session.checkoutUrl,
+  });
+
+  const orderId = await persistCheckoutRecords({
+    partnerId,
+    linkId,
+    link,
+    identity,
+    checkoutId,
+    invoiceId,
+    checkoutUrl: session.checkoutUrl,
+    rail: FUNDING_PROVIDERS.paystack,
+    apiRef,
+    extraMapping: {
+      fundingOrderId: fundingOrder.id,
+    },
+  });
+
+  await fundingOrderService.updateFundingOrder(fundingOrder.id, {
+    metadata: {
+      ...fundingOrder.metadata,
+      orderId,
+      checkoutId,
+      invoiceId,
+      checkoutUrl: session.checkoutUrl,
+    },
+  });
+
+  return {
+    linkId,
+    partnerId,
+    orderId,
+    fundingOrderId: fundingOrder.id,
+    rail: FUNDING_PROVIDERS.paystack,
+    checkoutUrl: session.checkoutUrl,
+    checkoutId,
+    invoiceId,
+    redirectUrl,
+    payerName: identity.payerName,
+    chargeAmount: fx.amountKes,
+    chargeCurrency: B2B_PAYSTACK_CURRENCY,
+  };
+}
+
 async function startCheckout(linkId, partnerId, payer = {}, rail) {
   const link = await loadActiveLink(linkId, partnerId);
   const selectedRail = String(rail || paymentRailService.defaultRail()).toLowerCase();
   const identity = parsePayerIdentity(payer);
+
+  if (selectedRail === paymentRailService.SUPPORTED_RAILS.paystack) {
+    return startPaystackCheckout(linkId, partnerId, link, identity, payer);
+  }
 
   const redirectUrl = paymentLinkService.buildHostedSuccessUrl(linkId);
 
@@ -160,64 +375,21 @@ async function startCheckout(linkId, partnerId, payer = {}, rail) {
     };
   }
 
-  const orderRef = firestore.collection(config.collections.orders).doc();
-  const orderId = orderRef.id;
   const checkoutId = session.checkoutId;
   const invoiceId = session.invoiceId || checkoutId;
-
-  const orderData = {
+  const orderId = await persistCheckoutRecords({
     partnerId,
     linkId,
-    orderType: B2B_PURPOSE,
-    status: "pending",
-    amount: link.amount,
-    currency: link.currency,
-    invoiceId,
-    checkoutId,
-    checkoutUrl: session.checkoutUrl,
-    rail: session.rail,
-    bookingReference: link.bookingReference || null,
-    payerName: identity.payerName,
-    metadata: {
-      purpose: B2B_PURPOSE,
-      partnerId,
-      linkId,
-      orderId,
-      invoiceId,
-      checkoutId,
-      checkoutUrl: session.checkoutUrl,
-      rail: session.rail,
-      bookingReference: link.bookingReference || null,
-      payerName: identity.payerName,
-      apiRef,
-      createdAt: new Date().toISOString(),
-    },
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  };
-  await orderRef.set(orderData);
-
-  /** @type {Record<string, unknown>} */
-  const mappingData = {
-    purpose: B2B_PURPOSE,
-    partnerId,
-    linkId,
-    orderId,
-    amount: link.amount,
-    currency: link.currency,
+    link,
+    identity,
     checkoutId,
     invoiceId,
     checkoutUrl: session.checkoutUrl,
     rail: session.rail,
-    status: "pending",
-    bookingReference: link.bookingReference || null,
-    payerName: identity.payerName,
     apiRef,
-    createdAt: serverTimestamp(),
-  };
+  });
 
   const mappingsCol = firestore.collection(config.collections.invoiceMappings);
-  await mappingsCol.doc(checkoutId).set(mappingData);
   const aliasIds = paymentRailService.collectCheckoutIdentifierIds(
       session.raw || {},
       session.checkoutUrl,
@@ -227,18 +399,24 @@ async function startCheckout(linkId, partnerId, payer = {}, rail) {
       continue;
     }
     await mappingsCol.doc(String(aliasId)).set({
-      ...mappingData,
+      purpose: B2B_PURPOSE,
+      partnerId,
+      linkId,
+      orderId,
+      amount: link.amount,
+      currency: link.currency,
+      checkoutId,
+      invoiceId,
+      checkoutUrl: session.checkoutUrl,
+      rail: session.rail,
+      status: "pending",
+      bookingReference: link.bookingReference || null,
+      payerName: identity.payerName,
+      apiRef,
       aliasOf: checkoutId,
+      createdAt: serverTimestamp(),
     });
   }
-
-  await collection("paymentLinks").doc(linkId).update({
-    lastCheckoutAt: serverTimestamp(),
-    lastCheckoutRail: session.rail,
-    lastCheckoutId: checkoutId,
-    updatedAt: serverTimestamp(),
-    ...(link.status === "paid" ? { status: "active" } : {}),
-  });
 
   return {
     linkId,

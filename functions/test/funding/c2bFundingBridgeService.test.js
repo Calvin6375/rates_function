@@ -22,6 +22,15 @@ jest.mock("../../services/pricing/productPricingService", () => ({
   computeLocalTopupPaystackCharge: jest.fn(),
 }));
 
+jest.mock("../../utils/fundingCustomerEmail", () => ({
+  resolveFundingCustomerEmail: jest.fn(async (_uid, extras = {}) => ({
+    email: extras.clientEmail || "tourist@example.com",
+    usedFallback: false,
+    corrected: false,
+    source: "client",
+  })),
+}));
+
 const fundingOrderService = require("../../services/funding/fundingOrderService");
 const fundingRailService = require("../../services/funding/fundingRailService");
 const fundingIdempotencyService = require("../../services/funding/fundingIdempotencyService");

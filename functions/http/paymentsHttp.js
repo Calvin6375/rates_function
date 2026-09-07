@@ -109,7 +109,6 @@ exports.createPayment = onCall(
 
       const amount = Number(data.amount);
       const currency = String(data.currency || FUNDING_CURRENCY).toUpperCase();
-      const email = data.email || auth.token?.email || null;
       const callbackUrl = data.callbackUrl || data.redirectUrl || null;
       const metadata = data.metadata && typeof data.metadata === "object" ? data.metadata : {};
       const idempotencyKey = data.idempotencyKey || data.requestId || null;
@@ -137,7 +136,8 @@ exports.createPayment = onCall(
           userId,
           amount,
           currency,
-          email,
+          email: data.email || null,
+          tokenEmail: auth.token?.email || null,
           callbackUrl,
           metadata,
           idempotencyKey,

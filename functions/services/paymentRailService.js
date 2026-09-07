@@ -10,6 +10,7 @@ const circleRailAdapter = require("./circle/circleRailAdapter");
 const settlementRailService = require("./settlement/settlementRailService");
 
 const SUPPORTED_RAILS = Object.freeze({
+  paystack: "paystack",
   intasend: "intasend",
   manual: "manual",
   circle: "circle",
@@ -183,7 +184,7 @@ function defaultCountryForCurrency(currency, country) {
  * @returns {string}
  */
 function defaultRail() {
-  return String(process.env.B2B_DEFAULT_PAYMENT_RAIL || SUPPORTED_RAILS.intasend).toLowerCase();
+  return String(process.env.B2B_DEFAULT_PAYMENT_RAIL || SUPPORTED_RAILS.paystack).toLowerCase();
 }
 
 /**
@@ -526,6 +527,11 @@ async function createIntaSendCheckoutSession(params) {
  */
 async function createSession(params) {
   const rail = String(params.rail || defaultRail()).toLowerCase();
+  if (rail === SUPPORTED_RAILS.paystack) {
+    throw new Error(
+        "Paystack payment-link checkout is started by b2bPaymentLinkCheckoutService, not createSession",
+    );
+  }
   if (rail === SUPPORTED_RAILS.intasend) {
     return createIntaSendCheckoutSession(params);
   }

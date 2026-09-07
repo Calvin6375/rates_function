@@ -14,6 +14,7 @@ const opsMetrics = require("../ops/opsMetricsService");
 const productPricingService = require("../pricing/productPricingService");
 const { createPaymentContext } = require("../../utils/paymentContext");
 const { createLogger } = require("../../utils/paymentOpsLogger");
+const { resolveFundingCustomerEmail } = require("../../utils/fundingCustomerEmail");
 const {
   C2B_PAYSTACK_CURRENCY,
   FUNDING_PROVIDERS,
@@ -65,11 +66,17 @@ async function createC2bPaystackTopupCheckout(params) {
     amount,
     currency = "USD",
     email = null,
+    tokenEmail = null,
     callbackUrl = null,
     idempotencyKey = null,
     correlationId = null,
     metadata = {},
   } = params;
+
+  const checkoutEmail = (await resolveFundingCustomerEmail(userId, {
+    clientEmail: email,
+    tokenEmail,
+  })).email;
 
   const provider = FUNDING_PROVIDERS.paystack;
   const charge = await convertToKesForPaystack(amount, currency);
@@ -142,7 +149,7 @@ async function createC2bPaystackTopupCheckout(params) {
     ctx,
     amount: paystackChargeKes,
     currency: C2B_PAYSTACK_CURRENCY,
-    email,
+    email: checkoutEmail,
     callbackUrl: resolvePaystackCallbackUrl(callbackUrl),
     metadata: order.metadata,
   });

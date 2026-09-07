@@ -10,7 +10,11 @@ const { logTransaction, generateTransactionId } = require("../utils/transactions
 const ledgerService = require("./ledgerService");
 const walletService = require("./walletService");
 const fundingOrderService = require("./funding/fundingOrderService");
-const { FUNDING_STATUSES, B2B_SELF_TOPUP_PRODUCT } = require("../utils/fundingTypes");
+const {
+  FUNDING_STATUSES,
+  B2B_SELF_TOPUP_PRODUCT,
+  B2B_PAYMENT_LINK_PRODUCT,
+} = require("../utils/fundingTypes");
 
 /** Transaction types supported by the engine */
 const TRANSACTION_TYPES = Object.freeze({
@@ -355,10 +359,25 @@ async function listTransactionRecords({
  * @param {Object} fundingOrder
  * @returns {boolean}
  */
+function isB2bPaymentLinkOrder(fundingOrder) {
+  const meta = fundingOrder?.metadata && typeof fundingOrder.metadata === "object" ?
+    fundingOrder.metadata :
+    {};
+  const product = String(meta.product || "").toLowerCase();
+  if (product === B2B_PAYMENT_LINK_PRODUCT) {
+    return true;
+  }
+  const source = String(meta.source || "").toLowerCase();
+  return source === B2B_PAYMENT_LINK_PRODUCT || source === "b2b_payment_link_checkout";
+}
+
 function isB2bSelfTopupOrder(fundingOrder) {
   const meta = fundingOrder?.metadata && typeof fundingOrder.metadata === "object" ?
     fundingOrder.metadata :
     {};
+  if (isB2bPaymentLinkOrder(fundingOrder)) {
+    return false;
+  }
   const product = String(meta.product || "").toLowerCase();
   if (product === B2B_SELF_TOPUP_PRODUCT || product === "b2b") {
     return true;
@@ -449,6 +468,110 @@ async function completeB2bSelfTopupOrder(params) {
   }
 }
 
+/**
+ * Credit partner wallet for a product payment link (Paystack collection).
+ * Delegates fee + link bookkeeping to processB2bPaymentWebhook.
+ *
+ * @param {Object} params
+ * @param {Object} params.fundingOrder
+ * @param {import("../utils/fundingTypes").NormalizedFundingEvent} params.verifiedEvent
+ * @returns {Promise<{ success: boolean, duplicate?: boolean, transactionRecordId?: string, error?: string }>}
+ */
+async function completeB2bPaymentLinkOrder(params) {
+  const { fundingOrder, verifiedEvent } = params;
+  const meta = fundingOrder.metadata && typeof fundingOrder.metadata === "object" ?
+    fundingOrder.metadata :
+    {};
+  const partnerId = meta.partnerId ? String(meta.partnerId) : null;
+  if (!partnerId) {
+    return { success: false, error: "B2B payment-link order missing partnerId" };
+  }
+
+  const b2bPayments = require("../libs/b2bPayments");
+  const paymentId = String(
+      verifiedEvent.providerReference || fundingOrder.providerReference || fundingOrder.id,
+  );
+  let mapping = await b2bPayments.lookupB2bInvoiceMapping(paymentId, {
+    apiRef: meta.apiRef || null,
+  });
+  if (!mapping && meta.checkoutId && meta.checkoutId !== paymentId) {
+    mapping = await b2bPayments.lookupB2bInvoiceMapping(String(meta.checkoutId));
+  }
+  if (!mapping) {
+    mapping = {
+      mappingDocId: paymentId,
+      purpose: B2B_PAYMENT_LINK_PRODUCT,
+      partnerId,
+      linkId: meta.linkId || null,
+      orderId: meta.orderId || null,
+      amount: meta.requestedAmount || fundingOrder.amount,
+      currency: meta.requestedCurrency || fundingOrder.currency,
+      checkoutId: paymentId,
+      invoiceId: paymentId,
+      rail: "paystack",
+      bookingReference: meta.bookingReference || null,
+      payerName: meta.payerName || null,
+      fundingOrderId: fundingOrder.id,
+    };
+  }
+
+  const creditAmount = Number.isFinite(Number(meta.requestedAmount)) && Number(meta.requestedAmount) > 0 ?
+    Number(meta.requestedAmount) :
+    Number(mapping.amount || fundingOrder.amount);
+  const creditCurrency = String(
+      meta.requestedCurrency || mapping.currency || fundingOrder.currency || "KES",
+  ).toUpperCase();
+
+  await fundingOrderService.updateFundingOrder(fundingOrder.id, {
+    status: FUNDING_STATUSES.processing,
+    providerTransactionId: verifiedEvent.providerTransactionId || fundingOrder.providerTransactionId,
+  });
+
+  try {
+    const settled = await b2bPayments.processB2bPaymentWebhook(
+        {
+          paymentId,
+          amount: creditAmount,
+          currency: creditCurrency,
+          completedAt: new Date().toISOString(),
+          account: null,
+        },
+        {
+          source: "paystack",
+          fundingOrderId: fundingOrder.id,
+          providerReference: paymentId,
+          verifiedEvent,
+        },
+        mapping,
+    );
+
+    if (!settled.success) {
+      await fundingOrderService.updateFundingOrder(fundingOrder.id, {
+        status: FUNDING_STATUSES.failed,
+        failureReason: settled.error || "Payment-link settlement failed",
+      });
+      return { success: false, error: settled.error || "Payment-link settlement failed" };
+    }
+
+    await fundingOrderService.updateFundingOrder(fundingOrder.id, {
+      status: FUNDING_STATUSES.completed,
+      providerTransactionId: verifiedEvent.providerTransactionId || fundingOrder.providerTransactionId,
+    });
+
+    return {
+      success: true,
+      duplicate: Boolean(settled.duplicate),
+      transactionRecordId: null,
+    };
+  } catch (err) {
+    await fundingOrderService.updateFundingOrder(fundingOrder.id, {
+      status: FUNDING_STATUSES.failed,
+      failureReason: err.message,
+    });
+    return { success: false, error: err.message };
+  }
+}
+
 async function completeFundingOrder(params) {
   const { fundingOrder, verifiedEvent } = params;
 
@@ -458,6 +581,10 @@ async function completeFundingOrder(params) {
 
   if (fundingOrder.status === FUNDING_STATUSES.completed) {
     return { success: true, duplicate: true, transactionRecordId: fundingOrder.transactionRecordId };
+  }
+
+  if (isB2bPaymentLinkOrder(fundingOrder)) {
+    return completeB2bPaymentLinkOrder(params);
   }
 
   if (isB2bSelfTopupOrder(fundingOrder)) {
@@ -583,5 +710,7 @@ module.exports = {
   generateTransactionRecordId,
   completeFundingOrder,
   completeB2bSelfTopupOrder,
+  completeB2bPaymentLinkOrder,
   isB2bSelfTopupOrder,
+  isB2bPaymentLinkOrder,
 };

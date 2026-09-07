@@ -18,6 +18,7 @@ const {
   FUNDING_CURRENCY,
   C2B_PAYSTACK_CURRENCY,
   B2B_SELF_TOPUP_PRODUCT,
+  B2B_PAYMENT_LINK_PRODUCT,
 } = require("../../../utils/fundingTypes");
 
 const PROVIDER_ID = FUNDING_PROVIDERS.paystack;
@@ -65,7 +66,11 @@ function getB2bSplitCode() {
  */
 function resolveSplitForProduct(product) {
   const normalized = String(product || "tourist").toLowerCase();
-  if (normalized === B2B_SELF_TOPUP_PRODUCT || normalized === "b2b") {
+  if (
+    normalized === B2B_SELF_TOPUP_PRODUCT ||
+    normalized === B2B_PAYMENT_LINK_PRODUCT ||
+    normalized === "b2b"
+  ) {
     return { splitCode: getB2bSplitCode(), required: false };
   }
   return { splitCode: getSplitCode(), required: true };

@@ -6,6 +6,7 @@
 const {
   looksLikeEmail,
   suggestEmailCorrection,
+  isValidCustomerEmail,
 } = require("./emailValidation");
 
 const FALLBACK_PAYSTACK_EMAIL = "tourist@truepay.africa";
@@ -42,8 +43,37 @@ function isPaystackInvalidEmailError(message) {
   return /invalid email/i.test(String(message || ""));
 }
 
+/**
+ * Prefer a saved profile email over a stale app/Auth address after admin edits.
+ * @param {Array<unknown>} candidates
+ * @returns {{ email: string, usedFallback: boolean, corrected: boolean, source: string }}
+ */
+function pickPaystackCustomerEmail(candidates) {
+  let correctedPick = null;
+  const labels = ["profile", "token", "client"];
+  const list = Array.isArray(candidates) ? candidates : [];
+
+  for (let i = 0; i < list.length; i++) {
+    const raw = list[i];
+    if (raw == null || String(raw).trim() === "") continue;
+    const resolved = resolvePaystackCustomerEmail(raw);
+    if (resolved.usedFallback || !isValidCustomerEmail(resolved.email)) continue;
+    const source = labels[i] || `candidate_${i}`;
+    if (!resolved.corrected) {
+      return {...resolved, source};
+    }
+    if (!correctedPick) {
+      correctedPick = {...resolved, source};
+    }
+  }
+
+  if (correctedPick) return correctedPick;
+  return {...resolvePaystackCustomerEmail(null), source: "fallback"};
+}
+
 module.exports = {
   FALLBACK_PAYSTACK_EMAIL,
   resolvePaystackCustomerEmail,
+  pickPaystackCustomerEmail,
   isPaystackInvalidEmailError,
 };

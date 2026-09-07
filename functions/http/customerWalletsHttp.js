@@ -778,9 +778,11 @@ app.put("/customer-wallets/:id", requireAdmin, async (req, res) => {
     });
   } catch (error) {
     console.error("Error updating customer wallet:", error);
-    res.status(error.message.includes("not found") ? 404 : 500).json({
+    const status = error.statusCode ||
+      (String(error.message || "").includes("not found") ? 404 : 500);
+    res.status(status).json({
       success: false,
-      error: "Failed to update customer wallet",
+      error: error.code || "Failed to update customer wallet",
       message: error.message,
     });
   }

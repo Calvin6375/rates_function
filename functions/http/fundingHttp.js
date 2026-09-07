@@ -18,6 +18,7 @@ const { renderFundingPaymentReturnHtml } = require("../utils/fundingPaymentRetur
 const { recordEvent } = require("../services/ops/paymentTimelineService");
 const opsMetrics = require("../services/ops/opsMetricsService");
 const { createPaymentContext, correlationFromRequest } = require("../utils/paymentContext");
+const { resolveFundingCustomerEmail } = require("../utils/fundingCustomerEmail");
 const { createLogger } = require("../utils/paymentOpsLogger");
 const {
   C2B_PAYSTACK_CURRENCY,
@@ -143,7 +144,10 @@ function mountFundingRoutes(app) {
     const amount = Number(body.amount);
     const inputCurrency = String(body.currency || "USD").toUpperCase();
     const provider = String(body.provider || config.funding.defaultProvider).toLowerCase();
-    const email = body.email || auth.decodedToken?.email || null;
+    const email = (await resolveFundingCustomerEmail(userId, {
+      clientEmail: body.email,
+      tokenEmail: auth.decodedToken?.email,
+    })).email;
     const callbackUrl = body.callbackUrl || body.redirectUrl || null;
     const transakAccessToken = body.transakAccessToken || body.accessToken || null;
     const metadata = body.metadata && typeof body.metadata === "object" ? body.metadata : {};

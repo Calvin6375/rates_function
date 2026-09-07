@@ -22,8 +22,9 @@ const { createLogger } = require("../../utils/paymentOpsLogger");
  * @returns {boolean}
  */
 function isB2bSelfTopup(fundingOrder) {
-  // Keep in lockstep with transactionService.isB2bSelfTopupOrder (partner wallet path).
-  return transactionService.isB2bSelfTopupOrder(fundingOrder);
+  // Keep in lockstep with transactionService partner-wallet funding paths.
+  return transactionService.isB2bSelfTopupOrder(fundingOrder) ||
+    transactionService.isB2bPaymentLinkOrder(fundingOrder);
 }
 
 const logger = createLogger({ service: "fundingWebhook" });

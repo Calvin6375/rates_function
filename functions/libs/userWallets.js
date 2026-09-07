@@ -8,6 +8,7 @@ const config = require("../config");
 const {updateBalanceWithTransaction, getUserBalance, userExists, syncBalanceToRealtimeDatabase} = require("../utils/firestore");
 const {logTransaction} = require("../utils/transactions");
 const {createNotification, NOTIFICATION_TYPES} = require("../utils/notifications");
+const {prepareCustomerWalletUpdates} = require("../utils/customerWalletProfileUpdate");
 
 const db = admin.firestore();
 
@@ -221,49 +222,53 @@ async function listCustomerWallets(limit = 100, offset = 0) {
  * @returns {Promise<Object>} Updated wallet data
  */
 async function updateCustomerWallet(id, updateData) {
-  // Don't allow updating balance directly through this endpoint
-  delete updateData.balance;
-  delete updateData.id;
-  delete updateData.createdAt;
+  const {firestoreUpdates, authUpdates} = prepareCustomerWalletUpdates(updateData);
+  firestoreUpdates.updatedAt = admin.firestore.FieldValue.serverTimestamp();
 
-  // Handle firstName/lastName - keep them separate for users collection
-  if (updateData.name && !updateData.firstName && !updateData.lastName) {
-    const nameParts = updateData.name.trim().split(" ");
-    updateData.firstName = nameParts[0] || "";
-    updateData.lastName = nameParts.slice(1).join(" ") || "";
-    delete updateData.name;
-  }
-  
-  // Map phone -> phoneNumber for users collection
-  if (updateData.phone && !updateData.phoneNumber) {
-    updateData.phoneNumber = updateData.phone;
-    delete updateData.phone;
+  const userRef = db.collection(config.collections.users).doc(id);
+  const userDoc = await userRef.get();
+  const walletRef = db.collection(config.collections.customerWallets).doc(id);
+  const walletDoc = userDoc.exists ? null : await walletRef.get();
+
+  if (!userDoc.exists && (!walletDoc || !walletDoc.exists)) {
+    throw new Error("Customer wallet not found in users or customerWallets collection");
   }
 
-  // Add updatedAt timestamp
-  updateData.updatedAt = admin.firestore.FieldValue.serverTimestamp();
-
-  // Try new architecture first: /users/{uid}
-  let userRef = db.collection(config.collections.users).doc(id);
-  let userDoc = await userRef.get();
+  if (Object.keys(authUpdates).length) {
+    try {
+      await admin.auth().updateUser(id, authUpdates);
+    } catch (e) {
+      if (e.code === "auth/email-already-exists") {
+        const err = new Error("An account already exists for this email");
+        err.statusCode = 409;
+        err.code = "EMAIL_ALREADY_EXISTS";
+        throw err;
+      }
+      if (e.code === "auth/invalid-email") {
+        const err = new Error("Invalid email address");
+        err.statusCode = 400;
+        err.code = "INVALID_EMAIL";
+        throw err;
+      }
+      if (e.code === "auth/user-not-found" || e.code === "auth/invalid-uid") {
+        // Legacy wallet docs may not have an Auth user.
+      } else if (e.code === "auth/invalid-phone-number") {
+        const err = new Error("phoneNumber must be E.164 (e.g. +254712137171)");
+        err.statusCode = 400;
+        throw err;
+      } else {
+        throw e;
+      }
+    }
+  }
 
   if (userDoc.exists) {
-    await userRef.update(updateData);
-
-    // Fetch updated document
+    await userRef.update(firestoreUpdates);
     const updatedDoc = await userRef.get();
     return formatUserData(updatedDoc);
   }
 
-  // Fall back to legacy architecture: /customerWallets/{id}
-  const walletRef = db.collection(config.collections.customerWallets).doc(id);
-  const walletDoc = await walletRef.get();
-
-  if (!walletDoc.exists) {
-    throw new Error("Customer wallet not found in users or customerWallets collection");
-  }
-
-  await walletRef.update(updateData);
+  await walletRef.update(firestoreUpdates);
 
   // Fetch updated document
   const updatedDoc = await walletRef.get();

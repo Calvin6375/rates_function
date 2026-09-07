@@ -5,8 +5,11 @@
 const admin = require("../admin");
 const config = require("../config");
 const paymentRailService = require("./paymentRailService");
+const fundingRailService = require("./funding/fundingRailService");
+const fundingWebhookService = require("./funding/fundingWebhookService");
 const b2bPayments = require("../libs/b2bPayments");
 const { lookupCheckoutMapping } = require("./b2bPaymentLinkCheckoutService");
+const { FUNDING_PROVIDERS } = require("../utils/fundingTypes");
 
 const firestore = admin.firestore();
 
@@ -42,6 +45,28 @@ async function tryReconcileCheckoutSession(checkoutId) {
 
   let mapping = await lookupCheckoutMapping(checkoutId);
   if (!mapping || mapping.status === "completed") {
+    return { reconciled: false, mapping };
+  }
+
+  const rail = String(mapping.rail || "").toLowerCase();
+  if (rail === FUNDING_PROVIDERS.paystack || mapping.fundingOrderId) {
+    const reference = mapping.checkoutId || checkoutId;
+    try {
+      const verified = await fundingRailService.verifyPayment(
+          FUNDING_PROVIDERS.paystack,
+          reference,
+      );
+      if (verified && verified.status === "success") {
+        await fundingWebhookService.processFundingEvent({
+          provider: FUNDING_PROVIDERS.paystack,
+          event: verified,
+        });
+        mapping = await lookupCheckoutMapping(checkoutId);
+        return { reconciled: mapping?.status === "completed", mapping };
+      }
+    } catch (err) {
+      console.warn("tryReconcileCheckoutSession paystack:", err.message);
+    }
     return { reconciled: false, mapping };
   }
 

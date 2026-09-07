@@ -53,6 +53,9 @@ const C2B_PAYSTACK_CURRENCY = "KES";
 /** B2B partner self-topup product marker on fundingOrders.metadata.product */
 const B2B_SELF_TOPUP_PRODUCT = "b2b_self_topup";
 
+/** B2B product payment-link checkout on fundingOrders.metadata.product */
+const B2B_PAYMENT_LINK_PRODUCT = "b2b_payment_link";
+
 /** B2B Paystack collection currency (KES-only merchant). */
 const B2B_PAYSTACK_CURRENCY = "KES";
 
@@ -161,6 +164,7 @@ module.exports = {
   FUNDING_CURRENCY,
   C2B_PAYSTACK_CURRENCY,
   B2B_SELF_TOPUP_PRODUCT,
+  B2B_PAYMENT_LINK_PRODUCT,
   B2B_PAYSTACK_CURRENCY,
   FIAT_ASSETS,
   MERCHANT_PAYMENT_STATUSES,

@@ -5,6 +5,7 @@
 const {
   FALLBACK_PAYSTACK_EMAIL,
   resolvePaystackCustomerEmail,
+  pickPaystackCustomerEmail,
   isPaystackInvalidEmailError,
 } = require("../../utils/paystackEmail");
 
@@ -29,6 +30,32 @@ describe("resolvePaystackCustomerEmail", () => {
       usedFallback: false,
       corrected: false,
     });
+  });
+});
+
+describe("pickPaystackCustomerEmail", () => {
+  it("prefers a valid Firestore profile over a stale Auth/app email", () => {
+    const result = pickPaystackCustomerEmail([
+      "abdalaalifanax@gmail.com",
+      "abdalaalifanax@gmail.coma",
+      "abdalaalifanax@gmail.coma",
+    ]);
+    expect(result).toEqual({
+      email: "abdalaalifanax@gmail.com",
+      usedFallback: false,
+      corrected: false,
+      source: "profile",
+    });
+  });
+
+  it("does not let an invalid client email beat a valid profile", () => {
+    const result = pickPaystackCustomerEmail([
+      "good@gmail.com",
+      null,
+      "bad@gmail.coma",
+    ]);
+    expect(result.email).toBe("good@gmail.com");
+    expect(result.source).toBe("profile");
   });
 });
 

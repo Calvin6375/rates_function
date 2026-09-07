@@ -2281,7 +2281,7 @@ app.get("/platform/transactions", loadFirebaseUser, requirePlatformAdmin, async 
   }
 });
 
-/** IntaSend post-payment landing (path-only redirect_url — no query string). */
+/** Post-payment landing (Paystack callback / IntaSend redirect_url). */
 app.get("/l/:linkId/success", (req, res) => {
   res.set("Content-Type", "text/html; charset=utf-8");
   res.set("Cache-Control", "no-store");
@@ -2399,7 +2399,7 @@ app.get("/public/payment-links/:linkId", async (req, res) => {
   }
 });
 
-/** Start IntaSend (or configured rail) checkout for a hosted payment link — no auth */
+/** Start Paystack (default) or configured rail checkout for a hosted payment link — no auth */
 app.post("/public/payment-links/:linkId/checkout", async (req, res) => {
   try {
     const partnerId = req.query.partner ? String(req.query.partner) : "";
@@ -2453,7 +2453,8 @@ app.post("/public/payment-links/:linkId/checkout", async (req, res) => {
       msg.includes("Invalid") ||
       msg.includes("not supported") ||
       msg.includes("not configured") ||
-      msg.includes("IntaSend checkout failed")
+      msg.includes("IntaSend checkout failed") ||
+      msg.includes("Paystack")
     ) {
       status = 400;
     }

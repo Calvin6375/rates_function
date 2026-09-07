@@ -15,10 +15,15 @@ jest.mock("../../utils/transactions", () => ({
 jest.mock("../../services/ledgerService", () => ({
   createDoubleEntry: jest.fn(),
 }));
+jest.mock("../../libs/b2bPayments", () => ({
+  lookupB2bInvoiceMapping: jest.fn(),
+  processB2bPaymentWebhook: jest.fn(),
+}));
 
 const { collection } = require("../../libs/firestore");
 const fundingOrderService = require("../../services/funding/fundingOrderService");
 const walletService = require("../../services/walletService");
+const b2bPayments = require("../../libs/b2bPayments");
 const transactionService = require("../../services/transactionService");
 
 describe("completeFundingOrder B2B self-topup", () => {
@@ -99,6 +104,75 @@ describe("completeFundingOrder B2B self-topup", () => {
     expect(transactionService.isB2bSelfTopupOrder({
       metadata: { source: "b2b_portal_add_money" },
     })).toBe(true);
+  });
+
+  it("does not treat payment-link orders as Add Money", () => {
+    const order = {
+      metadata: {
+        product: "b2b_payment_link",
+        partnerId: "partner_1",
+        source: "b2b_payment_link",
+      },
+    };
+    expect(transactionService.isB2bPaymentLinkOrder(order)).toBe(true);
+    expect(transactionService.isB2bSelfTopupOrder(order)).toBe(false);
+  });
+
+  it("settles payment-link orders via processB2bPaymentWebhook using requested currency", async () => {
+    b2bPayments.lookupB2bInvoiceMapping.mockResolvedValue({
+      mappingDocId: "fund_pl_1",
+      partnerId: "partner_1",
+      linkId: "pl_1",
+      amount: 25,
+      currency: "USD",
+      rail: "paystack",
+    });
+    b2bPayments.processB2bPaymentWebhook.mockResolvedValue({
+      success: true,
+      partnerId: "partner_1",
+    });
+
+    const result = await transactionService.completeFundingOrder({
+      fundingOrder: {
+        id: "fund_pl_1",
+        userId: "partner:partner_1",
+        provider: "paystack",
+        amount: 3250,
+        currency: "KES",
+        status: "pending",
+        providerReference: "fund_pl_1",
+        metadata: {
+          product: "b2b_payment_link",
+          partnerId: "partner_1",
+          linkId: "pl_1",
+          requestedAmount: 25,
+          requestedCurrency: "USD",
+        },
+      },
+      verifiedEvent: {
+        providerReference: "fund_pl_1",
+        providerTransactionId: "txn_pl",
+        amount: 3250,
+        currency: "KES",
+        status: "success",
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(walletService.updatePartnerWalletBalance).not.toHaveBeenCalled();
+    expect(b2bPayments.processB2bPaymentWebhook).toHaveBeenCalledWith(
+        expect.objectContaining({
+          paymentId: "fund_pl_1",
+          amount: 25,
+          currency: "USD",
+        }),
+        expect.objectContaining({ source: "paystack" }),
+        expect.objectContaining({ partnerId: "partner_1", linkId: "pl_1" }),
+    );
+    expect(fundingOrderService.updateFundingOrder).toHaveBeenCalledWith(
+        "fund_pl_1",
+        expect.objectContaining({ status: "completed" }),
+    );
   });
 
   it("credits partner wallet when product missing but partnerId present", async () => {

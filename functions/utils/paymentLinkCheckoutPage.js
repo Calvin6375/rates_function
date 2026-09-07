@@ -405,7 +405,7 @@ function renderCheckoutHtml(linkId, partnerId, apiBasePath) {
       var urlParams = new URLSearchParams(window.location.search);
       var checkoutInFlight = false;
       var checkoutTabOpened = false;
-      var checkoutWindowName = "truepay_intasend_checkout_" + linkId;
+      var checkoutWindowName = "truepay_checkout_" + linkId;
       var activeCheckoutUrl = null;
       var activeCheckoutId = null;
       var storageKey = "truepay_checkout_" + linkId;
@@ -726,7 +726,7 @@ function renderCheckoutHtml(linkId, partnerId, apiBasePath) {
 }
 
 /**
- * Post-payment page after IntaSend redirect (no query string on redirect_url).
+ * Post-payment page after Paystack callback (reference query) or IntaSend redirect.
  *
  * @param {string} linkId
  * @param {string} apiBasePath
@@ -764,7 +764,10 @@ function renderSuccessHtml(linkId, apiBasePath) {
       var apiBase = ${JSON.stringify(apiBasePath.replace(/\/+$/, ""))};
       var app = document.getElementById("app");
       var storageKey = "truepay_checkout_" + linkId;
-      var activeCheckoutId = sessionStorage.getItem(storageKey);
+      var urlParams = new URLSearchParams(window.location.search);
+      var activeCheckoutId = urlParams.get("reference") ||
+        urlParams.get("trxref") ||
+        sessionStorage.getItem(storageKey);
 
       function statusUrl() {
         var url = apiBase + "/public/payment-links/" + encodeURIComponent(linkId) + "/status";
