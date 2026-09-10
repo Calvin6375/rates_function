@@ -15,9 +15,12 @@ Firebase Authentication — single IdP for consumer app, partner dashboard, and 
 ### After login
 
 1. Sign in with Firebase Auth.
-2. Read custom claims from the **ID token** (`getIdTokenResult()` / equivalent).
-3. Route the user by `userType`.
-4. When claims change (onboarding, role assignment), **force token refresh** before calling APIs:
+2. Call `getIdToken(true)`, then **`GET /b2bPortal/portal/me`** (and `/platform/me` if `sessionScope` is `platform_admin`).
+3. Route on **`sessionScope`** from `/portal/me` (not leftover `admin: true` on the token).
+   - `platform_admin` → operations app (`/platform/*`)
+   - `partner` → partner app (`/portal/*` only — that merchant)
+4. If `claimsNeedRefresh` is true, refresh the token and call `/portal/me` again.
+5. When claims change (onboarding, role assignment), **force token refresh** before calling APIs:
    - Flutter: `user.getIdToken(true)`
    - Web: `user.getIdToken(true)` then retry API calls
 
@@ -228,8 +231,9 @@ Hosts: **Partner** `https://partner.truepay.africa` · **Admin** `https://admin.
 | Partner owner role | `org_admin` → **`owner`** (legacy `partnerRole: org_admin` still on token during migration) |
 | Assignable partner roles | **`finance`**, **`support`**, **`operations`**, **`viewer`** (removed `member` / `auditor` for new invites; legacy values normalized to `viewer`) |
 | Platform admins | New `userType: "admin"` + `role` (`super_admin`, `operations_admin`, `support_admin`, `finance_admin`) |
-| `GET /portal/me` | Returns `userType`, `role`, plus `partnerRole` (legacy alias) for partner users |
-| `GET /platform/me` | Returns `userType`, `role` for admin users |
+| `GET /portal/me` | Returns `userType`, `role`, **`sessionScope`**, plus `partnerRole` (legacy alias) for partner users |
+| `GET /platform/me` | Returns `userType`, `role`, `admin: true`, **`sessionScope: "platform_admin"`** |
+| Platform team | Super admin invites via **`POST /platform/admins`** — not Partner team |
 | Member APIs | Owner-only mutations (was org_admin-only) |
 
 ### Partner roles (separate from platform admin roles)
@@ -253,29 +257,42 @@ Backend enforces **owner** for: member CRUD, payment-link mutations, onboarding 
 | `support_admin` | Users, partners, support tools — not settlements approval |
 | `finance_admin` | Transactions, settlements, reports — not user management |
 
-Only **`super_admin`** can grant/revoke platform admin roles (`setAdminClaim` callable).
+Only **`super_admin`** can invite/revoke operations teammates:
+
+```http
+POST /b2bPortal/platform/admins
+Authorization: Bearer <super-admin idToken>
+Content-Type: application/json
+
+{ "email": "ops@truepay.live", "role": "finance_admin", "temporaryPassword": "…", "displayName": "Ops" }
+```
+
+`role` must be `finance_admin` | `support_admin` | `operations_admin` (not partner `finance`, not `super_admin`). Claims: `userType: "admin"`, `admin: true`, `role`, **no `partnerId`**. First login uses `POST /portal/account/set-pin`.
+
+**Do not** invite TruePay staff via `POST /platform/partners/{id}/members` or Partner team — that creates `sessionScope: "partner"` for that merchant only.
+
+List: `GET /platform/admins` or `GET /platform/team`. Remove (super admin only): `DELETE /platform/admins/:userId` or `DELETE /platform/team/:userId`. Cannot remove yourself or the built-in super-admin email. The older `setAdminClaim` callable still exists for existing UIDs.
 
 ### What you should implement
 
-1. **Login routing (both web apps)**
+1. **Login routing (both web apps)** — **`sessionScope` from `/portal/me` wins**
    ```javascript
-   const { claims } = await user.getIdTokenResult(true);
-   switch (claims.userType) {
-     case "admin":
-       if (onPartnerSite) redirectToAdminDashboard();
-       break;
-     case "partner":
-       if (onAdminSite && !claims.admin) redirectToPartnerDashboard();
-       break;
-     case "customer":
-       redirectToConsumerAppOrBlock();
-       break;
-     default:
-       // legacy
-       if (claims.partnerId) usePartnerDashboard();
-       else if (claims.admin) useAdminDashboard();
+   await user.getIdToken(true);
+   const me = await fetchPortalMe(); // GET /b2bPortal/portal/me
+   if (me.claimsNeedRefresh) {
+     await user.getIdToken(true);
+     // fetch /portal/me again
+   }
+   if (me.sessionScope === "platform_admin") {
+     useOperationsDashboard(); // GET /platform/dashboard — C2B + all partners
+     return;
+   }
+   if (me.sessionScope === "partner") {
+     usePartnerDashboard(); // GET /portal/dashboard — that org only
+     return;
    }
    ```
+   Partner teammates (`userType: "partner"`) must **not** call `/platform/dashboard`, `/platform/consumer-users`, or all-orgs `/platform/partners`. Leftover `admin: true` on a partner token is ignored.
 
 2. **Replace `org_admin` checks in UI**
    - Use `role === "owner"` **or** legacy `partnerRole === "org_admin"`.
@@ -291,9 +308,10 @@ Only **`super_admin`** can grant/revoke platform admin roles (`setAdminClaim` ca
    - Successful registration assigns **`owner`** + `partnerId`.
 
 5. **Admin dashboard**
-   - Gate `/platform/*` API calls on `userType === "admin"` (or legacy `admin === true`).
-   - Use `role` for feature flags (e.g. hide “Platform settings” unless `super_admin`).
-   - `GET /platform/me` returns `{ userType, role, admin: true }`.
+   - Gate `/platform/*` on `sessionScope === "platform_admin"` from `/portal/me` or `/platform/me`.
+   - Backend also rejects `sessionScope: "partner"` on `/platform/*` (`PARTNER_SCOPE`).
+   - Use `role` for UI flags. Backend enforces: `finance_admin` (dashboard/reports/wallet credit; no delete partner / no user delete / no wallet debit); `support_admin` (users; no wallet debit); `operations_admin` (partners, transactions, sends); `super_admin` (everything).
+   - `GET /platform/me` returns `{ userType, role, admin: true, sessionScope: "platform_admin" }`.
 
 6. **Member management UI**
    - Role dropdown options: `finance`, `support`, `operations`, `viewer` (not `org_admin` — owner is assigned by platform or self-serve register-partner).
@@ -312,11 +330,25 @@ Only **`super_admin`** can grant/revoke platform admin roles (`setAdminClaim` ca
 {
   "userId": "...",
   "userType": "partner",
-  "role": "owner",
+  "role": "finance",
+  "admin": false,
+  "sessionScope": "partner",
   "partnerId": "partner_123",
-  "partnerRole": "org_admin",
-  "roleLegacy": "org_admin",
+  "partnerRole": "finance",
+  "roleLegacy": "finance",
   "partner": { "id": "partner_123", "name": "..." }
+}
+```
+
+**Operations teammate — `GET /portal/me` and `GET /platform/me`**
+
+```json
+{
+  "userId": "...",
+  "userType": "admin",
+  "role": "finance_admin",
+  "admin": true,
+  "sessionScope": "platform_admin"
 }
 ```
 

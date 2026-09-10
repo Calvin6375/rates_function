@@ -252,6 +252,26 @@ app.use((req, _res, next) => {
   next();
 });
 
+/**
+ * POST /safari-card/merchants/resolve — classify scanned QR / typed merchant ID.
+ * Profile QR → merchant name for Pay TruePay merchant. Product QR → kind=product.
+ */
+app.post("/safari-card/merchants/resolve", requireAuth, async (req, res) => {
+  try {
+    const partnerProfileQrService = require("../services/partnerProfileQrService");
+    const payload = req.body?.payload ??
+      req.body?.qrPayload ??
+      req.body?.merchantId ??
+      req.body?.data ??
+      "";
+    const data = await partnerProfileQrService.resolveScannedQr(payload);
+    res.status(200).json({success: true, data});
+  } catch (err) {
+    const mapped = mapErrorResponse(err);
+    res.status(mapped.status).json(mapped.body);
+  }
+});
+
 /** POST /safari-card/payouts/validate-beneficiary */
 app.post("/safari-card/payouts/validate-beneficiary", requireAuth, async (req, res) => {
   try {
@@ -270,6 +290,7 @@ app.post("/safari-card/payouts/validate-beneficiary", requireAuth, async (req, r
  * Pay Till:    type=MPESA_B2B, accountType=TillNumber  → buy_goods fees
  * Pay PayBill: type=MPESA_B2B, accountType=PayBill     → pay_bill fees
  * Send Money:  type=MPESA_B2C | SAFARITAP_WALLET | BANK
+ * Pay merchant: type=TRUEPAY_MERCHANT
  */
 app.post("/safari-card/payouts/quote", requireAuth, async (req, res) => {
   try {

@@ -160,6 +160,25 @@ Authorization: Bearer …
 
 Filter or badge **`type === "b2b_payment"`** for payment-link collections. Use **`metadata.payerName`** for the guest/payer column in transaction tables.
 
+### 3.2b Merchant profile QR (SafariTap Pay)
+
+Product payment links stay on **Payment Links**. For **Pay TruePay merchant** (open amount, no product ref), use the org **profile QR**.
+
+| Action | Method | Path |
+|--------|--------|------|
+| Partner dashboard | `GET` | `/portal/profile-qr` |
+| Platform admin | `GET` | `/platform/partners/:partnerId/profile-qr` |
+
+**Response fields**
+
+| Field | Use |
+|-------|-----|
+| `qrCode` | PNG data URL — render in Business Profile / Receive |
+| `qrPayload` / `payUrl` | Canonical QR string (`…/b2bPortal/p/{merchantId}`). Distinct from product `…/l/{linkId}?partner=` |
+| `merchantId` | Same as `partnerId` — copy/share if the payer types an ID |
+
+Only **`status: active`** partners accept SafariTap profile payments.
+
 ### 3.3 Payment links
 
 | Action | Method | Path |

@@ -39,6 +39,7 @@ handleIntaSendDisbursementWebhook
 | `MPESA_B2B` + `PayBill` | IntaSend `MPESA-B2B` | Pay PayBill (+ `accountReference`) |
 | `BANK` | IntaSend `PESALINK` | Kenyan bank account (PesaLink) |
 | `SAFARITAP_WALLET` | **TruePay ledger** (no IntaSend) | Send KES to another SafariTap / C2B user wallet |
+| `TRUEPAY_MERCHANT` | **TruePay ledger** → partner wallet | Pay a B2B merchant via **profile QR** or `merchantId` (not product `/l/` QR) |
 
 Currency: **KES only** (Safari Card disbursement scope).
 
@@ -75,6 +76,37 @@ POST /safari-card/payouts
 ```
 
 Optional: `recipient.userId` (Firebase uid) instead of / in addition to phone.
+
+### `TRUEPAY_MERCHANT` (profile QR / merchant ID)
+
+Dashboard **`GET /b2bPortal/portal/profile-qr`** returns `payUrl` / `qrCode` (`…/b2bPortal/p/{merchantId}`). Product links use `…/l/{linkId}?partner=` — do **not** treat those as merchant pay.
+
+```
+POST /safari-card/merchants/resolve
+{ "payload": "<scanned QR or typed merchantId>" }
+```
+
+`kind: "profile"` → fill Merchant ID + show `partnerName`. `kind: "product"` → open hosted product checkout instead.
+
+```
+POST /safari-card/payouts/validate-beneficiary
+{ "type": "TRUEPAY_MERCHANT", "merchantId": "partner_…" }
+```
+
+or `{ "type": "TRUEPAY_MERCHANT", "qrPayload": "https://…/b2bPortal/p/partner_…" }`
+
+```
+POST /safari-card/payouts
+{
+  "type": "TRUEPAY_MERCHANT",
+  "amount": 1500,
+  "currency": "KES",
+  "clientRequestId": "550e8400-e29b-41d4-a716-446655440000",
+  "recipient": { "merchantId": "partner_…" }
+}
+```
+
+Credits the partner KES wallet; payer is debited on the SafariTap fiat ledger.
 
 Flow (synchronous):
 
@@ -442,7 +474,11 @@ If validate-beneficiary / create payout returns `502` / `PROVIDER_AUTH_ERROR`:
 
 ```http
 GET /api/admin/safari-tap/transactions?type=topups
-Authorization: Bearer <admin Firebase ID token>
+Authorization: Bearer <platform member Firebase ID token>
+
+Any `sessionScope: "platform_admin"` role (`super_admin`, `operations_admin`, `support_admin`, `finance_admin`). Partner sessions are rejected.
+
+Alias: `GET /b2bPortal/platform/safari-tap/transactions` (same query).
 ```
 
 | Query | Values |

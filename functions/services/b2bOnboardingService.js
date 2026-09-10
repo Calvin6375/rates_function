@@ -786,6 +786,7 @@ module.exports = {
   getOnboarding,
   patchOnboarding,
   registerSelfServePartner,
+  mergeRegisteredPartnerIntoOnboarding,
   completeOnboarding,
   resolveGoLiveDone,
   markGoLiveDoneForPartner,

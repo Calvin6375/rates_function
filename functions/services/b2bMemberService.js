@@ -362,7 +362,16 @@ async function setPartnerOrgAdmin(partnerId, newOrgAdminUid, actorUid, opts = {}
   await ensureUserDashboardProfile(newOrgAdminUid, {
     email,
     displayName: newUser.displayName || "",
+    institution: INSTITUTION_PARTNER_DASHBOARD,
+    channel: CHANNEL_B2B,
   });
+
+  try {
+    const onboarding = require("./b2bOnboardingService");
+    await onboarding.mergeRegisteredPartnerIntoOnboarding(newOrgAdminUid, partnerId);
+  } catch (linkErr) {
+    console.warn("setPartnerOrgAdmin onboarding link:", linkErr.message);
+  }
 
   await syncUserDocAccessFields(newOrgAdminUid, {
     userType: USER_TYPE_PARTNER,
@@ -452,6 +461,8 @@ async function addMember(partnerId, { email, password, role, displayName }, acto
   await ensureUserDashboardProfile(uid, {
     email: normalizedEmail,
     displayName: displayName || userRecord.displayName || "",
+    institution: INSTITUTION_PARTNER_DASHBOARD,
+    channel: CHANNEL_B2B,
   });
 
   await syncUserDocAccessFields(uid, {
@@ -460,6 +471,13 @@ async function addMember(partnerId, { email, password, role, displayName }, acto
     role: claimRole,
     status: "active",
   });
+
+  try {
+    const onboarding = require("./b2bOnboardingService");
+    await onboarding.mergeRegisteredPartnerIntoOnboarding(uid, partnerId);
+  } catch (linkErr) {
+    console.warn("addMember onboarding link:", linkErr.message);
+  }
 
   return { userId: uid, email: normalizedEmail, role: claimRole };
 }

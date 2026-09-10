@@ -341,7 +341,9 @@ function mapPayRows(docs, users) {
     const typeUpper = String(data.type || "").toUpperCase();
     const isMerchant = typeLower === "merchant_payment";
     const isB2bPayout = typeUpper === "MPESA_B2B";
-    if (!isMerchant && !isB2bPayout) continue;
+    const isProfilePay = typeUpper === "TRUEPAY_MERCHANT" ||
+      String(meta.source || "").toLowerCase() === "truepay_merchant_profile";
+    if (!isMerchant && !isB2bPayout && !isProfilePay) continue;
 
     const userId = data.userId || null;
     const client = clientFromUserMap(users, userId);
@@ -362,7 +364,7 @@ function mapPayRows(docs, users) {
       clientName: client.name,
       recipientName,
       date: toIso(data.createdAt || data.updatedAt || data.completedAt),
-      type: isMerchant ? "merchant_payment" : "MPESA_B2B",
+      type: isMerchant || isProfilePay ? "merchant_payment" : "MPESA_B2B",
       amount: data.amount,
       currency: data.currency || "KES",
       phone: recipient.phoneNumber || client.phone,
@@ -529,8 +531,15 @@ async function collectDocsForMethod(method) {
       scanRecent(config.collections.transactionRecords),
       scanRecent(config.collections.safariCardPayouts),
     ]);
-    const txrFiltered = txr.filter((d) => String(d.data.type || "").toLowerCase() === "merchant_payment");
-    const payoutFiltered = payouts.filter((d) => String(d.data.type || "").toUpperCase() === "MPESA_B2B");
+    const txrFiltered = txr.filter((d) => {
+      const t = String(d.data.type || "").toLowerCase();
+      const src = String(d.data.metadata?.source || "").toLowerCase();
+      return t === "merchant_payment" || src === "truepay_merchant_profile";
+    });
+    const payoutFiltered = payouts.filter((d) => {
+      const t = String(d.data.type || "").toUpperCase();
+      return t === "MPESA_B2B" || t === "TRUEPAY_MERCHANT";
+    });
     return [...txrFiltered, ...payoutFiltered];
   }
 

@@ -101,6 +101,9 @@ function resolveReconType(tx) {
   if (type === "topup") {
     return provider ? `topup_${provider}` : "topup_intasend";
   }
+  if (meta.source === "truepay_merchant_profile") {
+    return "merchant_payment";
+  }
   if (meta.source === "safaritap_wallet_transfer") {
     if (type === "funding" || type === "credit") {
       return "p2p_receive";
@@ -161,6 +164,10 @@ function resolveTransactionDisplayName(tx) {
     case "direct_payout":
       return "Withdrawal request";
     case "withdrawal":
+      if (meta.source === "truepay_merchant_profile") {
+        const to = meta.merchantName || meta.recipientName || null;
+        return to ? `Pay ${to}` : "TruePay merchant";
+      }
       if (meta.source === "safaritap_wallet_transfer") {
         const to = meta.merchantName ||
           meta.recipientName ||

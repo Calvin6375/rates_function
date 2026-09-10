@@ -116,6 +116,8 @@ function classifyReportCategory(row) {
   if (type === "swap") return "exchange";
   if (type === "b2b_send") return "send";
   if (typeU === "MPESA_B2B" || payoutType === "MPESA_B2B") return "pay";
+  if (typeU === "TRUEPAY_MERCHANT" || payoutType === "TRUEPAY_MERCHANT") return "pay";
+  if (String(meta.source || "").toLowerCase() === "truepay_merchant_profile") return "pay";
   if (typeU === "MPESA_B2C" || typeU === "BANK" || typeU === "SAFARITAP_WALLET") {
     return "send";
   }
@@ -241,11 +243,13 @@ async function loadReportSourceEvents(opts) {
   const seen = new Set();
 
   const add = (row, idHint) => {
-    const key = row.metadata?.payoutId ||
+    const category = classifyReportCategory(row) || "other";
+    const raw = row.metadata?.payoutId ||
       row.metadata?.paymentId ||
       row.payoutId ||
       row.id ||
       idHint;
+    const key = raw ? `${category}:${raw}` : `${category}:${idHint || ""}`;
     if (key && seen.has(String(key))) return;
     if (key) seen.add(String(key));
     events.push(row);

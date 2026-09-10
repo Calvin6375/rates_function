@@ -8,6 +8,48 @@ const {
   ERROR_CODES,
   payoutError,
 } = require("../../utils/safariCardPayoutTypes");
+const {classifyScannedQr} = require("../partnerProfileQrService");
+
+/**
+ * @param {Object} body
+ * @returns {string}
+ */
+function extractMerchantIdFromBody(body) {
+  const direct = String(
+      body?.recipient?.merchantId ||
+      body?.recipient?.partnerId ||
+      body?.merchantId ||
+      body?.partnerId ||
+      "",
+  ).trim();
+  if (direct) {
+    const classified = classifyScannedQr(direct);
+    if (classified.kind === "product") {
+      throw payoutError(
+          ERROR_CODES.INVALID_RECIPIENT,
+          "This QR is a product payment link. Use the hosted checkout, not merchant pay.",
+      );
+    }
+    return classified.merchantId || direct;
+  }
+  const payload = String(
+      body?.recipient?.qrPayload ||
+      body?.qrPayload ||
+      body?.payload ||
+      "",
+  ).trim();
+  if (!payload) {
+    return "";
+  }
+  const classified = classifyScannedQr(payload);
+  if (classified.kind === "product") {
+    throw payoutError(
+        ERROR_CODES.INVALID_RECIPIENT,
+        "This QR is a product payment link. Use the hosted checkout, not merchant pay.",
+    );
+  }
+  return classified.merchantId || "";
+}
 
 const SUPPORTED_CURRENCY = "KES";
 const MIN_BANK_AMOUNT = 100;
@@ -183,6 +225,19 @@ function validateCreatePayoutRequest(body) {
     recipient.name = body?.recipient?.name || body?.name || "SafariTap User";
   }
 
+  if (type === PAYOUT_TYPES.TRUEPAY_MERCHANT) {
+    const merchantId = extractMerchantIdFromBody(body);
+    if (!merchantId) {
+      throw payoutError(
+          ERROR_CODES.INVALID_RECIPIENT,
+          "TruePay merchant requires merchantId or a profile QR payload",
+      );
+    }
+    recipient.merchantId = merchantId;
+    recipient.partnerId = merchantId;
+    recipient.name = body?.recipient?.name || body?.name || "TruePay Merchant";
+  }
+
   return {
     type,
     amount,
@@ -276,6 +331,25 @@ function validateBeneficiaryRequest(body) {
       bankCode: null,
       phoneNumber: phone || null,
       userId: recipientUserId || null,
+      name: body?.recipient?.name || body?.name || null,
+    };
+  }
+
+  if (type === PAYOUT_TYPES.TRUEPAY_MERCHANT) {
+    const merchantId = extractMerchantIdFromBody(body);
+    if (!merchantId) {
+      throw payoutError(
+          ERROR_CODES.INVALID_RECIPIENT,
+          "TruePay merchant requires merchantId or a profile QR payload",
+      );
+    }
+    return {
+      provider: "TRUEPAY_MERCHANT",
+      account: merchantId,
+      accountType: "TruePayMerchant",
+      bankCode: null,
+      merchantId,
+      partnerId: merchantId,
       name: body?.recipient?.name || body?.name || null,
     };
   }

@@ -8,7 +8,15 @@ const { onRequest } = require("firebase-functions/v2/https");
 const { defineSecret } = require("firebase-functions/params");
 const express = require("express");
 const config = require("../config");
-const { isPlatformAdmin, isSuperAdmin } = require("../utils/accessControl");
+const {
+  isPlatformAdmin,
+  isSuperAdmin,
+  parseAccessLive,
+  USER_TYPE_ADMIN: ACCESS_USER_TYPE_ADMIN,
+  USER_TYPE_PARTNER: ACCESS_USER_TYPE_PARTNER,
+} = require("../utils/accessControl");
+const platformTeamService = require("../services/platformTeamService");
+const c2bSafariTapAdminListService = require("../services/c2bSafariTapAdminListService");
 const { verifyFirebaseAuth } = require("../libs/auth");
 const partnerService = require("../services/partnerService");
 const b2bMemberService = require("../services/b2bMemberService");
@@ -47,11 +55,13 @@ const platformReportsService = require("../services/platformReportsService");
 const partnerWalletAdminService = require("../services/partnerWalletAdminService");
 const b2bWalletBalanceSync = require("../services/b2bWalletBalanceSync");
 const partnerAdminProvisioningService = require("../services/partnerAdminProvisioningService");
+const partnerProfileQrService = require("../services/partnerProfileQrService");
 const { correlationFromRequest } = require("../utils/paymentContext");
 
 const {
   parseAccessFromToken,
   resolvePartnerAccess,
+  resolvePartnerAccessLive,
   isKnownPartnerRole,
   isPartnerOwnerRole,
   legacyPartnerRoleFromNormalized,
@@ -147,7 +157,24 @@ async function loadFirebaseUser(req, res, next) {
  */
 async function requirePlatformAdmin(req, res, next) {
   try {
-    if (await isPlatformAdmin(req.decodedToken, req.userId)) {
+    const live = await parseAccessLive(req.decodedToken, req.userId);
+    const master = await isSuperAdmin(req.decodedToken, req.userId);
+    if (live.userType === ACCESS_USER_TYPE_PARTNER && !master) {
+      res.status(403).json({
+        success: false,
+        error: "Partner sessions cannot call /platform/*",
+        code: "PARTNER_SCOPE",
+      });
+      return;
+    }
+    const token = {
+      ...(req.decodedToken || {}),
+      userType: live.userType,
+      role: live.role,
+      admin: live.userType === ACCESS_USER_TYPE_ADMIN || master,
+    };
+    if (await isPlatformAdmin(token, req.userId)) {
+      req.platformAccess = live;
       next();
       return;
     }
@@ -156,6 +183,43 @@ async function requirePlatformAdmin(req, res, next) {
     console.error("requirePlatformAdmin:", err.message);
     res.status(500).json({ success: false, error: "Authorization check failed" });
   }
+}
+
+/**
+ * Super admin always allowed. Other platform roles must be in `allowed`.
+ * @param {...string} allowed
+ * @returns {import("express").RequestHandler}
+ */
+function requireAdminRoles(...allowed) {
+  return async function requireAdminRolesMw(req, res, next) {
+    try {
+      if (await isSuperAdmin(req.decodedToken, req.userId)) {
+        next();
+        return;
+      }
+      const live = req.platformAccess || await parseAccessLive(req.decodedToken, req.userId);
+      if (live.userType === ACCESS_USER_TYPE_PARTNER) {
+        res.status(403).json({
+          success: false,
+          error: "Partner sessions cannot call /platform/*",
+          code: "PARTNER_SCOPE",
+        });
+        return;
+      }
+      if (live.userType === ACCESS_USER_TYPE_ADMIN && allowed.includes(live.role)) {
+        next();
+        return;
+      }
+      res.status(403).json({
+        success: false,
+        error: "This operations role cannot perform that action",
+        code: "ROLE_FORBIDDEN",
+      });
+    } catch (err) {
+      console.error("requireAdminRoles:", err.message);
+      res.status(500).json({success: false, error: "Authorization check failed"});
+    }
+  };
 }
 
 /**
@@ -358,7 +422,7 @@ app.get("/platform/partners", loadFirebaseUser, requirePlatformAdmin, async (req
  * Create partner. Optional org admin: email + temporaryPassword (Create partner modal).
  * Org admin must sign in, then follow redirectTo=set_pin to set a new password (verifies email).
  */
-app.post("/platform/partners", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+app.post("/platform/partners", loadFirebaseUser, requirePlatformAdmin, requireAdminRoles("operations_admin"), async (req, res) => {
   try {
     const body = req.body || {};
     const {name, settlementCurrency, webhookUrl, email, temporaryPassword, password, displayName} =
@@ -558,7 +622,7 @@ app.get("/platform/partners/:partnerId/wallet", loadFirebaseUser, requirePlatfor
  * Platform admin manual top-up (mirrors C2B POST /customer-wallets/:id/credit).
  * Body: { amount, currency?, description? }
  */
-app.post("/platform/partners/:partnerId/wallet/credit", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+app.post("/platform/partners/:partnerId/wallet/credit", loadFirebaseUser, requirePlatformAdmin, requireAdminRoles("finance_admin"), async (req, res) => {
   try {
     const body = req.body || {};
     const result = await partnerWalletAdminService.creditPartnerWallet({
@@ -601,7 +665,7 @@ app.post("/platform/partners/:partnerId/wallet/credit", loadFirebaseUser, requir
  * POST /platform/partners/:partnerId/wallet/debit
  * Platform admin manual debit (mirrors C2B customer wallet debit).
  */
-app.post("/platform/partners/:partnerId/wallet/debit", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+app.post("/platform/partners/:partnerId/wallet/debit", loadFirebaseUser, requirePlatformAdmin, requireAdminRoles(), async (req, res) => {
   try {
     const body = req.body || {};
     const result = await partnerWalletAdminService.debitPartnerWallet({
@@ -644,7 +708,7 @@ app.post("/platform/partners/:partnerId/wallet/debit", loadFirebaseUser, require
  * DELETE /platform/partners/:partnerId
  * Platform master admin: delete partner org, clear member claims, remove payment links.
  */
-app.delete("/platform/partners/:partnerId", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+app.delete("/platform/partners/:partnerId", loadFirebaseUser, requirePlatformAdmin, requireAdminRoles(), async (req, res) => {
   try {
     const data = await partnerDeletionService.deletePartnerAsPlatformAdmin(
         req.params.partnerId,
@@ -682,6 +746,17 @@ app.post("/platform/partners/:partnerId/payment-links", loadFirebaseUser, requir
   } catch (err) {
     console.error("b2bPortal POST /platform/partners/:id/payment-links:", err.message);
     res.status(paymentLinkErrorStatus(err)).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/platform/partners/:partnerId/profile-qr", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+  try {
+    const data = await partnerProfileQrService.getProfileQr(req.params.partnerId);
+    res.status(200).json({success: true, data});
+  } catch (err) {
+    const status = err.statusCode || 500;
+    console.error("b2bPortal GET /platform/partners/:id/profile-qr:", err.message);
+    res.status(status).json({success: false, error: err.message});
   }
 });
 
@@ -796,7 +871,7 @@ app.delete("/platform/payment-links/:linkId", loadFirebaseUser, requirePlatformA
   }
 });
 
-app.put("/platform/partners/:partnerId/org-admin", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+app.put("/platform/partners/:partnerId/org-admin", loadFirebaseUser, requirePlatformAdmin, requireAdminRoles("operations_admin"), async (req, res) => {
   try {
     const { uid } = req.body || {};
     if (!uid || typeof uid !== "string") {
@@ -830,7 +905,7 @@ app.get("/platform/partners/:partnerId/members", loadFirebaseUser, requirePlatfo
  * Platform admin: add a member to a partner org (same rules as POST /portal/members).
  * Body: { email, password?, role, displayName? } — password required only when creating a new Auth user.
  */
-app.post("/platform/partners/:partnerId/members", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+app.post("/platform/partners/:partnerId/members", loadFirebaseUser, requirePlatformAdmin, requireAdminRoles("operations_admin"), async (req, res) => {
   try {
     const partnerId = req.params.partnerId;
     const partner = await partnerService.getPartner(partnerId);
@@ -869,7 +944,7 @@ app.get("/platform/overview", loadFirebaseUser, requirePlatformAdmin, async (req
 });
 
 /** Paginated list of customer-app users (Firestore users) — platform admin only */
-app.get("/platform/consumer-users", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+app.get("/platform/consumer-users", loadFirebaseUser, requirePlatformAdmin, requireAdminRoles("support_admin", "operations_admin"), async (req, res) => {
   try {
     const limit = parseInt(String(req.query.limit || "50"), 10) || 50;
     const startAfter = req.query.startAfter ? String(req.query.startAfter) : null;
@@ -885,7 +960,7 @@ app.get("/platform/consumer-users", loadFirebaseUser, requirePlatformAdmin, asyn
 });
 
 /** Single customer-app user profile (read-only summary for super-admin dashboard) */
-app.get("/platform/consumer-users/:userId", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+app.get("/platform/consumer-users/:userId", loadFirebaseUser, requirePlatformAdmin, requireAdminRoles("support_admin", "operations_admin"), async (req, res) => {
   try {
     const user = await platformConsumerService.getConsumerUser(req.params.userId);
     if (!user) {
@@ -949,7 +1024,7 @@ app.patch("/platform/users/:userId", loadFirebaseUser, requireSuperAdmin, async 
  * Platform master admin only (Firebase `admin` claim or super-admin email):
  * deletes Firebase Auth user (if present), partner claims, and Firestore/RTDB data.
  */
-app.delete("/platform/users/:userId", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+app.delete("/platform/users/:userId", loadFirebaseUser, requirePlatformAdmin, requireAdminRoles(), async (req, res) => {
   try {
     const actorIsSuperAdmin = await isSuperAdmin(req.decodedToken, req.userId);
     const data = await dashboardUserDeletionService.deleteUserAsPlatformAdmin(
@@ -976,25 +1051,127 @@ app.delete("/platform/users/:userId", loadFirebaseUser, requirePlatformAdmin, as
 });
 
 /**
- * Session/bootstrap for platform super-admins (claim admin: true or master account).
+ * Session/bootstrap for TruePay operations (sessionScope platform_admin).
  * Unlike GET /portal/me, does not require B2B partnerId / partnerRole claims.
  */
 app.get("/platform/me", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
   try {
-    const access = parseAccessFromToken(req.decodedToken);
+    const live = req.platformAccess || await parseAccessLive(req.decodedToken, req.userId);
+    const master = await isSuperAdmin(req.decodedToken, req.userId);
+    const role = live.role || (master ? "super_admin" : null);
     res.status(200).json({
       success: true,
       data: {
         userId: req.userId,
-        userType: access.userType || USER_TYPE_ADMIN,
-        role: access.role,
+        userType: USER_TYPE_ADMIN,
+        role,
         admin: true,
+        sessionScope: "platform_admin",
         email: (req.decodedToken && req.decodedToken.email) || null,
       },
     });
   } catch (err) {
     console.error("b2bPortal GET /platform/me:", err.message);
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * TruePay operations team (not Partner team). Super admin only.
+ * POST body: { email, role, temporaryPassword?, displayName? }
+ * role: finance_admin | support_admin | operations_admin
+ */
+app.get("/platform/team", loadFirebaseUser, requirePlatformAdmin, requireAdminRoles(), async (req, res) => {
+  try {
+    const admins = await platformTeamService.listPlatformAdmins();
+    res.status(200).json({success: true, data: {admins, members: admins}});
+  } catch (err) {
+    console.error("b2bPortal GET /platform/team:", err.message);
+    res.status(500).json({success: false, error: err.message});
+  }
+});
+
+app.post("/platform/team", loadFirebaseUser, requireSuperAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const out = await platformTeamService.invitePlatformAdmin({
+      email: body.email,
+      role: body.role,
+      temporaryPassword: body.temporaryPassword || body.password,
+      displayName: body.displayName,
+      actorUid: req.userId,
+    });
+    res.status(201).json({success: true, data: out});
+  } catch (err) {
+    const status = err.statusCode || 500;
+    console.error("b2bPortal POST /platform/team:", err.message);
+    res.status(status >= 400 && status < 600 ? status : 500).json({
+      success: false,
+      error: err.code || "INVITE_FAILED",
+      message: err.message,
+    });
+  }
+});
+
+app.delete("/platform/team/:userId", loadFirebaseUser, requireSuperAdmin, async (req, res) => {
+  try {
+    const out = await platformTeamService.removePlatformAdmin(req.params.userId, req.userId);
+    res.status(200).json({success: true, data: out});
+  } catch (err) {
+    const status = err.statusCode || 500;
+    console.error("b2bPortal DELETE /platform/team:", err.message);
+    res.status(status >= 400 && status < 600 ? status : 500).json({
+      success: false,
+      error: err.code || "REMOVE_FAILED",
+      message: err.message,
+    });
+  }
+});
+
+app.get("/platform/admins", loadFirebaseUser, requirePlatformAdmin, requireAdminRoles(), async (req, res) => {
+  try {
+    const admins = await platformTeamService.listPlatformAdmins();
+    res.status(200).json({success: true, data: {admins}});
+  } catch (err) {
+    console.error("b2bPortal GET /platform/admins:", err.message);
+    res.status(500).json({success: false, error: err.message});
+  }
+});
+
+app.post("/platform/admins", loadFirebaseUser, requireSuperAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const out = await platformTeamService.invitePlatformAdmin({
+      email: body.email,
+      role: body.role,
+      temporaryPassword: body.temporaryPassword || body.password,
+      displayName: body.displayName,
+      actorUid: req.userId,
+    });
+    res.status(201).json({success: true, data: out});
+  } catch (err) {
+    const status = err.statusCode || 500;
+    console.error("b2bPortal POST /platform/admins:", err.message);
+    res.status(status >= 400 && status < 600 ? status : 500).json({
+      success: false,
+      error: err.code || "INVITE_FAILED",
+      message: err.message,
+    });
+  }
+});
+
+app.delete("/platform/admins/:userId", loadFirebaseUser, requireSuperAdmin, async (req, res) => {
+  try {
+    const out = await platformTeamService.removePlatformAdmin(req.params.userId, req.userId);
+    res.status(200).json({success: true, data: out});
+  } catch (err) {
+    const status = err.statusCode || 500;
+    console.error("b2bPortal DELETE /platform/admins:", err.message);
+    res.status(status >= 400 && status < 600 ? status : 500).json({
+      success: false,
+      error: err.code || "REMOVE_FAILED",
+      message: err.message,
+    });
   }
 });
 
@@ -1423,20 +1600,30 @@ app.post("/portal/onboarding/request-go-live", loadFirebaseUser, async (req, res
 app.get("/portal/me", loadFirebaseUser, async (req, res) => {
   try {
     const dt = req.decodedToken || {};
-    const platformAdmin = await isPlatformAdmin(dt, req.userId);
-    const resolved = resolvePartnerAccess(dt);
+    const live = await parseAccessLive(dt, req.userId);
+    const master = await isSuperAdmin(dt, req.userId);
+    const leftoverPartner =
+      live.userType === USER_TYPE_PARTNER && !master;
+    const platformAdmin =
+      !leftoverPartner &&
+      (master || await isPlatformAdmin({
+        userType: live.userType,
+        role: live.role,
+        admin: live.userType === USER_TYPE_ADMIN,
+      }, req.userId));
+    const resolved = await resolvePartnerAccessLive(dt, req.userId);
     const firstLogin =
       await partnerAdminProvisioningService.firstLoginSessionHints(req.userId, dt);
 
-    if (platformAdmin && !resolved) {
-      const access = parseAccessFromToken(dt);
+    if (platformAdmin) {
       res.status(200).json({
         success: true,
         data: {
           userId: req.userId,
-          userType: access.userType || USER_TYPE_ADMIN,
-          role: access.role,
+          userType: USER_TYPE_ADMIN,
+          role: live.role || (master ? "super_admin" : null),
           admin: true,
+          sessionScope: "platform_admin",
           partnerId: null,
           partnerRole: null,
           roleLegacy: null,
@@ -1484,9 +1671,10 @@ app.get("/portal/me", loadFirebaseUser, async (req, res) => {
         success: true,
         data: {
           userId: req.userId,
-          userType: partnerId ? USER_TYPE_PARTNER : null,
-          role: null,
+          userType: platformAdmin ? USER_TYPE_ADMIN : (partnerId ? USER_TYPE_PARTNER : null),
+          role: platformAdmin ? (live.role || (master ? "super_admin" : null)) : null,
           admin: platformAdmin,
+          sessionScope: platformAdmin ? "platform_admin" : (partnerId ? "partner" : null),
           partnerId,
           partnerRole: null,
           roleLegacy: null,
@@ -1512,24 +1700,30 @@ app.get("/portal/me", loadFirebaseUser, async (req, res) => {
     const partner = await partnerService.getPartner(resolved.partnerId);
     const greetingName =
       await b2bOnboardingService.resolveGreetingName(req.userId, partner);
+    const tokenResolved = resolvePartnerAccess(dt);
+    const claimsNeedRefresh =
+      firstLogin.mustChangePassword || Boolean(resolved && !tokenResolved);
     res.status(200).json({
       success: true,
       data: {
         userId: req.userId,
-        userType: USER_TYPE_PARTNER,
-        role: resolved.role,
+        userType: leftoverPartner ? USER_TYPE_PARTNER : (platformAdmin ? USER_TYPE_ADMIN : USER_TYPE_PARTNER),
+        role: leftoverPartner ? resolved.role : (platformAdmin ? (live.role || (master ? "super_admin" : resolved.role)) : resolved.role),
         admin: platformAdmin,
+        sessionScope: platformAdmin ? "platform_admin" : "partner",
         partnerId: resolved.partnerId,
         partnerRole: legacyPartnerRoleFromNormalized(resolved.role),
         roleLegacy: legacyPartnerRoleFromNormalized(resolved.role),
         partner: partner || { id: resolved.partnerId },
         greetingName,
         emailVerified: dt.email_verified === true,
-        claimsNeedRefresh: firstLogin.mustChangePassword,
+        claimsNeedRefresh,
         onboardingIncomplete: false,
         ...firstLogin,
         ...(firstLogin.mustChangePassword ? {
           message: "First login — set a new PIN/password at /set-pin before continuing.",
+        } : claimsNeedRefresh ? {
+          message: "Partner claims are set — refresh your ID token (getIdToken(true)).",
         } : {}),
       },
     });
@@ -1726,6 +1920,21 @@ app.delete("/portal/payment-links/:linkId", loadFirebaseUser, attachPartnerConte
 });
 
 /** Partner wallet balances (Firebase Bearer; no API key in browser). */
+/**
+ * GET /portal/profile-qr — merchant profile QR + merchant ID (open-amount SafariTap pay).
+ * Not a product payment-link QR.
+ */
+app.get("/portal/profile-qr", loadFirebaseUser, attachPartnerContext, async (req, res) => {
+  try {
+    const data = await partnerProfileQrService.getProfileQr(req.partnerId);
+    res.status(200).json({success: true, data});
+  } catch (err) {
+    const status = err.statusCode || 500;
+    console.error("b2bPortal GET /portal/profile-qr:", err.message);
+    res.status(status).json({success: false, error: err.message});
+  }
+});
+
 app.get("/portal/wallet", loadFirebaseUser, attachPartnerContext, async (req, res) => {
   try {
     // Migrates stranded users/{uid} balances (from C2B-style admin credit) into partner wallet once.
@@ -2228,7 +2437,7 @@ app.get("/portal/reports", loadFirebaseUser, attachPartnerContextOrPlatformAdmin
   }
 });
 
-app.get("/platform/reports", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+app.get("/platform/reports", loadFirebaseUser, requirePlatformAdmin, requireAdminRoles("finance_admin", "operations_admin"), async (req, res) => {
   try {
     const period = req.query.period ? String(req.query.period) : "month";
     const partnerId = req.query.partnerId ? String(req.query.partnerId) : null;
@@ -2264,6 +2473,25 @@ app.get("/portal/transactions", loadFirebaseUser, attachPartnerContextOrPlatform
   }
 });
 
+/**
+ * Safari Tap (C2B) tabs — all platform members (not partner sessions).
+ * Same payload as GET /api/admin/safari-tap/transactions.
+ */
+app.get("/platform/safari-tap/transactions", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
+  try {
+    const data = await c2bSafariTapAdminListService.listSafariTapTransactions(req.query || {});
+    res.status(200).json({success: true, data});
+  } catch (err) {
+    const status = err.httpStatus || (err.code === "VALIDATION_FAILED" ? 400 : 500);
+    console.error("b2bPortal GET /platform/safari-tap/transactions:", err.message);
+    res.status(status).json({
+      success: false,
+      error: err.code || "SAFARI_TAP_LIST_FAILED",
+      message: err.message,
+    });
+  }
+});
+
 /** Platform-wide transactions for super-admin dashboard (preferred for Overview / Partners tabs). */
 app.get("/platform/transactions", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
   try {
@@ -2289,6 +2517,46 @@ app.get("/l/:linkId/success", (req, res) => {
       req.params.linkId,
       `/${B2B_PORTAL_FUNCTION_SEGMENT}`,
   ));
+});
+
+/**
+ * Public merchant profile landing (generic camera / SafariTap parse).
+ * Path `/p/:merchantId` is the profile QR payload — not `/l/:linkId` product links.
+ */
+app.get("/p/:merchantId", async (req, res) => {
+  try {
+    const merchant = await partnerProfileQrService.resolvePublicMerchant(req.params.merchantId);
+    res.set("Content-Type", "text/html; charset=utf-8");
+    res.set("Cache-Control", "no-store");
+    res.send(partnerProfileQrService.renderProfileQrLandingHtml(merchant));
+  } catch (err) {
+    const status = err.statusCode || 404;
+    res.status(status).send(renderErrorHtml(
+        "Merchant not found",
+        err.message || "This TruePay merchant profile is not available.",
+    ));
+  }
+});
+
+app.get("/public/merchants/:merchantId", async (req, res) => {
+  try {
+    const data = await partnerProfileQrService.resolvePublicMerchant(req.params.merchantId);
+    res.status(200).json({success: true, data});
+  } catch (err) {
+    const status = err.statusCode || 500;
+    res.status(status).json({success: false, error: err.message});
+  }
+});
+
+app.post("/public/qr/resolve", async (req, res) => {
+  try {
+    const payload = req.body?.payload ?? req.body?.qrPayload ?? req.body?.data ?? "";
+    const data = await partnerProfileQrService.resolveScannedQr(payload);
+    res.status(200).json({success: true, data});
+  } catch (err) {
+    const status = err.statusCode || 500;
+    res.status(status).json({success: false, error: err.message, code: err.code || null});
+  }
 });
 
 /** Hosted payer checkout page — works without pay.truepay.africa DNS */

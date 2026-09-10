@@ -28,6 +28,7 @@ function getConfiguredFlatFee(payoutType) {
     case PAYOUT_TYPES.BANK:
       return Number(fees.bank || 0);
     case PAYOUT_TYPES.SAFARITAP_WALLET:
+    case PAYOUT_TYPES.TRUEPAY_MERCHANT:
       return Number(fees.wallet || 0);
     default:
       return 0;

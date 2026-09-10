@@ -54,9 +54,10 @@ For a **separate** sandbox with a **static public** API key and its own base URL
 
 | Audience | Required claims | Notes |
 |----------|-----------------|--------|
-| **Platform super admin** (TruePay operations) | `admin: true` | Same claim as the main TruePay admin dashboard; used for `/platform/*` routes. |
-| **Partner org admin** | `partnerId: "<partnerDocId>"`, `partnerRole: "org_admin"` | Set only via platform flow (`PUT .../org-admin`) or server-side; manages `/portal/members` (except self-removal / self role change). |
-| **Partner team member** | `partnerId`, `partnerRole` one of the **assignable** roles below | Can call **`GET /portal/me`**. Listing/mutating members requires **`org_admin`**. |
+| **Platform super admin** | `userType: "admin"`, `role: "super_admin"`, `admin: true`, `sessionScope: "platform_admin"` | Built-in master email. Full `/platform/*`. |
+| **TruePay operations teammate** | `userType: "admin"`, `role: finance_admin \| support_admin \| operations_admin`, `admin: true`, **no `partnerId`** | Invite with **`POST /platform/admins`** (super admin). Not Partner team. |
+| **Partner org admin** | `userType: "partner"`, `partnerId`, `role: "owner"` (legacy `partnerRole: "org_admin"`) | Create partner + email, or `PUT .../org-admin`. **`sessionScope: "partner"`**. `/portal/*` only. |
+| **Partner team member** | `userType: "partner"`, `partnerId`, `role` finance/support/operations/viewer, `admin` must not be true | **`POST /platform/partners/{id}/members`** or `/portal/members`. That org only. |
 
 **Roles**
 
@@ -246,7 +247,18 @@ Paths below are relative to the **`b2bPortal`** function base URL.
 
 ### 3.1 Platform super admin — partner lifecycle
 
-Requires Firebase ID token with **`admin: true`**.
+Requires **`sessionScope: "platform_admin"`** (`userType: "admin"`). Partner sessions (`userType: "partner"`) are rejected on `/platform/*` even if leftover `admin: true` remains on the token.
+
+**TruePay operations team** (not Partner team):
+
+| Method | Path | Who |
+|--------|------|-----|
+| `POST` | `/platform/admins` | Super admin — body `{ email, role, temporaryPassword?, displayName? }`. `role`: `finance_admin` \| `support_admin` \| `operations_admin`. |
+| `GET` | `/platform/admins` | Super admin — list operations teammates. |
+| `DELETE` | `/platform/admins/:userId` | Super admin. |
+| `GET` | `/platform/me` | Any operations teammate — `{ userType, role, admin: true, sessionScope: "platform_admin" }`. |
+
+`POST /platform/partners` + email still creates a **partner owner** (`sessionScope: "partner"`). `POST /platform/partners/{id}/members` still creates a **partner teammate** only.
 
 #### `GET /platform/partners`
 
@@ -754,6 +766,47 @@ Callable equivalent: **`sendEmailVerification`** (same payload; requires Auth).
 **Response** `200` — same member array shape as platform `GET .../members`.
 
 **Errors** `403` if not `org_admin`.
+
+---
+
+#### `GET /portal/profile-qr`
+
+**Any partner role** with `partnerId` claims. Returns the **merchant profile QR** (open amount) plus **`merchantId`**. This is **not** a product payment-link QR (`/l/:linkId`).
+
+SafariTap Pay scans this QR (or the payer types `merchantId`) and enters an amount from their KES wallet. Funds credit the partner wallet as `b2b_payment` with `metadata.source = "truepay_merchant_profile"`.
+
+**Response** `200`
+
+```json
+{
+  "success": true,
+  "data": {
+    "kind": "profile",
+    "merchantId": "partner_…",
+    "partnerId": "partner_…",
+    "partnerName": "Tru Pay",
+    "status": "active",
+    "acceptingPayments": true,
+    "settlementCurrency": "KES",
+    "payUrl": "https://…/b2bPortal/p/partner_…",
+    "qrPayload": "https://…/b2bPortal/p/partner_…",
+    "qrCode": "data:image/png;base64,…",
+    "instructions": "Display this QR for SafariTap Pay. …"
+  }
+}
+```
+
+Dashboard: show `qrCode` (or encode `qrPayload` / `payUrl` locally) and copyable **`merchantId`**. Put this on **Business Profile**, not on product Payment Links.
+
+Platform admin: **`GET /platform/partners/:partnerId/profile-qr`** (same payload).
+
+Public helpers (no auth):
+
+| Method | Path | Use |
+|--------|------|-----|
+| `GET` | `/p/:merchantId` | HTML fallback if a generic camera opens the QR URL |
+| `GET` | `/public/merchants/:merchantId` | JSON name + `merchantId` |
+| `POST` | `/public/qr/resolve` | Body `{ "payload": "<scanned string>" }` — `kind: profile` or `kind: product` |
 
 ---
 

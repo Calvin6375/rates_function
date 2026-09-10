@@ -157,5 +157,43 @@ describe("safariCardPayoutValidation", () => {
       expect(parsed.provider).toBe("SAFARITAP_WALLET");
       expect(parsed.phoneNumber).toBe("254712345678");
     });
+
+    it("maps TRUEPAY_MERCHANT from profile QR payload", () => {
+      const parsed = validateBeneficiaryRequest({
+        type: "TRUEPAY_MERCHANT",
+        qrPayload: "https://example.test/b2bPortal/p/partner_abc_123",
+      });
+      expect(parsed.provider).toBe("TRUEPAY_MERCHANT");
+      expect(parsed.merchantId).toBe("partner_abc_123");
+    });
+  });
+
+  describe("TRUEPAY_MERCHANT create", () => {
+    it("accepts TRUEPAY_MERCHANT with merchantId", () => {
+      const parsed = validateCreatePayoutRequest({
+        type: "TRUEPAY_MERCHANT",
+        amount: 250,
+        currency: "KES",
+        clientRequestId: "client-req-merchant-001",
+        recipient: {merchantId: "partner_abc_123"},
+      });
+      expect(parsed.type).toBe("TRUEPAY_MERCHANT");
+      expect(parsed.recipient.merchantId).toBe("partner_abc_123");
+    });
+
+    it("rejects product payment-link QR as TRUEPAY_MERCHANT", () => {
+      try {
+        validateCreatePayoutRequest({
+          type: "TRUEPAY_MERCHANT",
+          amount: 250,
+          currency: "KES",
+          clientRequestId: "client-req-merchant-002",
+          qrPayload: "https://example.test/l/pl_abc?partner=partner_1",
+        });
+        throw new Error("expected validation error");
+      } catch (err) {
+        expect(err.code).toBe(ERROR_CODES.INVALID_RECIPIENT);
+      }
+    });
   });
 });

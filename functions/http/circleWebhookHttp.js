@@ -15,6 +15,23 @@ const circleEntitySecret = defineSecret(config.secrets.circleEntitySecret);
 const app = express();
 app.use(express.raw({ type: "application/json" }));
 
+/**
+ * Circle Console probes the webhook URL with HEAD then GET before activating it.
+ * Only POST carries signed events.
+ */
+app.use((req, res, next) => {
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    next();
+    return;
+  }
+  res.status(200).set("Cache-Control", "no-store");
+  if (req.method === "HEAD") {
+    res.end();
+    return;
+  }
+  res.send("OK");
+});
+
 app.post("/", async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).send("Method Not Allowed");

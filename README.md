@@ -8,8 +8,8 @@ Firebase Cloud Functions backend for **TruePay** — a cryptocurrency exchange a
 
 | Surface | Users | Examples |
 |---------|-------|----------|
-| **Consumer (C2B)** | Tourist / retail Flutter app | Wallet top-up (Paystack), pay merchants (USD → KES via Daraja), **Safari Card** M-Pesa payouts (Till / PayBill / Pochi / Send Money), swap, USDC (Circle) |
-| **B2B** | Partners & portals | Partner API (`X-API-KEY`), hosted payment links, team portal, sandbox |
+| **Consumer (C2B)** | Tourist / retail Flutter app | Wallet top-up (Paystack), pay merchants (USD → KES via Daraja), **Safari Card** M-Pesa payouts (Till / PayBill / Pochi / Send Money), **pay TruePay merchants via profile QR**, swap, USDC (Circle) |
+| **B2B** | Partners & portals | Partner API (`X-API-KEY`), hosted **product** payment links, **merchant profile QR**, team portal, sandbox |
 | **Platform** | Ops & admin | User/partner management, funding reconciliation, settlement retries |
 
 Wallet balances for the Flutter app are projected to **Realtime Database** (`wallet/{uid}/fiat/…`, `wallet/{uid}/crypto/USDC`). Firestore holds ledgers, orders, and audit trails.
@@ -47,19 +47,31 @@ Base URL: `https://us-central1-truepay-72060.cloudfunctions.net/<name>`
 | [`transactionsApi`](./docs/TRANSACTIONS_API.md) | Firebase Bearer | Transaction history feed (labels, Safari Card enrichment) |
 | [`notificationsApi`](./docs/api.md) | Firebase Bearer | In-app notifications |
 | [`cryptoApi`](./docs/circle_c2b.md) | Firebase Bearer | Circle USDC wallet & send |
-| [`safariCardApi`](./docs/pay.md) | Firebase Bearer | Safari Card validate / pay / payout (IntaSend disbursement) |
+| [`safariCardApi`](./docs/pay.md) | Firebase Bearer | Safari Card validate / pay / payout (IntaSend + TruePay merchant profile) |
 | [`partner`](./docs/B2B_docs.md) | `X-API-KEY` | B2B Partner API |
 | [`b2bPortal`](./docs/B2B_docs.md) | Firebase Bearer | Partner dashboard & platform admin |
 | [`partnerSandbox`](./docs/B2B_SANDBOX.md) | Static sandbox key | In-memory B2B mocks |
 
-**Safari Card (C2B pay tab)** — all flows use one endpoint:
+**Safari Card (C2B pay tab)** — payouts use:
 
 ```
 POST /safari-card/payouts
 GET  /safari-card/payouts/by-client-request/{clientRequestId}
+POST /safari-card/payouts/validate-beneficiary
+POST /safari-card/merchants/resolve
 ```
 
-PayBill, Buy Goods (Till), Pochi, and Send Money differ only in request body (`accountType`, `recipient`). Flutter generates **`clientRequestId`** (UUID) per Pay tap for idempotency and polling.
+PayBill, Buy Goods (Till), Pochi, Send Money, and **TruePay merchant profile** (`type: TRUEPAY_MERCHANT`) differ only in request body. Flutter generates **`clientRequestId`** (UUID) per Pay tap for idempotency and polling.
+
+**Merchant profile QR (not a product payment link)**
+
+| Who | Endpoint | Purpose |
+|-----|----------|---------|
+| Partner dashboard | `GET /b2bPortal/portal/profile-qr` | PNG + `merchantId` + `payUrl` (`…/p/{merchantId}`) |
+| Platform admin | `GET /b2bPortal/platform/partners/:partnerId/profile-qr` | Same payload for any partner |
+| SafariTap scanner | `POST /safari-card/merchants/resolve` | `kind: profile` vs `kind: product` (`…/l/{linkId}`) |
+
+A successful profile pay credits the **partner KES wallet**, writes C2B `merchant_payment` (Pay / SafariTap) and B2B `b2b_payment` (partner collections), and counts the payer fee on the super-admin **Pay** revenue bucket. Guides: [`docs/B2B_FRONTEND_INSTRUCTIONS.md`](./docs/B2B_FRONTEND_INSTRUCTIONS.md) · [`docs/pay.md`](./docs/pay.md).
 
 **Callables:** `createPayment`, `createDirectTopup`, `createSwapOrder`, `createSendMoneyOrder`, `userBootstrap`, …
 
@@ -81,7 +93,8 @@ All guides live in **[`docs/`](./docs/)**. Start with [`docs/INDEX.md`](./docs/I
 | [`docs/SAFARI_CARD_PAYOUTS.md`](./docs/SAFARI_CARD_PAYOUTS.md) | Safari Card backend (IntaSend, webhooks, Firestore) |
 | [`docs/TRANSACTIONS_API.md`](./docs/TRANSACTIONS_API.md) | Transaction feed API |
 | [`docs/C2B_PAYLOAD_ENCRYPTION.md`](./docs/C2B_PAYLOAD_ENCRYPTION.md) | Optional C2B request/response encryption |
-| [`docs/B2B_docs.md`](./docs/B2B_docs.md) | B2B Partner & portal API reference |
+| [`docs/B2B_docs.md`](./docs/B2B_docs.md) | B2B Partner & portal API reference (includes `GET /portal/profile-qr`) |
+| [`docs/B2B_FRONTEND_INSTRUCTIONS.md`](./docs/B2B_FRONTEND_INSTRUCTIONS.md) | Partner dashboard UI (profile QR vs product links) |
 | [`docs/PAYSTACK_TOURIST.md`](./docs/PAYSTACK_TOURIST.md) | C2B Paystack top-up flow |
 | [`docs/PAYMENT_LIFECYCLE.md`](./docs/PAYMENT_LIFECYCLE.md) | Funding + merchant settlement lifecycle |
 
@@ -109,6 +122,7 @@ npm run deploy                              # all functions
 
 # Common partial deploys
 firebase deploy --only functions:api,functions:transactionsApi,functions:safariCardApi,functions:cryptoApi
+firebase deploy --only functions:b2bPortal,functions:safariCardApi   # profile QR + TruePay merchant pay
 firebase deploy --only functions:handleIntaSendDisbursementWebhook
 firebase deploy --only firestore:indexes
 ```

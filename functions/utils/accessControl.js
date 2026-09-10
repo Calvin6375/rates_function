@@ -50,7 +50,7 @@ const PLATFORM_ADMINS_COL = "platformAdmins";
  * @returns {string}
  */
 function normalizePartnerRole(role) {
-  const r = String(role || "").trim();
+  const r = String(role || "").trim().toLowerCase();
   if (r === LEGACY_PARTNER_ROLE_ORG_ADMIN) {
     return PARTNER_ROLE_OWNER;
   }
@@ -165,16 +165,46 @@ async function isSuperAdmin(decodedToken, uid) {
  * @param {string} [uid]
  * @returns {Promise<boolean>}
  */
+async function isListedPlatformAdmin(uid) {
+  if (!uid) {
+    return false;
+  }
+  try {
+    const snap = await collection(PLATFORM_ADMINS_COL).doc(uid).get();
+    return snap.exists;
+  } catch (_err) {
+    return false;
+  }
+}
+
 async function isPlatformAdmin(decodedToken, uid) {
   const access = parseAccessFromToken(decodedToken);
-  if (access.userType === USER_TYPE_ADMIN && access.role && ADMIN_ROLES.includes(access.role)) {
-    return true;
-  }
-  if (access.isLegacyAdmin) {
-    return true;
+  if (access.userType !== USER_TYPE_PARTNER) {
+    if (access.userType === USER_TYPE_ADMIN && access.role && ADMIN_ROLES.includes(access.role)) {
+      return true;
+    }
+    if (access.isLegacyAdmin) {
+      return true;
+    }
   }
   if (uid && await isSuperAdminEmailUid(uid)) {
     return true;
+  }
+  if (uid) {
+    try {
+      const live = parseAccessFromToken(await getCustomClaims(uid));
+      if (live.userType === USER_TYPE_ADMIN && live.role && ADMIN_ROLES.includes(live.role)) {
+        return true;
+      }
+      if (live.isLegacyAdmin && live.userType !== USER_TYPE_PARTNER) {
+        return true;
+      }
+    } catch (_err) {
+      // ignore
+    }
+    if (await isListedPlatformAdmin(uid)) {
+      return true;
+    }
   }
   return false;
 }
@@ -184,6 +214,43 @@ async function isPlatformAdmin(decodedToken, uid) {
  * @param {string[]} allowedAdminRoles
  * @returns {boolean}
  */
+/**
+ * Live Auth claims win over a stale ID token (partner invite must not keep admin).
+ *
+ * @param {Object|null|undefined} decodedToken
+ * @param {string} [uid]
+ * @returns {Promise<ReturnType<typeof parseAccessFromToken>>}
+ */
+async function parseAccessLive(decodedToken, uid) {
+  let access = parseAccessFromToken(decodedToken);
+  if (uid) {
+    try {
+      const live = await getCustomClaims(uid);
+      if (live && Object.keys(live).length > 0) {
+        access = parseAccessFromToken(live);
+      }
+    } catch (_err) {
+      // keep token parse
+    }
+    try {
+      const adminDoc = await collection(PLATFORM_ADMINS_COL).doc(uid).get();
+      if (adminDoc.exists) {
+        const role = adminDoc.data().role || access.role || ADMIN_ROLE_SUPER;
+        return {
+          userType: USER_TYPE_ADMIN,
+          role,
+          partnerId: null,
+          isLegacyAdmin: true,
+          legacyPartnerRole: null,
+        };
+      }
+    } catch (_err) {
+      // registry read failed
+    }
+  }
+  return access;
+}
+
 function hasAdminRole(decodedToken, allowedAdminRoles) {
   const access = parseAccessFromToken(decodedToken);
   if (access.userType !== USER_TYPE_ADMIN || !access.role) {
@@ -231,7 +298,7 @@ async function setAdminAccessClaims(uid, adminRole, createdByUid = null) {
   await mergeCustomUserClaims(uid, {
     userType: USER_TYPE_ADMIN,
     role: adminRole,
-    admin: adminRole === ADMIN_ROLE_SUPER ? true : null,
+    admin: true,
     partnerId: null,
     partnerRole: null,
   });
@@ -383,6 +450,32 @@ function resolvePartnerAccess(decodedToken) {
 }
 
 /**
+ * Token claims can lag after platform create-partner / add-member.
+ * Fall back to live Auth custom claims.
+ *
+ * @param {Object|null|undefined} decodedToken
+ * @param {string} [uid]
+ * @returns {Promise<{ partnerId: string, role: string }|null>}
+ */
+async function resolvePartnerAccessLive(decodedToken, uid) {
+  if (uid) {
+    try {
+      const claims = await getCustomClaims(uid);
+      if (claims && Object.keys(claims).length > 0) {
+        const live = parseAccessFromToken(claims);
+        if (live.userType === USER_TYPE_ADMIN) {
+          return null;
+        }
+        return resolvePartnerAccess(claims);
+      }
+    } catch (_err) {
+      // fall through to token
+    }
+  }
+  return resolvePartnerAccess(decodedToken);
+}
+
+/**
  * Super-admin only (not operations/support/finance admins).
  *
  * @param {Object|null|undefined} auth
@@ -411,11 +504,14 @@ module.exports = {
   normalizePartnerRole,
   legacyPartnerRoleFromNormalized,
   parseAccessFromToken,
+  parseAccessLive,
   resolvePartnerAccess,
+  resolvePartnerAccessLive,
   isPartnerOwnerRole,
   isKnownPartnerRole,
   isSuperAdminEmailUid,
   isSuperAdmin,
+  isListedPlatformAdmin,
   isPlatformAdmin,
   hasAdminRole,
   hasPartnerRole,

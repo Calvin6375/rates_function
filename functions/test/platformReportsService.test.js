@@ -14,6 +14,14 @@ describe("classifyReportCategory", () => {
     expect(classifyReportCategory({type: "MPESA_B2B"})).toBe("pay");
     expect(classifyReportCategory({type: "b2b_send"})).toBe("send");
     expect(classifyReportCategory({type: "withdrawal", metadata: {type: "MPESA_B2C"}})).toBe("send");
+    expect(classifyReportCategory({
+      type: "TRUEPAY_MERCHANT",
+      metadata: {source: "truepay_merchant_profile"},
+    })).toBe("pay");
+    expect(classifyReportCategory({
+      type: "withdrawal",
+      metadata: {source: "truepay_merchant_profile"},
+    })).toBe("pay");
     expect(classifyReportCategory({orderType: "swap"})).toBe("exchange");
   });
 

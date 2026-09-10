@@ -710,7 +710,8 @@ function resolveSafariSendProductKey(payoutType) {
   if (
     type === "MPESA_B2C" ||
     type === "BANK" ||
-    type === "SAFARITAP_WALLET"
+    type === "SAFARITAP_WALLET" ||
+    type === "TRUEPAY_MERCHANT"
   ) {
     return "send_ke";
   }

@@ -15,6 +15,8 @@ Backend reference: [`SAFARI_CARD_PAYOUTS.md`](./SAFARI_CARD_PAYOUTS.md).
 | Pay PayBill | `POST /safari-card/payouts` (`MPESA_B2B` + `PayBill`) |
 | Send to bank | `POST /safari-card/payouts` (`BANK`) |
 | Verify recipient name | `POST /safari-card/payouts/validate-beneficiary` |
+| Pay TruePay merchant (profile QR / merchant ID) | `POST /safari-card/payouts` (`TRUEPAY_MERCHANT`) |
+| Resolve scanned QR | `POST /safari-card/merchants/resolve` |
 | Bank picker | `GET /safari-card/banks` |
 | Payment status | `GET /safari-card/payouts/:payoutId` |
 | Payment history | `GET /safari-card/payouts` |
@@ -294,6 +296,13 @@ Validates recipient with IntaSend before the user confirms.
 ```
 
 Only show “verified recipient” UI when `valid: true` and `beneficiaryName` is non-empty.
+
+**TruePay merchant profile** (`type: TRUEPAY_MERCHANT`): pass `merchantId` or `qrPayload` from the scanned profile QR (`…/p/{merchantId}`). `beneficiaryName` is the partner display name. If resolve/validate reports a **product** link (`…/l/{linkId}`), do not use this payout type — open the hosted product checkout.
+
+```
+POST /safari-card/merchants/resolve
+{ "payload": "<camera result>" }
+```
 
 ---
 

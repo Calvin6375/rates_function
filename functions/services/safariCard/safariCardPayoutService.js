@@ -11,6 +11,7 @@ const fiatReservationService = require("../ledger/fiatReservationService");
 const intasendDisbursement = require("../intasend/intasendDisbursementProvider");
 const { resolveRecipientUserId } = require("../../libs/sendMoney");
 const { calculatePayoutFee } = require("./safariCardPayoutFeeService");
+const partnerProfileQrService = require("../partnerProfileQrService");
 const {
   validateCreatePayoutRequest,
   validateBeneficiaryRequest,
@@ -138,6 +139,22 @@ async function resolveSafariTapWalletRecipient(recipient) {
  */
 async function validateBeneficiary(params) {
   const parsed = validateBeneficiaryRequest(params);
+
+  if (parsed.provider === "TRUEPAY_MERCHANT") {
+    const merchant = await partnerProfileQrService.resolvePublicMerchant(parsed.merchantId);
+    return {
+      valid: true,
+      account: merchant.merchantId,
+      accountType: "TruePayMerchant",
+      bankCode: null,
+      beneficiaryName: merchant.partnerName,
+      merchantId: merchant.merchantId,
+      partnerId: merchant.partnerId,
+      payUrl: merchant.payUrl,
+      provider: "truepay",
+      providerStatus: "valid",
+    };
+  }
 
   if (parsed.provider === "SAFARITAP_WALLET") {
     const resolved = await resolveSafariTapWalletRecipient({
@@ -490,6 +507,245 @@ async function finalizeInternalWalletTransfer(params) {
 }
 
 /**
+ * SafariTap KES → partner wallet via profile QR / merchant ID.
+ *
+ * @param {string} senderId
+ * @param {Object} parsed
+ * @param {Object} feeBreakdown
+ * @returns {Promise<Object>}
+ */
+async function createMerchantProfilePayout(senderId, parsed, feeBreakdown) {
+  const merchant = await partnerProfileQrService.resolvePublicMerchant(
+      parsed.recipient.merchantId || parsed.recipient.partnerId,
+  );
+
+  const payoutRef = collection(PAYOUTS_COL).doc();
+  const payoutId = payoutRef.id;
+  const requestId = payoutId;
+
+  try {
+    await fiatReservationService.reserveFunds({
+      userId: senderId,
+      amount: feeBreakdown.totalDebit,
+      asset: parsed.currency,
+      requestId,
+      purpose: RESERVATION_PURPOSE,
+      merchantPaymentId: payoutId,
+    });
+  } catch (err) {
+    if (String(err.message || "").includes("Insufficient")) {
+      throw payoutError(ERROR_CODES.INSUFFICIENT_BALANCE, err.message, 402);
+    }
+    throw err;
+  }
+
+  const recipient = {
+    ...parsed.recipient,
+    merchantId: merchant.merchantId,
+    partnerId: merchant.partnerId,
+    name: merchant.partnerName || parsed.recipient.name || "TruePay Merchant",
+  };
+
+  /** @type {Record<string, unknown>} */
+  const payoutDoc = {
+    payoutId,
+    userId: senderId,
+    recipientPartnerId: merchant.partnerId,
+    type: parsed.type,
+    status: PAYOUT_STATUS.PENDING,
+    amount: feeBreakdown.amount,
+    fee: feeBreakdown.fee,
+    totalDebit: feeBreakdown.totalDebit,
+    feeSource: feeBreakdown.feeSource || "env_flat_fee",
+    pricingProductKey: feeBreakdown.pricingProductKey || null,
+    currency: parsed.currency,
+    recipient,
+    provider: "truepay",
+    providerTrackingId: null,
+    providerTransactionId: null,
+    providerReference: null,
+    reference: payoutId,
+    narrative: parsed.narrative,
+    idempotencyKey: `safari_card_payout:${senderId}:${parsed.clientRequestId}`,
+    clientRequestId: parsed.clientRequestId,
+    requestId,
+    statusHistory: [{
+      status: PAYOUT_STATUS.PENDING,
+      at: new Date().toISOString(),
+    }],
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    completedAt: null,
+    failedAt: null,
+    failureReason: null,
+  };
+
+  const idempotencyRef = collection(IDEMPOTENCY_COL)
+      .doc(idempotencyDocId(senderId, parsed.clientRequestId));
+
+  await payoutRef.set(payoutDoc);
+  await idempotencyRef.set({
+    payoutId,
+    userId: senderId,
+    clientRequestId: parsed.clientRequestId,
+    createdAt: serverTimestamp(),
+  });
+
+  try {
+    return await finalizeMerchantProfileTransfer({
+      payoutId,
+      requestId,
+      senderId,
+      partnerId: merchant.partnerId,
+    });
+  } catch (err) {
+    await handlePayoutFailure({
+      payoutId,
+      requestId,
+      failureReason: err.message || "TruePay merchant payment failed",
+      providerPayload: null,
+    });
+    if (err.code && err.httpStatus) {
+      throw err;
+    }
+    throw payoutError(
+        ERROR_CODES.PAYOUT_FAILED,
+        err.message || "TruePay merchant payment failed",
+        500,
+    );
+  }
+}
+
+/**
+ * Debit SafariTap user and credit the partner wallet.
+ *
+ * @param {Object} params
+ * @returns {Promise<Object>}
+ */
+async function finalizeMerchantProfileTransfer(params) {
+  const {payoutId, requestId, senderId, partnerId} = params;
+  const payout = await getPayoutById(payoutId);
+  if (!payout) {
+    throw payoutError(ERROR_CODES.NOT_FOUND, "Payout not found", 404);
+  }
+  if (payout.status === PAYOUT_STATUS.SUCCESS) {
+    return serializePayoutForClient(payout);
+  }
+
+  const amount = Number(payout.amount);
+  const totalDebit = Number(payout.totalDebit);
+  const currency = payout.currency;
+  const debitRef = `sc_payout_debit_${payoutId}`;
+  const merchantName = payout.recipient?.name || null;
+
+  let senderName = null;
+  try {
+    const senderDoc = await admin.firestore()
+        .collection(config.collections.users)
+        .doc(senderId || payout.userId)
+        .get();
+    if (senderDoc.exists) {
+      const s = senderDoc.data() || {};
+      senderName = s.name ||
+        [s.firstName, s.lastName].filter(Boolean).join(" ").trim() ||
+        null;
+    }
+  } catch (_err) {
+    // non-critical for labels
+  }
+
+  const debitResult = await walletService.debitUserFiat(
+      senderId || payout.userId,
+      totalDebit,
+      currency,
+      {
+        referenceId: debitRef,
+        type: "merchant_payment",
+        source: "truepay_merchant_profile",
+        metadata: {
+          payoutId,
+          type: payout.type,
+          merchantId: partnerId,
+          partnerId,
+          merchantName,
+          fee: Number(payout.fee || 0),
+        },
+      },
+  );
+
+  await walletService.getOrCreatePartnerWallet(partnerId);
+  const creditResult = await walletService.updatePartnerWalletBalance(
+      partnerId,
+      currency,
+      amount,
+  );
+
+  await fiatReservationService.confirmReservation(requestId || payout.requestId);
+
+  const payerFee = Number(payout.fee || 0);
+  const {transactionId} = await transactionService.createTransactionRecord({
+    type: transactionService.TRANSACTION_TYPES.merchant_payment,
+    userId: payout.userId,
+    amount,
+    currency,
+    status: transactionService.STATUSES.completed,
+    metadata: {
+      payoutId,
+      ...buildSafariCardTransactionMetadata(payout, null, {
+        previousBalance: debitResult.previousBalance,
+        newBalance: debitResult.newBalance,
+      }),
+      provider: "truepay",
+      source: "truepay_merchant_profile",
+      payoutType: PAYOUT_TYPES.TRUEPAY_MERCHANT,
+      type: PAYOUT_TYPES.TRUEPAY_MERCHANT,
+      merchantId: partnerId,
+      partnerId,
+      merchantName,
+      fee: payerFee,
+      feeAmount: payerFee,
+    },
+    logLegacy: true,
+  });
+
+  await transactionService.createTransactionRecord({
+    type: transactionService.TRANSACTION_TYPES.b2b_payment,
+    partnerId,
+    userId: senderId || payout.userId,
+    amount,
+    currency,
+    status: transactionService.STATUSES.completed,
+    metadata: {
+      payoutId,
+      source: "truepay_merchant_profile",
+      kind: "profile",
+      payerUserId: senderId || payout.userId,
+      payerName: senderName,
+      merchantId: partnerId,
+      previousBalance: creditResult.previousBalance,
+      newBalance: creditResult.newBalance,
+    },
+    logLegacy: false,
+  });
+
+  await collection(PAYOUTS_COL).doc(payoutId).update({
+    status: PAYOUT_STATUS.SUCCESS,
+    transactionId,
+    ledgerEntryId: debitResult.ledgerEntryId || null,
+    completedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    statusHistory: admin.firestore.FieldValue.arrayUnion({
+      status: PAYOUT_STATUS.SUCCESS,
+      at: new Date().toISOString(),
+      source: "truepay_merchant_profile",
+    }),
+  });
+
+  const updated = await getPayoutById(payoutId);
+  return serializePayoutForClient(updated);
+}
+
+/**
  * @param {string} userId
  * @param {Object} body
  * @returns {Promise<Object>}
@@ -521,6 +777,10 @@ async function createPayout(userId, body) {
 
   if (parsed.type === PAYOUT_TYPES.SAFARITAP_WALLET) {
     return createInternalWalletPayout(userId, parsed, feeBreakdown);
+  }
+
+  if (parsed.type === PAYOUT_TYPES.TRUEPAY_MERCHANT) {
+    return createMerchantProfilePayout(userId, parsed, feeBreakdown);
   }
 
   const payoutRef = collection(PAYOUTS_COL).doc();

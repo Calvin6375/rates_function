@@ -32,12 +32,24 @@ jest.mock("../../services/walletService", () => ({
   getFiatAvailableBalance: jest.fn(),
   debitUserFiat: jest.fn(),
   creditUserFiat: jest.fn(),
+  getOrCreatePartnerWallet: jest.fn(),
+  updatePartnerWalletBalance: jest.fn(),
 }));
 
 jest.mock("../../services/transactionService", () => ({
-  TRANSACTION_TYPES: { withdrawal: "withdrawal", funding: "funding" },
+  TRANSACTION_TYPES: {
+    withdrawal: "withdrawal",
+    funding: "funding",
+    b2b_payment: "b2b_payment",
+    merchant_payment: "merchant_payment",
+  },
   STATUSES: { completed: "completed", failed: "failed" },
   createTransactionRecord: jest.fn().mockResolvedValue({ transactionId: "txr_sc_1" }),
+}));
+
+jest.mock("../../services/partnerProfileQrService", () => ({
+  ...jest.requireActual("../../services/partnerProfileQrService"),
+  resolvePublicMerchant: jest.fn(),
 }));
 
 jest.mock("../../libs/sendMoney", () => ({
@@ -67,9 +79,11 @@ jest.mock("../../services/intasend/intasendDisbursementProvider", () => ({
 
 const { collection } = require("../../libs/firestore");
 const walletService = require("../../services/walletService");
+const transactionService = require("../../services/transactionService");
 const fiatReservationService = require("../../services/ledger/fiatReservationService");
 const intasendDisbursement = require("../../services/intasend/intasendDisbursementProvider");
 const { resolveRecipientUserId } = require("../../libs/sendMoney");
+const partnerProfileQrService = require("../../services/partnerProfileQrService");
 const safariCardPayoutService = require("../../services/safariCard/safariCardPayoutService");
 const { PAYOUT_STATUS, ERROR_CODES } = require("../../utils/safariCardPayoutTypes");
 
@@ -93,6 +107,20 @@ describe("safariCardPayoutService.createPayout", () => {
       previousBalance: 0,
       newBalance: 500,
       ledgerEntryId: "fl_credit",
+    });
+    walletService.getOrCreatePartnerWallet.mockResolvedValue({
+      walletId: "wallet_partner_1",
+      balances: {KES: 0},
+    });
+    walletService.updatePartnerWalletBalance.mockResolvedValue({
+      previousBalance: 0,
+      newBalance: 800,
+    });
+    partnerProfileQrService.resolvePublicMerchant.mockResolvedValue({
+      merchantId: "partner_test_1",
+      partnerId: "partner_test_1",
+      partnerName: "Tru Pay",
+      payUrl: "https://example.test/p/partner_test_1",
     });
     resolveRecipientUserId.mockResolvedValue("user_recipient");
     fiatReservationService.reserveFunds.mockResolvedValue({ reservationId: "fres_test" });
@@ -283,5 +311,52 @@ describe("safariCardPayoutService.createPayout", () => {
       recipient: { phoneNumber: "254712345678" },
     })).rejects.toMatchObject({ code: ERROR_CODES.SELF_TRANSFER });
     expect(intasendDisbursement.initiateAndApproveSendMoney).not.toHaveBeenCalled();
+  });
+
+  it("credits partner wallet for TRUEPAY_MERCHANT profile pay", async () => {
+    const result = await safariCardPayoutService.createPayout("user_1", {
+      type: "TRUEPAY_MERCHANT",
+      amount: 800,
+      currency: "KES",
+      clientRequestId: "req-merchant-001",
+      recipient: {merchantId: "partner_test_1"},
+    });
+
+    expect(intasendDisbursement.initiateAndApproveSendMoney).not.toHaveBeenCalled();
+    expect(partnerProfileQrService.resolvePublicMerchant).toHaveBeenCalledWith("partner_test_1");
+    expect(walletService.debitUserFiat).toHaveBeenCalledWith(
+        "user_1",
+        800,
+        "KES",
+        expect.objectContaining({
+          source: "truepay_merchant_profile",
+          type: "merchant_payment",
+        }),
+    );
+    expect(walletService.updatePartnerWalletBalance).toHaveBeenCalledWith(
+        "partner_test_1",
+        "KES",
+        800,
+    );
+    expect(result.status).toBe(PAYOUT_STATUS.SUCCESS);
+    expect(result.provider).toBe("truepay");
+    expect(result.merchantId).toBe("partner_test_1");
+    expect(result.merchantName).toBe("Tru Pay");
+    expect(transactionService.createTransactionRecord).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "merchant_payment",
+          userId: "user_1",
+          metadata: expect.objectContaining({
+            source: "truepay_merchant_profile",
+            fee: 0,
+          }),
+        }),
+    );
+    expect(transactionService.createTransactionRecord).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "b2b_payment",
+          partnerId: "partner_test_1",
+        }),
+    );
   });
 });

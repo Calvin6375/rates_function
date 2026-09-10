@@ -56,6 +56,22 @@ describe("transactionFeedLabels", () => {
     }).displayName).toBe("Money received");
   });
 
+  test("TruePay merchant profile pay is debit Pay label", () => {
+    const tx = enrichTransactionForFeed({
+      type: "merchant_payment",
+      amount: 800,
+      currency: "KES",
+      status: "completed",
+      metadata: {
+        source: "truepay_merchant_profile",
+        merchantName: "Tru Pay",
+      },
+    });
+    expect(tx.direction).toBe("debit");
+    expect(tx.displayName).toBe("Pay Tru Pay");
+    expect(tx.reconType).toBe("merchant_payment");
+  });
+
   test("direct topup pending label", () => {
     expect(enrichTransactionForFeed({
       type: "direct_topup",

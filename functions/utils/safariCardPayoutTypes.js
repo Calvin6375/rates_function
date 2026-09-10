@@ -2,7 +2,7 @@
  * @fileoverview Safari Card payout types, status mapping, and error codes.
  */
 
-/** @typedef {"MPESA_B2C"|"MPESA_B2B"|"BANK"|"SAFARITAP_WALLET"} SafariCardPayoutType */
+/** @typedef {"MPESA_B2C"|"MPESA_B2B"|"BANK"|"SAFARITAP_WALLET"|"TRUEPAY_MERCHANT"} SafariCardPayoutType */
 
 /** @typedef {"PENDING"|"INITIATED"|"PROCESSING"|"SUCCESS"|"FAILED"|"CANCELLED"|"RETRY"|"UNKNOWN"} SafariCardPayoutStatus */
 
@@ -12,6 +12,8 @@ const PAYOUT_TYPES = Object.freeze({
   BANK: "BANK",
   /** Internal TruePay ledger transfer (no IntaSend) */
   SAFARITAP_WALLET: "SAFARITAP_WALLET",
+  /** SafariTap KES → B2B partner wallet via profile QR / merchant ID */
+  TRUEPAY_MERCHANT: "TRUEPAY_MERCHANT",
 });
 
 const B2B_ACCOUNT_TYPES = Object.freeze({
@@ -186,6 +188,14 @@ function serializeRecipientForClient(payout) {
     };
   }
 
+  if (payoutType === PAYOUT_TYPES.TRUEPAY_MERCHANT) {
+    return {
+      account_type: "TruePayMerchant",
+      account: recipient.merchantId || recipient.partnerId || null,
+      merchant_id: recipient.merchantId || recipient.partnerId || null,
+    };
+  }
+
   return null;
 }
 
@@ -211,7 +221,10 @@ function serializePayoutForClient(payout) {
     return null;
   }
   const defaultProvider =
-    payout.type === PAYOUT_TYPES.SAFARITAP_WALLET ? "truepay" : "intasend";
+    payout.type === PAYOUT_TYPES.SAFARITAP_WALLET ||
+    payout.type === PAYOUT_TYPES.TRUEPAY_MERCHANT ?
+      "truepay" :
+      "intasend";
   const row = {
     status: payout.status,
     provider: payout.provider || defaultProvider,
@@ -230,6 +243,10 @@ function serializePayoutForClient(payout) {
   };
   if (payout.type === PAYOUT_TYPES.SAFARITAP_WALLET) {
     row.recipientUserId = payout.recipientUserId || payout.recipient?.userId || null;
+  }
+  if (payout.type === PAYOUT_TYPES.TRUEPAY_MERCHANT) {
+    row.merchantId = payout.recipientPartnerId || payout.recipient?.merchantId || null;
+    row.partnerId = payout.recipientPartnerId || payout.recipient?.partnerId || null;
   }
   return row;
 }
