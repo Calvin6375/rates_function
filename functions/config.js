@@ -74,6 +74,17 @@ const config = {
   firebaseWebApiKey: getEnv("WEB_API_KEY") || getEnv("FIREBASE_WEB_API_KEY") || null,
 
   /**
+   * Google OAuth Web client IDs allowed as `aud` on Google ID tokens
+   * (`POST /portal/auth/google`). Comma-separated.
+   * Same value as the frontend GIS / Firebase Web client ID
+   * (`….apps.googleusercontent.com`). Optional: if unset, any Google-issued
+   * token with a verified email is accepted.
+   */
+  googleOauthClientIds: getEnv("GOOGLE_OAUTH_CLIENT_IDS") ||
+    getEnv("GOOGLE_OAUTH_CLIENT_ID") ||
+    null,
+
+  /**
    * Zoho SMTP connection settings (non-secret).
    * Username/password MUST come from Secret Manager (SMTP_USER / SMTP_PASS) at runtime —
    * do not hardcode mailbox credentials in source.

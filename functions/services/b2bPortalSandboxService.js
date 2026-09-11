@@ -7,7 +7,7 @@
 const crypto = require("crypto");
 const {collection, firestore, serverTimestamp} = require("../libs/firestore");
 const config = require("../config");
-const b2bSandboxPartnerService = require("./b2bSandboxPartnerService");
+const partnerTestLedgerService = require("./partnerTestLedgerService");
 const {serializeOnboardingDoc} = require("./b2bOnboardingService");
 
 const LINK_TOKEN_COL = "sandboxLinkTokens";
@@ -151,9 +151,15 @@ async function appendTransaction(uid, txRow) {
 async function recordTestFromPartnerSandbox(linkToken, payment) {
   const uid = await resolveUidFromLinkToken(linkToken);
   if (!uid) return null;
-  const txRow = normalizeTransactionRow(payment);
-  await appendTransaction(uid, txRow);
-  return txRow;
+  const recorded = await partnerTestLedgerService.recordCollection(uid, {
+    amount: payment.amount,
+    currency: payment.currency,
+    reference: payment.reference,
+    metadata: payment.metadata,
+    source: "partnerSandbox",
+  });
+  await appendTransaction(uid, recorded);
+  return recorded;
 }
 
 /**
@@ -175,16 +181,17 @@ async function runPortalSandboxPayment(uid, input) {
     input.metadata :
     {};
 
-  const payment = b2bSandboxPartnerService.recordSandboxPayment(
-      config.b2bSandbox.partnerId,
-      amount,
-      currency,
-      reference,
-      {...metadata, source: "portal"},
-  );
-  const txRow = normalizeTransactionRow(payment, config.b2bSandbox.partnerId);
-  await appendTransaction(uid, txRow);
-  return {...payment, sandbox: true};
+  const payment = await partnerTestLedgerService.recordCollection(uid, {
+    amount,
+    currency,
+    reference,
+    metadata,
+    scenario: input.scenario,
+    payerName: input.payerName,
+    source: "portal",
+  });
+  await appendTransaction(uid, payment);
+  return payment;
 }
 
 /**
@@ -193,18 +200,25 @@ async function runPortalSandboxPayment(uid, input) {
  * @return {Promise<{ transactions: Object[], testTransactionDone: boolean }>}
  */
 async function listPortalSandboxTransactions(uid, limit) {
+  const ledger = await partnerTestLedgerService.listTransactions(uid, limit);
   const snap = await onboardingRef(uid).get();
-  if (!snap.exists) {
-    return {transactions: [], testTransactionDone: false};
-  }
-  const data = /** @type {Object|null} */ (serializeOnboardingDoc(snap.data()));
-  const txs = Array.isArray(data?.sandbox?.transactions) ?
+  const data = snap.exists ?
+    /** @type {Object|null} */ (serializeOnboardingDoc(snap.data())) :
+    null;
+  const legacy = Array.isArray(data?.sandbox?.transactions) ?
     data.sandbox.transactions :
     [];
+  const seen = new Set(ledger.transactions.map((t) => t.id || t.transactionId));
+  const merged = [
+    ...ledger.transactions,
+    ...legacy.filter((t) => t && !seen.has(t.id || t.transactionId)),
+  ].slice(0, limit);
   const progressDone = data?.progress?.testTransactionDone === true;
   return {
-    transactions: txs.slice(0, limit),
-    testTransactionDone: progressDone || txs.length > 0,
+    transactions: merged,
+    testTransactionDone: progressDone || merged.length > 0,
+    sandbox: true,
+    environment: "test",
   };
 }
 

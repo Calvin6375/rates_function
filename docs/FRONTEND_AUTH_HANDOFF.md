@@ -79,6 +79,27 @@ Content-Type: application/json
 
 Requires server secret `WEB_API_KEY` (same as client Firebase web API key).
 
+### Google login → same account as email/password signup
+
+Signup is **email/password only**. Do **not** call `accounts:signInWithIdp` / `signInWithPopup` for Google on `/login` — that creates a **second** Firebase uid and a split dashboard profile.
+
+**Login → Continue with Google**
+
+1. Obtain a **Google OAuth ID token** (GIS `credential`, or `GoogleAuthProvider.credentialFromError` if you still use popup and hit `auth/account-exists-with-different-credential`). This is **not** a Firebase ID token.
+2. `POST /b2bPortal/portal/auth/google` with `{ "idToken": "<Google JWT>" }` — **no** `Authorization` header.
+3. `signInWithCustomToken(auth, data.customToken)`.
+4. Continue the existing login path: `reload()` / `getIdToken(true)` → `POST /portal/ensure-dashboard-profile` → `GET /portal/me`.
+
+| HTTP | Meaning |
+|------|---------|
+| 200 `linked: true`, `created: false` | Google attached to the email/password uid |
+| 200 `linked: false` | Already linked; same uid |
+| 200 `created: true` | No Auth user for that email; new Google user |
+| 403 `EMAIL_NOT_VERIFIED` | Password account exists but email not verified yet — use password login / finish verify, then Google works |
+| 401 `INVALID_GOOGLE_TOKEN` | Expired or not a Google JWT |
+
+Emails must match (case-insensitive). Firebase Console: **Authentication → Settings → User account linking → One account per email address**.
+
 ### Email verification — use TruePay backend only
 
 **Do not** call Firebase’s built-in mailer anywhere (Flutter or web):
@@ -336,9 +357,39 @@ List: `GET /platform/admins` or `GET /platform/team`. Remove (super admin only):
   "partnerId": "partner_123",
   "partnerRole": "finance",
   "roleLegacy": "finance",
-  "partner": { "id": "partner_123", "name": "..." }
+  "status": "active",
+  "merchantStatus": "inactive",
+  "merchantActive": false,
+  "environment": "test",
+  "canUseLive": false,
+  "testWalletReady": true,
+  "partner": {
+    "id": "partner_123",
+    "name": "...",
+    "status": "inactive",
+    "statusRaw": "pending_review"
+  }
 }
 ```
+
+Header merchant pill — **always** use these (do not show “Status unavailable” when they are present):
+
+| Field | Meaning |
+|-------|---------|
+| `partner.status` | Merchant org: `active` \| `inactive` \| `suspended` (always set on partner/onboarding sessions) |
+| `merchantActive` | `true` only when the org is live (`partners.status === active`) |
+| `merchantStatus` | Same as `partner.status` |
+| `status` | Signed-in **member** (`users/{uid}`), not the merchant |
+
+Label: `merchantActive` → **Active**; `merchantStatus === "suspended"` → **Suspended**; else **Not active**. Do not fall back to member `status` for the pill. Render the menu anchored to the header control so it does not overlap the onboarding card.
+
+### Dashboard Test mode (`environment`)
+
+`GET /portal/me` now includes `environment`, `canUseLive`, `testWalletReady`. Default is **test** until `merchantActive === true`. Switch with `POST /portal/environment` `{ "environment": "test"|"live" }` — live returns `403 LIVE_NOT_ALLOWED` while the org is not active.
+
+While `environment === "test"`, reuse live screens against `/portal/sandbox/*` (same shapes, `sandbox: true`). Do not call live wallet / send / funding / payment-links. Seeded test wallet: **KES 10,000** + **USDT 100**. Amounts ending `01` / `02` / `03` (or `scenario`) produce fail / pending / expire.
+
+See [`B2B_SANDBOX_DASHBOARD_FRONTEND.md`](./B2B_SANDBOX_DASHBOARD_FRONTEND.md).
 
 **Operations teammate — `GET /portal/me` and `GET /platform/me`**
 
@@ -401,6 +452,7 @@ Then set password in Firebase Console → Authentication and rotate on first log
 - [ ] Admin UI: feature-gate by `role` (not only `admin: true`)
 - [ ] Remove any hardcoded super-admin passwords from docs, env samples, or tests
 - [ ] Replace all `sendEmailVerification()` / client Auth mailers with `sendEmailVerification` callable or `POST /portal/send-verification-email`
+- [ ] Remove Google from `/signup`; login Google via `POST /portal/auth/google` + `signInWithCustomToken` (do not `signInWithIdp`)
 
 ---
 

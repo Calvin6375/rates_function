@@ -209,6 +209,8 @@ Middleware chain in `functions/http/b2bPortalHttp.js`:
 |--------------|-----|
 | `/platform/*` | Platform super-admin |
 | `/portal/ensure-dashboard-profile`, `/portal/onboarding`, sandbox routes | Any authenticated Firebase user |
+| `/portal/auth/google` | Public — Google ID token in body; returns Firebase custom token |
+| `/portal/environment`, `/portal/sandbox/*` | Any authenticated Firebase user (test ledger; no live rails) |
 | `/portal/me`, `/portal/members`, payment links (mutations) | Partner claims; org admin for writes |
 | `/public/*`, `/l/*` | Unauthenticated payer flows |
 

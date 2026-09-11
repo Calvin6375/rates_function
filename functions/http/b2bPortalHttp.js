@@ -44,6 +44,7 @@ const paystackSplitCode = defineSecret(config.secrets.paystackSplitCode);
 const firebaseWebApiKey = defineSecret(config.secrets.firebaseWebApiKey);
 const emailService = require("../services/emailService");
 const accountPasswordService = require("../services/accountPasswordService");
+const googleAccountLinkService = require("../services/googleAccountLinkService");
 const b2bFundingBridgeService = require("../services/funding/b2bFundingBridgeService");
 const c2bFundingBridgeService = require("../services/funding/c2bFundingBridgeService");
 const fundingOrderService = require("../services/funding/fundingOrderService");
@@ -55,6 +56,8 @@ const platformReportsService = require("../services/platformReportsService");
 const partnerWalletAdminService = require("../services/partnerWalletAdminService");
 const b2bWalletBalanceSync = require("../services/b2bWalletBalanceSync");
 const partnerAdminProvisioningService = require("../services/partnerAdminProvisioningService");
+const portalMeStatus = require("../services/portalMeStatus");
+const partnerTestLedgerService = require("../services/partnerTestLedgerService");
 const partnerProfileQrService = require("../services/partnerProfileQrService");
 const { correlationFromRequest } = require("../utils/paymentContext");
 
@@ -74,6 +77,7 @@ const B2B_PORTAL_FUNCTION_SEGMENT = "b2bPortal";
 
 const app = express();
 app.use(express.json());
+app.use(express.urlencoded({extended: false}));
 
 /**
  * Gen2 HTTP URLs are `.../b2bPortal/platform/...` but routes are `/platform/...`.
@@ -1247,6 +1251,39 @@ app.post("/portal/account/set-pin", loadFirebaseUser, async (req, res) => {
  * POST /portal/account/request-password-reset — forgot-password email (public).
  * Body: { email, continueUrl? }. Always returns success for unknown emails.
  */
+/**
+ * POST /portal/auth/google — public. Body: { idToken } (Google OAuth JWT, not Firebase).
+ * Links google.com to the existing Auth user with the same verified email, or creates
+ * a user. Returns a Firebase custom token for signInWithCustomToken.
+ */
+app.post("/portal/auth/google", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const result = await googleAccountLinkService.completeGoogleLogin(
+        body.idToken ||
+        body.googleIdToken ||
+        body.credential ||
+        body.token ||
+        body,
+    );
+    res.status(200).json({
+      success: true,
+      data: result,
+      message: result.created ?
+        "Google account created. Sign in with the custom token." :
+        "Google linked to the existing account. Sign in with the custom token.",
+    });
+  } catch (err) {
+    const status = err.statusCode || 500;
+    console.error("b2bPortal POST /portal/auth/google:", err.message);
+    res.status(status >= 400 && status < 600 ? status : 500).json({
+      success: false,
+      error: err.code || "GOOGLE_LOGIN_FAILED",
+      message: err.message || "Unable to complete Google login",
+    });
+  }
+});
+
 app.post("/portal/account/request-password-reset", async (req, res) => {
   try {
     const body = req.body || {};
@@ -1437,6 +1474,7 @@ app.get("/portal/onboarding", loadFirebaseUser, async (req, res) => {
           linkToken: sandboxExtras.linkToken,
           testTransactionDone: sandboxExtras.testTransactionDone,
           goLiveDone,
+          environment: "test",
           partnerSandboxBaseUrl,
           hint:
             "Use partnerSandbox with X-API-KEY: publicApiKey. Pass linkToken in " +
@@ -1538,11 +1576,272 @@ app.post("/portal/sandbox/payments", loadFirebaseUser, async (req, res) => {
       currency,
       reference: reference != null ? String(reference) : "sandbox-test-001",
       metadata,
+      scenario: req.body?.scenario,
+      payerName: req.body?.payerName,
+    });
+    res.status(201).json({success: true, sandbox: true, environment: "test", data});
+  } catch (err) {
+    console.error("b2bPortal POST /portal/sandbox/payments:", err.message);
+    const status = err.statusCode || 500;
+    res.status(status >= 400 && status < 600 ? status : 500).json({
+      success: false,
+      error: err.code || "SANDBOX_PAYMENT_FAILED",
+      message: err.message,
+    });
+  }
+});
+
+/**
+ * @param {import("express").Request} req
+ * @returns {Promise<string|null>}
+ */
+async function resolveSandboxPartnerId(req) {
+  const fromToken = req.decodedToken?.partnerId;
+  if (fromToken) {
+    return String(fromToken);
+  }
+  const onboarding = await b2bOnboardingService.getOnboarding(req.userId);
+  return onboarding?.registeredPartnerId ?
+    String(onboarding.registeredPartnerId) :
+    null;
+}
+
+/**
+ * @param {import("express").Response} res
+ * @param {Error} err
+ * @param {string} logLabel
+ */
+function sendSandboxError(res, err, logLabel) {
+  const status = err.statusCode || 500;
+  if (status >= 500) {
+    console.error(logLabel, err.message);
+  }
+  res.status(status >= 400 && status < 600 ? status : 500).json({
+    success: false,
+    error: err.code || "SANDBOX_FAILED",
+    message: err.message,
+  });
+}
+
+app.post("/portal/environment", loadFirebaseUser, async (req, res) => {
+  try {
+    const dt = req.decodedToken || {};
+    const resolved = await resolvePartnerAccessLive(dt, req.userId);
+    const partnerId = resolved?.partnerId || await resolveSandboxPartnerId(req);
+    let merchantActive = false;
+    if (partnerId) {
+      const partner = await partnerService.getPartner(partnerId);
+      merchantActive = portalMeStatus.normalizeMerchantStatus(partner?.status) === "active";
+    }
+    const data = await partnerTestLedgerService.setEnvironment(
+        req.userId,
+        req.body?.environment,
+        merchantActive,
+    );
+    res.status(200).json({success: true, data});
+  } catch (err) {
+    sendSandboxError(res, err, "b2bPortal POST /portal/environment:");
+  }
+});
+
+app.get("/portal/sandbox/wallet", loadFirebaseUser, async (req, res) => {
+  try {
+    const partnerId = await resolveSandboxPartnerId(req);
+    const wallet = await partnerTestLedgerService.getWallet(req.userId, partnerId);
+    res.status(200).json({success: true, data: wallet});
+  } catch (err) {
+    sendSandboxError(res, err, "b2bPortal GET /portal/sandbox/wallet:");
+  }
+});
+
+app.post("/portal/sandbox/funding", loadFirebaseUser, async (req, res) => {
+  try {
+    const partnerId = await resolveSandboxPartnerId(req);
+    const data = await partnerTestLedgerService.fundWallet(req.userId, {
+      ...(req.body || {}),
+      partnerId,
     });
     res.status(201).json({success: true, sandbox: true, data});
   } catch (err) {
-    console.error("b2bPortal POST /portal/sandbox/payments:", err.message);
-    res.status(500).json({success: false, error: err.message});
+    sendSandboxError(res, err, "b2bPortal POST /portal/sandbox/funding:");
+  }
+});
+
+app.get("/portal/sandbox/payment-links", loadFirebaseUser, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(String(req.query.limit || "50"), 10) || 50, 100);
+    const data = await partnerTestLedgerService.listPaymentLinks(req.userId, limit);
+    res.status(200).json({success: true, data});
+  } catch (err) {
+    sendSandboxError(res, err, "b2bPortal GET /portal/sandbox/payment-links:");
+  }
+});
+
+app.post("/portal/sandbox/payment-links", loadFirebaseUser, async (req, res) => {
+  try {
+    const partnerId = await resolveSandboxPartnerId(req);
+    const link = await partnerTestLedgerService.createPaymentLink(
+        req.userId,
+        req.body || {},
+        partnerId,
+    );
+    res.status(201).json({success: true, sandbox: true, data: link});
+  } catch (err) {
+    sendSandboxError(res, err, "b2bPortal POST /portal/sandbox/payment-links:");
+  }
+});
+
+app.get("/portal/sandbox/payment-links/:linkId", loadFirebaseUser, async (req, res) => {
+  try {
+    const link = await partnerTestLedgerService.getPaymentLink(
+        req.userId,
+        req.params.linkId,
+    );
+    if (!link) {
+      res.status(404).json({success: false, error: "Payment link not found"});
+      return;
+    }
+    res.status(200).json({success: true, data: link});
+  } catch (err) {
+    sendSandboxError(res, err, "b2bPortal GET /portal/sandbox/payment-links/:id:");
+  }
+});
+
+app.post("/portal/sandbox/payment-links/:linkId/pay", loadFirebaseUser, async (req, res) => {
+  try {
+    const payment = await partnerTestLedgerService.payPaymentLink(
+        req.userId,
+        req.params.linkId,
+        req.body || {},
+    );
+    res.status(201).json({success: true, sandbox: true, data: payment});
+  } catch (err) {
+    sendSandboxError(res, err, "b2bPortal POST /portal/sandbox/payment-links/:id/pay:");
+  }
+});
+
+app.delete("/portal/sandbox/payment-links/:linkId", loadFirebaseUser, async (req, res) => {
+  try {
+    const link = await partnerTestLedgerService.cancelPaymentLink(
+        req.userId,
+        req.params.linkId,
+    );
+    res.status(200).json({success: true, data: link});
+  } catch (err) {
+    sendSandboxError(res, err, "b2bPortal DELETE /portal/sandbox/payment-links/:id:");
+  }
+});
+
+app.get("/portal/sandbox/profile-qr", loadFirebaseUser, async (req, res) => {
+  try {
+    const partnerId = await resolveSandboxPartnerId(req);
+    const data = await partnerTestLedgerService.getProfileQr(req.userId, partnerId);
+    res.status(200).json({success: true, data});
+  } catch (err) {
+    sendSandboxError(res, err, "b2bPortal GET /portal/sandbox/profile-qr:");
+  }
+});
+
+app.get("/portal/sandbox/send/recipients", loadFirebaseUser, async (req, res) => {
+  try {
+    const data = await partnerTestLedgerService.listRecipients(req.userId);
+    res.status(200).json({success: true, data});
+  } catch (err) {
+    sendSandboxError(res, err, "b2bPortal GET /portal/sandbox/send/recipients:");
+  }
+});
+
+app.post("/portal/sandbox/send/recipients", loadFirebaseUser, async (req, res) => {
+  try {
+    const recipient = await partnerTestLedgerService.createRecipient(
+        req.userId,
+        req.body || {},
+    );
+    res.status(201).json({success: true, data: {recipient}});
+  } catch (err) {
+    sendSandboxError(res, err, "b2bPortal POST /portal/sandbox/send/recipients:");
+  }
+});
+
+app.post("/portal/sandbox/send/quote", loadFirebaseUser, async (req, res) => {
+  try {
+    const quote = partnerTestLedgerService.quoteSend(req.body || {});
+    res.status(200).json({success: true, data: {quote}});
+  } catch (err) {
+    sendSandboxError(res, err, "b2bPortal POST /portal/sandbox/send/quote:");
+  }
+});
+
+app.post("/portal/sandbox/send/payments", loadFirebaseUser, async (req, res) => {
+  try {
+    const partnerId = await resolveSandboxPartnerId(req);
+    const result = await partnerTestLedgerService.createSend(req.userId, {
+      ...(req.body || {}),
+      partnerId,
+    });
+    res.status(201).json({success: true, sandbox: true, data: result});
+  } catch (err) {
+    sendSandboxError(res, err, "b2bPortal POST /portal/sandbox/send/payments:");
+  }
+});
+
+app.get("/portal/sandbox/send/payments", loadFirebaseUser, async (req, res) => {
+  try {
+    const data = await partnerTestLedgerService.listSends(req.userId);
+    res.status(200).json({success: true, data});
+  } catch (err) {
+    sendSandboxError(res, err, "b2bPortal GET /portal/sandbox/send/payments:");
+  }
+});
+
+app.get("/portal/sandbox/settlements", loadFirebaseUser, async (req, res) => {
+  try {
+    const data = await partnerTestLedgerService.listSettlements(req.userId);
+    res.status(200).json({success: true, data});
+  } catch (err) {
+    sendSandboxError(res, err, "b2bPortal GET /portal/sandbox/settlements:");
+  }
+});
+
+app.post("/portal/sandbox/settlements", loadFirebaseUser, async (req, res) => {
+  try {
+    const row = await partnerTestLedgerService.createSettlement(
+        req.userId,
+        req.body || {},
+    );
+    res.status(201).json({success: true, sandbox: true, data: row});
+  } catch (err) {
+    sendSandboxError(res, err, "b2bPortal POST /portal/sandbox/settlements:");
+  }
+});
+
+app.get("/portal/sandbox/dashboard", loadFirebaseUser, async (req, res) => {
+  try {
+    const data = await partnerTestLedgerService.getDashboard(req.userId);
+    res.status(200).json({success: true, data});
+  } catch (err) {
+    sendSandboxError(res, err, "b2bPortal GET /portal/sandbox/dashboard:");
+  }
+});
+
+app.get("/portal/sandbox/reports", loadFirebaseUser, async (req, res) => {
+  try {
+    const data = await partnerTestLedgerService.getReports(req.userId);
+    res.status(200).json({success: true, data});
+  } catch (err) {
+    sendSandboxError(res, err, "b2bPortal GET /portal/sandbox/reports:");
+  }
+});
+
+app.post("/portal/sandbox/webhooks/test", loadFirebaseUser, async (req, res) => {
+  try {
+    const event = await partnerTestLedgerService.enqueueTestWebhook(
+        req.userId,
+        req.body || {},
+    );
+    res.status(201).json({success: true, sandbox: true, data: event});
+  } catch (err) {
+    sendSandboxError(res, err, "b2bPortal POST /portal/sandbox/webhooks/test:");
   }
 });
 
@@ -1614,6 +1913,7 @@ app.get("/portal/me", loadFirebaseUser, async (req, res) => {
     const resolved = await resolvePartnerAccessLive(dt, req.userId);
     const firstLogin =
       await partnerAdminProvisioningService.firstLoginSessionHints(req.userId, dt);
+    const memberStatus = await portalMeStatus.readMemberStatus(req.userId);
 
     if (platformAdmin) {
       res.status(200).json({
@@ -1628,6 +1928,12 @@ app.get("/portal/me", loadFirebaseUser, async (req, res) => {
           partnerRole: null,
           roleLegacy: null,
           partner: null,
+          status: memberStatus,
+          merchantStatus: null,
+          merchantActive: false,
+          environment: null,
+          canUseLive: true,
+          testWalletReady: false,
           emailVerified: dt.email_verified === true,
           claimsNeedRefresh: false,
           onboardingIncomplete: false,
@@ -1667,6 +1973,15 @@ app.get("/portal/me", loadFirebaseUser, async (req, res) => {
         await b2bOnboardingService.resolveGreetingName(req.userId, partner);
 
       const claimsNeedRefresh = Boolean(partnerId);
+      const statusFields = portalMeStatus.portalMeStatusFields(
+          partner,
+          partnerId,
+          memberStatus,
+      );
+      const envSession = await partnerTestLedgerService.getEnvironmentSession(
+          req.userId,
+          statusFields.merchantActive === true,
+      );
       res.status(200).json({
         success: true,
         data: {
@@ -1678,7 +1993,8 @@ app.get("/portal/me", loadFirebaseUser, async (req, res) => {
           partnerId,
           partnerRole: null,
           roleLegacy: null,
-          partner: partner || (partnerId ? {id: partnerId} : null),
+          ...statusFields,
+          ...envSession,
           greetingName,
           email: dt.email || null,
           emailVerified: dt.email_verified === true,
@@ -1703,6 +2019,15 @@ app.get("/portal/me", loadFirebaseUser, async (req, res) => {
     const tokenResolved = resolvePartnerAccess(dt);
     const claimsNeedRefresh =
       firstLogin.mustChangePassword || Boolean(resolved && !tokenResolved);
+    const statusFields = portalMeStatus.portalMeStatusFields(
+        partner,
+        resolved.partnerId,
+        memberStatus,
+    );
+    const envSession = await partnerTestLedgerService.getEnvironmentSession(
+        req.userId,
+        statusFields.merchantActive === true,
+    );
     res.status(200).json({
       success: true,
       data: {
@@ -1714,7 +2039,8 @@ app.get("/portal/me", loadFirebaseUser, async (req, res) => {
         partnerId: resolved.partnerId,
         partnerRole: legacyPartnerRoleFromNormalized(resolved.role),
         roleLegacy: legacyPartnerRoleFromNormalized(resolved.role),
-        partner: partner || { id: resolved.partnerId },
+        ...statusFields,
+        ...envSession,
         greetingName,
         emailVerified: dt.email_verified === true,
         claimsNeedRefresh,
@@ -2753,6 +3079,83 @@ app.get("/public/payment-links/:linkId/status", async (req, res) => {
   } catch (err) {
     console.error("b2bPortal GET /public/payment-links/:linkId/status:", err.message);
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/** Public hosted test checkout (no live rails). */
+app.get("/public/sandbox/l/:linkId", async (req, res) => {
+  try {
+    const owner = await partnerTestLedgerService.resolveLinkOwner(req.params.linkId);
+    if (!owner) {
+      res.status(404).json({success: false, error: "Payment link not found"});
+      return;
+    }
+    const link = await partnerTestLedgerService.getPaymentLink(owner.uid, req.params.linkId);
+    if (!link) {
+      res.status(404).json({success: false, error: "Payment link not found"});
+      return;
+    }
+    const accept = String(req.headers.accept || "");
+    if (accept.includes("text/html")) {
+      res.set("Content-Type", "text/html; charset=utf-8");
+      res.status(200).send(`<!doctype html><html><body style="font-family:sans-serif;padding:24px">
+<h1>Test checkout</h1>
+<p>No real money. ${link.currency} ${link.amount} — ${link.bookingReference || ""}</p>
+<form method="post">
+  <input name="payerName" placeholder="Payer name" value="Test payer"/>
+  <button type="submit">Pay (test)</button>
+</form>
+</body></html>`);
+      return;
+    }
+    res.status(200).json({success: true, sandbox: true, data: link});
+  } catch (err) {
+    sendSandboxError(res, err, "b2bPortal GET /public/sandbox/l:");
+  }
+});
+
+app.post("/public/sandbox/l/:linkId/pay", async (req, res) => {
+  try {
+    const owner = await partnerTestLedgerService.resolveLinkOwner(req.params.linkId);
+    if (!owner) {
+      res.status(404).json({success: false, error: "Payment link not found"});
+      return;
+    }
+    const payment = await partnerTestLedgerService.payPaymentLink(
+        owner.uid,
+        req.params.linkId,
+        req.body || {},
+    );
+    res.status(201).json({success: true, sandbox: true, data: payment});
+  } catch (err) {
+    sendSandboxError(res, err, "b2bPortal POST /public/sandbox/l/pay:");
+  }
+});
+
+app.post("/public/sandbox/l/:linkId", async (req, res) => {
+  try {
+    const owner = await partnerTestLedgerService.resolveLinkOwner(req.params.linkId);
+    if (!owner) {
+      res.status(404).json({success: false, error: "Payment link not found"});
+      return;
+    }
+    const payment = await partnerTestLedgerService.payPaymentLink(
+        owner.uid,
+        req.params.linkId,
+        {
+          payerName: req.body?.payerName || req.query.payerName || "Test payer",
+          scenario: req.body?.scenario || req.query.scenario,
+        },
+      );
+    if (String(req.headers.accept || "").includes("text/html")) {
+      res.status(200).send(`<!doctype html><html><body style="font-family:sans-serif;padding:24px">
+<p>Test payment ${payment.status}: ${payment.transactionId}</p>
+</body></html>`);
+      return;
+    }
+    res.status(201).json({success: true, sandbox: true, data: payment});
+  } catch (err) {
+    sendSandboxError(res, err, "b2bPortal POST /public/sandbox/l:");
   }
 });
 

@@ -4,6 +4,7 @@
 
 const admin = require("../admin");
 const { collection } = require("./firestore");
+const config = require("../config");
 
 /**
  * Verify Firebase ID token from Authorization: Bearer <token>
@@ -56,6 +57,13 @@ async function verifyPartnerApiKey(apiKey) {
     return { success: false, error: "Missing X-API-KEY" };
   }
   const trimmed = apiKey.trim();
+  if (trimmed === String(config.b2bSandbox.apiKey || "").trim()) {
+    return {
+      success: false,
+      error:
+        "Sandbox API key cannot be used on the live Partner API. Use partnerSandbox.",
+    };
+  }
   try {
     const partnersRef = collection("partners");
     const snapshot = await partnersRef.where("apiKey", "==", trimmed).limit(1).get();

@@ -734,7 +734,10 @@ Callable equivalent: **`sendEmailVerification`** (same payload; requires Auth).
     "userId": "...",
     "partnerId": "...",
     "partnerRole": "org_admin",
-    "partner": { /* getPartner shape; masked api key */ }
+    "status": "active",
+    "merchantStatus": "inactive",
+    "merchantActive": false,
+    "partner": { "id": "...", "status": "inactive", "statusRaw": "pending_review" }
   }
 }
 ```

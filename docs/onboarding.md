@@ -102,10 +102,10 @@ Firebase **`updateProfile(displayName)`** runs **client-side only** — not a ba
 - Verification: call **`POST /b2bPortal/portal/send-verification-email`** (Bearer token) or callable **`sendEmailVerification`** — Zoho SMTP branded mail (not Firebase’s default template). Email link hits **`GET /public/verify-email`**, which verifies and **redirects to the B2B dashboard** (`theadmin.truepay.live`).
 - Then `ensure-dashboard-profile` → owner PATCH (above)
 
-**Google signup**
+**Google (login only — not on `/signup`)**
 
-- First name, last name, phone required on the form **before** the Google popup  
-- Email from the Google account (`firebaseUser.email`), not a form field  
+- Collect name/phone on the email signup form. Google is **not** a signup button.
+- Login: `POST /portal/auth/google` `{ idToken }` (Google JWT) → `signInWithCustomToken` → same uid as email signup when emails match. See [`FRONTEND_AUTH_HANDOFF.md`](./FRONTEND_AUTH_HANDOFF.md).
 - Then `ensure-dashboard-profile` → owner PATCH (above)
 - Google accounts are usually **`email_verified: true` immediately**, so `ensure-dashboard-profile` / `GET /portal/onboarding` / `GET /portal/me` may **auto-create** the partner org and set Auth claims in the same request.
 - **Required frontend step:** if the response has `claimsNeedRefresh: true` (or `data.partnerOrg` / `data.partnerId` while the token still lacks `partnerId`), call **`getIdToken(true)`** before relying on partner-gated routes. Do **not** treat a missing partner claim as a hard failure — `GET /portal/me` returns **200** with `onboardingIncomplete` / `owner` / `onboardingStatus` so the checklist can render.

@@ -25,6 +25,29 @@ Auth: `Authorization: Bearer <Firebase ID token>` on every call below.
 
 Live partner transactions (`GET /portal/transactions`) stay empty until the partner is **active** and real payments exist. During onboarding, use **`GET /portal/sandbox/transactions`** for the Transactions tab.
 
+## Test mode (full dashboard)
+
+Session from `GET /portal/me`: `environment` (`test`|`live`), `canUseLive`, `testWalletReady`. Banner: **Test mode — no real money**.
+
+| Feature | Test endpoint |
+|---------|----------------|
+| Session switch | `POST /portal/environment` `{ "environment": "test" \| "live" }` |
+| Transactions | `GET /portal/sandbox/transactions` |
+| Collect | `POST /portal/sandbox/payments` (`scenario` optional) |
+| Payment links | `GET/POST /portal/sandbox/payment-links`, `POST .../:linkId/pay` |
+| Hosted checkout | `GET/POST /public/sandbox/l/:linkId` |
+| QR | `GET /portal/sandbox/profile-qr` |
+| Wallet | `GET /portal/sandbox/wallet` |
+| Fund | `POST /portal/sandbox/funding` `{ amount, currency }` |
+| Send | `/portal/sandbox/send/recipients`, `quote`, `payments` |
+| Settlements | `GET/POST /portal/sandbox/settlements` |
+| Dashboard / reports | `GET /portal/sandbox/dashboard`, `/portal/sandbox/reports` |
+| Test webhook payload | `POST /portal/sandbox/webhooks/test` |
+
+Isolation: test ledger is `partnerTestLedgers/{uid}`. Live Partner API rejects `sandbox.publicApiKey` (`401`). Test rows include `sandbox: true` and `environment: "test"`. Histories never mix.
+
+Deterministic QA: amount ending `00` (or omit) → completed; `01` fail; `02` pending; `03` expire. Or send `"scenario": "success"|"fail"|"pending"|"expire"`.
+
 ---
 
 ## 1. Load onboarding state
