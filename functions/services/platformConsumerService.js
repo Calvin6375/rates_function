@@ -177,10 +177,11 @@ function serializeConsumerUserSummary(doc) {
     fiatBalance: d.fiatBalance != null ? Number(d.fiatBalance) : null,
     cryptoBalance: d.cryptoBalance != null ? Number(d.cryptoBalance) : null,
     currency: d.currency ?? null,
-    /** Per-currency balances (users doc; B2B list may overlay partner wallet). */
+    /** Per-currency balances (users doc; USDC comes from crypto ledger overlay). */
     USD: userBalances.USD,
     KES: userBalances.KES,
     USDT: userBalances.USDT,
+    USDC: 0,
     institution: d.institution ?? null,
     channel: d.channel ?? null,
     createdAt: d.createdAt?.toDate?.()?.toISOString() ?? null,
@@ -195,6 +196,7 @@ function serializeConsumerUserSummary(doc) {
 function serializeConsumerUserDetail(doc) {
   if (!doc.exists) return null;
   const d = doc.data();
+  const userBalances = b2bWalletBalanceSync.readUserCurrencyBalances(d || {});
   const kycData = d.kycData;
   const kycSummary =
     kycData && typeof kycData === "object"
@@ -218,12 +220,49 @@ function serializeConsumerUserDetail(doc) {
     fiatBalance: d.fiatBalance != null ? Number(d.fiatBalance) : null,
     cryptoBalance: d.cryptoBalance != null ? Number(d.cryptoBalance) : null,
     currency: d.currency ?? null,
+    USD: userBalances.USD,
+    KES: userBalances.KES,
+    USDT: userBalances.USDT,
+    USDC: 0,
     role: d.role ?? null,
     institution: d.institution ?? null,
     channel: d.channel ?? null,
     createdAt: d.createdAt?.toDate?.()?.toISOString() ?? null,
     updatedAt: d.updatedAt?.toDate?.()?.toISOString() ?? null,
   };
+}
+
+/**
+ * USDC lives on walletAggregates (crypto ledger), not users.{USDT}.
+ * @param {string[]} userIds
+ * @returns {Promise<Record<string, number>>}
+ */
+async function loadUsdcBalancesByUserIds(userIds) {
+  const ids = [...new Set((userIds || []).filter(Boolean))];
+  /** @type {Record<string, number>} */
+  const out = {};
+  for (const id of ids) out[id] = 0;
+  if (!ids.length) return out;
+
+  const refs = ids.map((id) => collection("walletAggregates").doc(id));
+  const snaps = await admin.firestore().getAll(...refs);
+  for (const snap of snaps) {
+    out[snap.id] = snap.exists ? Number(snap.data().USDC || 0) || 0 : 0;
+  }
+  return out;
+}
+
+/**
+ * @param {Object[]} users
+ * @returns {Promise<Object[]>}
+ */
+async function attachLedgerUsdc(users) {
+  if (!users.length) return users;
+  const usdcByUser = await loadUsdcBalancesByUserIds(users.map((row) => row.userId));
+  return users.map((row) => ({
+    ...row,
+    USDC: usdcByUser[row.userId] || 0,
+  }));
 }
 
 /**
@@ -243,7 +282,7 @@ async function listConsumerUsers(pageLimit = 50, startAfterUserId = null) {
   }
   const snap = await q.get();
   const summaries = snap.docs.map((doc) => serializeConsumerUserSummary(doc));
-  const users = await enrichUsersWithPartnerContext(summaries);
+  const users = await attachLedgerUsdc(await enrichUsersWithPartnerContext(summaries));
   const nextCursor = snap.docs.length === lim ? snap.docs[snap.docs.length - 1].id : null;
   return { users, nextCursor };
 }
@@ -258,7 +297,7 @@ async function getConsumerUser(userId) {
   if (!detail) {
     return null;
   }
-  const [enriched] = await enrichUsersWithPartnerContext([detail]);
+  const [enriched] = await attachLedgerUsdc(await enrichUsersWithPartnerContext([detail]));
   return enriched;
 }
 
@@ -281,5 +320,6 @@ module.exports = {
   listConsumerUsers,
   getConsumerUser,
   getPlatformOverviewCounts,
+  attachLedgerUsdc,
   MAX_PAGE,
 };
