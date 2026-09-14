@@ -1,15 +1,16 @@
 /**
- * @fileoverview Consumer crypto API: Circle USDC wallet, balance, transactions, send.
+ * @fileoverview Consumer crypto API: wallet, balance, transactions, send.
+ * Provider (Circle or Turnkey) is selected via CRYPTO_RAIL_PROVIDER.
  */
 
 const { onRequest } = require("firebase-functions/v2/https");
-const { defineSecret } = require("firebase-functions/params");
 const express = require("express");
 const QRCode = require("qrcode");
 const config = require("../config");
 const { verifyFirebaseAuth } = require("../libs/auth");
-const circleService = require("../services/circle/circleService");
-const circleRailAdapter = require("../services/circle/circleRailAdapter");
+const cryptoRailProvider = require("../services/crypto/cryptoRailProvider");
+const {publicErrorMessage} = require("../services/crypto/cryptoErrors");
+const {getCryptoFunctionSecrets} = require("../services/crypto/cryptoRailSecrets");
 const {
   C2B_ENCRYPTION_SECRETS,
   C2B_ENCRYPTION_ALLOW_HEADERS,
@@ -95,9 +96,9 @@ app.get("/crypto/wallet", async (req, res) => {
   }
 
   try {
-    let wallet = await circleRailAdapter.getWallet(auth.userId);
-    if (!wallet && circleService.isCircleConfigured()) {
-      wallet = await circleRailAdapter.createWallet(auth.userId);
+    let wallet = await cryptoRailProvider.getWallet(auth.userId);
+    if (!wallet && cryptoRailProvider.isRailConfigured()) {
+      wallet = await cryptoRailProvider.createWallet(auth.userId);
     }
     if (!wallet) {
       res.status(404).json({ success: false, error: "Crypto wallet not found" });
@@ -138,7 +139,7 @@ app.get("/crypto/balance", async (req, res) => {
   }
 
   try {
-    const balance = await circleRailAdapter.getBalance(auth.userId);
+    const balance = await cryptoRailProvider.getBalance(auth.userId);
     res.json({
       success: true,
       data: {
@@ -164,7 +165,7 @@ app.get("/crypto/transactions", async (req, res) => {
 
   try {
     const limit = Number(req.query.limit) || 50;
-    const transactions = await circleRailAdapter.listTransactions(auth.userId, limit);
+    const transactions = await cryptoRailProvider.listTransactions(auth.userId, limit);
     res.json({ success: true, data: { transactions } });
   } catch (err) {
     console.error("GET /crypto/transactions failed", { userId: auth.userId, error: err.message });
@@ -200,13 +201,13 @@ app.post("/crypto/send", async (req, res) => {
   }
 
   try {
-    const wallet = await circleRailAdapter.getWallet(auth.userId);
+    const wallet = await cryptoRailProvider.getWallet(auth.userId);
     if (!wallet) {
       res.status(404).json({ success: false, error: "Crypto wallet not found" });
       return;
     }
 
-    const result = await circleRailAdapter.send({
+    const result = await cryptoRailProvider.send({
       fromWalletId: wallet.walletId,
       toAddress,
       amount,
@@ -216,20 +217,19 @@ app.post("/crypto/send", async (req, res) => {
 
     res.json({ success: true, data: result });
   } catch (err) {
-    const message = err.message || "Send failed";
-    const status = message.includes("Insufficient") || message.includes("Idempotency") ? 400 :
-      message.includes("in progress") ? 409 : 500;
+    const message = publicErrorMessage(err) || "Send failed";
+    const status = err.httpStatus ||
+      (message.includes("Insufficient") || message.includes("Idempotency") ||
+        message.includes("Invalid") || message.includes("Unsupported") ? 400 :
+        message.includes("in progress") ? 409 : 500);
     console.error("POST /crypto/send failed", { userId: auth.userId, error: message });
     res.status(status).json({ success: false, error: message });
   }
 });
 
-const circleApiKey = defineSecret(config.secrets.circleApiKey);
-const circleEntitySecret = defineSecret(config.secrets.circleEntitySecret);
-
 exports.cryptoApi = onRequest(
     {
-      secrets: [circleApiKey, circleEntitySecret, ...C2B_ENCRYPTION_SECRETS],
+      secrets: [...getCryptoFunctionSecrets(), ...C2B_ENCRYPTION_SECRETS],
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,

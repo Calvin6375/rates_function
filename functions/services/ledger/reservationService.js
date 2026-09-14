@@ -121,6 +121,20 @@ async function attachCircleTransactionId(reservationId, circleTransactionId) {
 }
 
 /**
+ * Attach a provider transaction id. Writes `circleTransactionId` as well so
+ * existing reservation lookups keep working after the Turnkey migration.
+ * @param {string} reservationId
+ * @param {string} providerTransactionId
+ */
+async function attachProviderTransactionId(reservationId, providerTransactionId) {
+  await collection("pendingReservations").doc(reservationId).set({
+    circleTransactionId: providerTransactionId,
+    providerTransactionId,
+    updatedAt: serverTimestamp(),
+  }, { merge: true });
+}
+
+/**
  * Mark reservation confirmed after ledger debit (webhook success).
  * @param {string} reservationId
  */
@@ -194,6 +208,7 @@ module.exports = {
   getAvailableBalance,
   reserveFunds,
   attachCircleTransactionId,
+  attachProviderTransactionId,
   confirmReservation,
   releaseReservation,
   findReservation,

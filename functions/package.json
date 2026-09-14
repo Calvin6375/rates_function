@@ -13,7 +13,9 @@
     "c2b:backfill-customer-claims": "node scripts/backfill-c2b-customer-claims.js",
     "auth:bootstrap-super-admin": "node scripts/bootstrap-super-admin.js",
     "test": "jest --passWithNoTests",
-    "test:funding": "jest test/funding --passWithNoTests"
+    "test:funding": "jest test/funding --passWithNoTests",
+    "test:crypto": "jest test/crypto --passWithNoTests",
+    "turnkey:ping": "node scripts/test-turnkey-connection.js"
   },
   "engines": {
     "node": "22"
@@ -21,8 +23,10 @@
   "main": "index.js",
   "dependencies": {
     "@circle-fin/developer-controlled-wallets": "^10.6.0",
+    "@turnkey/sdk-server": "^8.4.0",
     "axios": "^1.16.0",
     "decimal.js": "^10.6.0",
+    "ethers": "^6.17.0",
     "express": "^5.2.0",
     "firebase-admin": "^13.8.0",
     "firebase-functions": "^7.0.0",

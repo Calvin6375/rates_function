@@ -4,14 +4,10 @@
  */
 
 const {onDocumentCreated} = require("firebase-functions/v2/firestore");
-const {defineSecret} = require("firebase-functions/params");
 const admin = require("../admin");
 const config = require("../config");
-const circleService = require("../services/circle/circleService");
-const circleRailAdapter = require("../services/circle/circleRailAdapter");
-
-const circleApiKey = defineSecret(config.secrets.circleApiKey);
-const circleEntitySecret = defineSecret(config.secrets.circleEntitySecret);
+const cryptoRailProvider = require("../services/crypto/cryptoRailProvider");
+const {getCryptoFunctionSecrets} = require("../services/crypto/cryptoRailSecrets");
 
 const db = admin.firestore();
 
@@ -25,7 +21,7 @@ const db = admin.firestore();
 exports.onUserCreated = onDocumentCreated(
     {
       document: `${config.collections.users}/{userId}`,
-      secrets: [circleApiKey, circleEntitySecret],
+      secrets: getCryptoFunctionSecrets(),
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
@@ -75,16 +71,18 @@ exports.onUserCreated = onDocumentCreated(
           console.log(`ℹ️ User ${userId} already has all required fields, no update needed`);
         }
 
-        if (circleService.isCircleConfigured()) {
+        if (cryptoRailProvider.isRailConfigured()) {
           try {
-            const cryptoWallet = await circleRailAdapter.createWallet(userId);
-            console.log(`✅ Circle wallet provisioned for user ${userId}`, {
+            const cryptoWallet = await cryptoRailProvider.createWallet(userId);
+            console.log(`✅ Crypto wallet provisioned for user ${userId}`, {
+              provider: cryptoRailProvider.getCryptoRailProviderName(),
               walletId: cryptoWallet.walletId,
               address: cryptoWallet.address,
             });
-          } catch (circleErr) {
-            console.error(`⚠️ Circle wallet creation failed for user ${userId} (non-blocking)`, {
-              error: circleErr.message,
+          } catch (walletErr) {
+            console.error(`⚠️ Crypto wallet creation failed for user ${userId} (non-blocking)`, {
+              provider: cryptoRailProvider.getCryptoRailProviderName(),
+              error: walletErr.message,
             });
           }
         }

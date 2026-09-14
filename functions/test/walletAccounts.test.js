@@ -45,7 +45,7 @@ jest.mock("../services/ledger/fiatReservationService", () => ({
   getReservedTotal: jest.fn(),
 }));
 
-jest.mock("../services/circle/circleRailAdapter", () => ({
+jest.mock("../services/crypto/cryptoRailProvider", () => ({
   getWallet: jest.fn(),
 }));
 

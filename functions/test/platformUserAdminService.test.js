@@ -6,6 +6,23 @@ jest.mock("../admin", () => {
   const users = {};
   const FieldValue = {serverTimestamp: jest.fn(() => "TS")};
   const authUsers = {};
+  // Stable Auth API: admin.auth() must return the same object. A new
+  // `{ updateUser: jest.fn() }` per call makes assertions look at a
+  // never-invoked mock (pre-existing test bug, unrelated to crypto rails).
+  const authApi = {
+    getUser: jest.fn(async (uid) => {
+      if (!authUsers[uid]) {
+        const err = new Error("missing");
+        err.code = "auth/user-not-found";
+        throw err;
+      }
+      return authUsers[uid];
+    }),
+    updateUser: jest.fn(async (uid, patch) => {
+      authUsers[uid] = {...authUsers[uid], ...patch};
+      return authUsers[uid];
+    }),
+  };
 
   return {
     firestore: Object.assign(
@@ -25,20 +42,7 @@ jest.mock("../admin", () => {
         }),
         {FieldValue},
     ),
-    auth: () => ({
-      getUser: async (uid) => {
-        if (!authUsers[uid]) {
-          const err = new Error("missing");
-          err.code = "auth/user-not-found";
-          throw err;
-        }
-        return authUsers[uid];
-      },
-      updateUser: jest.fn(async (uid, patch) => {
-        authUsers[uid] = {...authUsers[uid], ...patch};
-        return authUsers[uid];
-      }),
-    }),
+    auth: () => authApi,
     __state: {users, authUsers},
   };
 });

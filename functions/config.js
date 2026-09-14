@@ -39,6 +39,9 @@ const config = {
     transfiWebhookSecret: "TRANSFI_WEBHOOK_SECRET",
     circleApiKey: "CIRCLE_API_KEY",
     circleEntitySecret: "CIRCLE_ENTITY_SECRET",
+    turnkeyApiPublicKey: "TURNKEY_API_PUBLIC_KEY",
+    turnkeyApiPrivateKey: "TURNKEY_API_PRIVATE_KEY",
+    turnkeyOrganizationId: "TURNKEY_ORGANIZATION_ID",
     paystackSecretKey: "PAYSTACK_SECRET_KEY",
     paystackPublicKey: "PAYSTACK_PUBLIC_KEY",
     paystackSplitCode: "PAYSTACK_SPLIT_CODE",
@@ -175,6 +178,8 @@ const config = {
     cryptoLedger: "cryptoLedger",
     walletAggregates: "walletAggregates",
     webhookEvents: "webhookEvents",
+    /** Last-scanned block per chain for deposit/confirmation monitors */
+    cryptoChainCursors: "cryptoChainCursors",
     platformAdmins: "platformAdmins",
     sendIdempotencyKeys: "sendIdempotencyKeys",
     pendingReservations: "pendingReservations",
@@ -223,6 +228,48 @@ const config = {
     walletSetId: getEnv("CIRCLE_WALLET_SET_ID", null),
     blockchain: getEnv("CIRCLE_BLOCKCHAIN", null),
     usdcTokenId: getEnv("CIRCLE_USDC_TOKEN_ID", null),
+  },
+
+  /**
+   * Crypto rail selection. `circle` remains the deploy-safe default so existing
+   * production stays on Circle until CRYPTO_RAIL_PROVIDER=turnkey is set.
+   */
+  cryptoRail: {
+    provider: String(getEnv("CRYPTO_RAIL_PROVIDER", "circle")).toLowerCase(),
+    confirmations: Number(getEnv("CRYPTO_CONFIRMATIONS", "1")),
+    txTimeoutMs: Number(getEnv("CRYPTO_TX_TIMEOUT_MS", String(30 * 60 * 1000))),
+    /** Off for Fuji/test. Set CRYPTO_RECONCILE_AUTO_ADJUST=true to write recon entries. */
+    reconcileAutoAdjust: String(getEnv("CRYPTO_RECONCILE_AUTO_ADJUST", "false")).toLowerCase() === "true",
+    treasuryAddress: getEnv(
+        "CRYPTO_TREASURY_ADDRESS",
+        "0x952bBC4952A98a49E112d06DBaAe0FAA37eF080A",
+    ),
+  },
+
+  turnkey: {
+    organizationId: getEnv("TURNKEY_ORGANIZATION_ID", null),
+    apiPublicKey: getEnv("TURNKEY_API_PUBLIC_KEY", null),
+    apiPrivateKey: getEnv("TURNKEY_API_PRIVATE_KEY", null),
+    apiBaseUrl: getEnv("TURNKEY_API_BASE_URL", "https://api.turnkey.com"),
+  },
+
+  avalancheFuji: {
+    name: "Avalanche Fuji C-Chain",
+    network: "avalanche-fuji",
+    blockchain: "AVALANCHE",
+    chainLabel: "AVALANCHE",
+    chainId: Number(getEnv("AVALANCHE_FUJI_CHAIN_ID", "43113")),
+    rpcUrl: getEnv(
+        "AVALANCHE_FUJI_RPC_URL",
+        "https://api.avax-test.network/ext/bc/C/rpc",
+    ),
+    /** Official Circle native USDC on Fuji — override via env if Circle rotates it. */
+    usdcContract: getEnv(
+        "AVALANCHE_FUJI_USDC_CONTRACT",
+        "0x5425890298aed601595a70AB815c96711a31Bc65",
+    ),
+    nativeToken: "AVAX",
+    usdcDecimals: 6,
   },
 
   paystack: {
