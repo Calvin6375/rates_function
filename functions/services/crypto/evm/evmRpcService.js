@@ -13,6 +13,7 @@ const {
   isValidEvmAddress,
   normalizeAddress,
 } = require("./fujiNetwork");
+const {getNetworkConfig} = require("./networkConfig");
 const {fromUsdcUnits} = require("./usdcUnits");
 const {
   rpcFailure,
@@ -23,6 +24,9 @@ const {
 
 /** @type {import("ethers").JsonRpcProvider|null} */
 let providerOverride = null;
+
+/** @type {Map<string, import("ethers").JsonRpcProvider>} */
+const cachedProviders = new Map();
 
 /** @type {import("ethers").JsonRpcProvider|null} */
 let cachedProvider = null;
@@ -42,15 +46,21 @@ function setProviderForTests(provider) {
 }
 
 /**
+ * @param {string} [networkName]
  * @returns {import("ethers").JsonRpcProvider}
  */
-function getProvider() {
+function getProvider(networkName) {
   if (providerOverride) return providerOverride;
-  if (!cachedProvider) {
-    const network = getFujiNetwork();
-    cachedProvider = new ethers.JsonRpcProvider(network.rpcUrl, network.chainId);
+  const network = getNetworkConfig(networkName);
+  const key = String(network.chainId);
+  if (!cachedProviders.has(key)) {
+    cachedProviders.set(key, new ethers.JsonRpcProvider(network.rpcUrl, network.chainId));
   }
-  return cachedProvider;
+  const provider = cachedProviders.get(key);
+  if (network.network === "avalanche-fuji") {
+    cachedProvider = provider;
+  }
+  return provider;
 }
 
 /**
@@ -58,6 +68,7 @@ function getProvider() {
  */
 function resetProvider() {
   cachedProvider = null;
+  cachedProviders.clear();
 }
 
 /**
@@ -176,9 +187,9 @@ async function getAvaxBalanceWei(address) {
 /**
  * @returns {Promise<number>}
  */
-async function getBlockNumber() {
+async function getBlockNumber(networkName) {
   try {
-    return await getProvider().getBlockNumber();
+    return await getProvider(networkName).getBlockNumber();
   } catch (err) {
     throw rpcFailure(err.message || "getBlockNumber failed");
   }
@@ -188,9 +199,9 @@ async function getBlockNumber() {
  * @param {string} txHash
  * @returns {Promise<import("ethers").TransactionReceipt|null>}
  */
-async function getTransactionReceipt(txHash) {
+async function getTransactionReceipt(txHash, networkName) {
   try {
-    return await getProvider().getTransactionReceipt(txHash);
+    return await getProvider(networkName).getTransactionReceipt(txHash);
   } catch (err) {
     throw rpcFailure(err.message || "getTransactionReceipt failed");
   }
@@ -200,9 +211,9 @@ async function getTransactionReceipt(txHash) {
  * @param {string} txHash
  * @returns {Promise<import("ethers").TransactionResponse|null>}
  */
-async function getTransaction(txHash) {
+async function getTransaction(txHash, networkName) {
   try {
-    return await getProvider().getTransaction(txHash);
+    return await getProvider(networkName).getTransaction(txHash);
   } catch (err) {
     throw rpcFailure(err.message || "getTransaction failed");
   }
@@ -318,10 +329,10 @@ function buildUsdcTransferTopics(toAddress) {
  * @param {string} [toAddress] optional recipient filter (topic2)
  * @returns {Promise<Array<Object>>}
  */
-async function getUsdcTransferLogs(fromBlock, toBlock, toAddress) {
-  const network = getFujiNetwork();
+async function getUsdcTransferLogs(fromBlock, toBlock, toAddress, networkName) {
+  const network = getNetworkConfig(networkName);
   try {
-    return await getProvider().getLogs({
+    return await getProvider(networkName).getLogs({
       address: network.usdcContract,
       fromBlock,
       toBlock,

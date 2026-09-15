@@ -27,6 +27,7 @@ jest.mock("../../libs/firestore", () => ({
 jest.mock("../../services/crypto/turnkey/turnkeyDepositAddressService", () => ({
   ASSET: "USDC",
   SUPPORTED_NETWORK: "avalanche-fuji",
+  PRODUCTION_NETWORK: "avalanche",
   DepositAddressError: class DepositAddressError extends Error {
     constructor(code, message) {
       super(message);
@@ -35,6 +36,7 @@ jest.mock("../../services/crypto/turnkey/turnkeyDepositAddressService", () => ({
     }
   },
   getOrCreateCustomerDepositAddress: jest.fn(),
+  getOrCreateProductionCustomerDepositAddress: jest.fn(),
 }));
 
 jest.mock("../../services/crypto/turnkey/turnkeyDepositScannerService", () => ({
@@ -56,6 +58,9 @@ describe("startDepositWatch", () => {
     jest.clearAllMocks();
     depositAddressService.getOrCreateCustomerDepositAddress.mockResolvedValue({
       depositAddress: ADDR_A,
+    });
+    depositAddressService.getOrCreateProductionCustomerDepositAddress.mockResolvedValue({
+      address: ADDR_B,
     });
   });
 
@@ -92,6 +97,22 @@ describe("startDepositWatch", () => {
     await expect(startDepositWatch("userA", {network: "ethereum"})).rejects.toMatchObject({
       code: "WRONG_NETWORK",
     });
+  });
+
+  it("uses the production address and a network-specific intent", async () => {
+    const result = await startDepositWatch("userA", {asset: "USDC", network: "avalanche"});
+    expect(result.network).toBe("avalanche");
+    expect(result.address).toBe(ADDR_B);
+    expect(result.intentId).toBe(intentDocId("userA", "avalanche", "USDC"));
+    expect(depositAddressService.getOrCreateProductionCustomerDepositAddress)
+        .toHaveBeenCalledWith("userA");
+    expect(depositAddressService.getOrCreateCustomerDepositAddress).not.toHaveBeenCalled();
+    expect(mockIntents.get(result.intentId).network).toBe("avalanche");
+  });
+
+  it("does not create a Fuji address when watching production", async () => {
+    await startDepositWatch("userA", {asset: "USDC", network: "avalanche"});
+    expect(depositAddressService.getOrCreateCustomerDepositAddress).not.toHaveBeenCalled();
   });
 });
 
@@ -146,6 +167,34 @@ describe("runDepositWatchLoop", () => {
     expect(result.status).toBe("expired");
     expect(mockIntents.get(intentId).status).toBe("expired");
     expect(scannerService.scanRecentUsdcDepositsForAddress).not.toHaveBeenCalled();
+  });
+
+  it("scans the production network for a production intent", async () => {
+    const intentId = intentDocId("userA", "avalanche", "USDC");
+    mockIntents.set(intentId, {
+      userId: "userA",
+      depositAddress: ADDR_B,
+      network: "avalanche",
+      status: "pending",
+      expiresAt: new Date(Date.now() + MONITOR_DURATION_MS),
+    });
+    scannerService.scanRecentUsdcDepositsForAddress.mockResolvedValue({
+      creditedDeposits: 1,
+      credits: [{
+        userId: "userA",
+        txHash: "0xprod",
+        logIndex: 0,
+        amount: 1,
+        credited: true,
+      }],
+    });
+    const result = await runDepositWatchLoop(intentId);
+    expect(result.status).toBe("credited");
+    expect(scannerService.scanRecentUsdcDepositsForAddress).toHaveBeenCalledWith(
+        ADDR_B,
+        expect.any(Number),
+        "avalanche",
+    );
   });
 });
 

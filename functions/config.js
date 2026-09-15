@@ -257,6 +257,14 @@ const config = {
     apiPublicKey: getEnv("TURNKEY_API_PUBLIC_KEY", null),
     apiPrivateKey: getEnv("TURNKEY_API_PRIVATE_KEY", null),
     apiBaseUrl: getEnv("TURNKEY_API_BASE_URL", "https://api.turnkey.com"),
+    productionCustomerDepositsWalletId: getEnv(
+        "TURNKEY_PRODUCTION_CUSTOMER_DEPOSITS_WALLET_ID",
+        "ba3dfc05-1024-5ef0-bf1c-7b5c009a582b",
+    ),
+    productionCustomerDepositsWalletName: getEnv(
+        "TURNKEY_PRODUCTION_CUSTOMER_DEPOSITS_WALLET_NAME",
+        "TruePay Customer Deposits Production",
+    ),
   },
 
   avalancheFuji: {
@@ -273,6 +281,24 @@ const config = {
     usdcContract: getEnv(
         "AVALANCHE_FUJI_USDC_CONTRACT",
         "0x5425890298aed601595a70AB815c96711a31Bc65",
+    ),
+    nativeToken: "AVAX",
+    usdcDecimals: 6,
+  },
+
+  avalanche: {
+    name: "Avalanche C-Chain",
+    network: "avalanche",
+    blockchain: "AVALANCHE",
+    chainLabel: "AVALANCHE",
+    chainId: Number(getEnv("AVALANCHE_CHAIN_ID", "43114")),
+    rpcUrl: getEnv(
+        "AVALANCHE_RPC_URL",
+        "https://api.avax.network/ext/bc/C/rpc",
+    ),
+    usdcContract: getEnv(
+        "AVALANCHE_USDC_CONTRACT",
+        "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
     ),
     nativeToken: "AVAX",
     usdcDecimals: 6,

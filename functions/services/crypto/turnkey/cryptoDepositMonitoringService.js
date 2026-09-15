@@ -7,8 +7,10 @@ const {collection, serverTimestamp} = require("../../../libs/firestore");
 const {
   ASSET,
   SUPPORTED_NETWORK,
+  PRODUCTION_NETWORK,
   DepositAddressError,
   getOrCreateCustomerDepositAddress,
+  getOrCreateProductionCustomerDepositAddress,
 } = require("./turnkeyDepositAddressService");
 const {
   scanRecentUsdcDepositsForAddress,
@@ -71,13 +73,20 @@ function toMillis(value) {
  * @param {unknown} asset
  * @param {unknown} network
  */
+function resolveWatchNetwork(network) {
+  if (!network) return SUPPORTED_NETWORK;
+  const value = String(network).toLowerCase();
+  if (value === SUPPORTED_NETWORK || value === PRODUCTION_NETWORK) {
+    return value;
+  }
+  throw new DepositWatchError("WRONG_NETWORK", "Only Avalanche Fuji or Avalanche is supported");
+}
+
 function assertWatchTarget(asset, network) {
   if (asset && String(asset).toUpperCase() !== ASSET) {
     throw new DepositWatchError("WRONG_ASSET", "Only USDC deposit monitoring is supported");
   }
-  if (network && String(network).toLowerCase() !== SUPPORTED_NETWORK) {
-    throw new DepositWatchError("WRONG_NETWORK", "Only Avalanche Fuji is supported");
-  }
+  resolveWatchNetwork(network);
 }
 
 /**
@@ -90,14 +99,20 @@ async function startDepositWatch(userId, input = {}) {
     throw new DepositWatchError("UNAUTHENTICATED", "Authentication required");
   }
   assertWatchTarget(input.asset, input.network);
+  const network = resolveWatchNetwork(input.network);
 
   let addressResult;
   try {
-    addressResult = await getOrCreateCustomerDepositAddress({
-      userId: uid,
-      asset: ASSET,
-      network: SUPPORTED_NETWORK,
-    });
+    if (network === PRODUCTION_NETWORK) {
+      const production = await getOrCreateProductionCustomerDepositAddress(uid);
+      addressResult = {depositAddress: production.address};
+    } else {
+      addressResult = await getOrCreateCustomerDepositAddress({
+        userId: uid,
+        asset: ASSET,
+        network: SUPPORTED_NETWORK,
+      });
+    }
   } catch (err) {
     if (err instanceof DepositAddressError || err.name === "DepositAddressError") {
       throw new DepositWatchError(err.code, err.message);
@@ -105,7 +120,7 @@ async function startDepositWatch(userId, input = {}) {
     throw err;
   }
 
-  const intentRef = collection("cryptoDepositIntents").doc(intentDocId(uid));
+  const intentRef = collection("cryptoDepositIntents").doc(intentDocId(uid, network, ASSET));
   const existing = await intentRef.get();
   const existingData = existing.exists ? existing.data() : null;
   const stillActive = existingData &&
@@ -122,7 +137,7 @@ async function startDepositWatch(userId, input = {}) {
       intentId: intentRef.id,
       userId: uid,
       asset: ASSET,
-      network: SUPPORTED_NETWORK,
+      network,
       address: addressResult.depositAddress,
       status: "monitoring",
       expiresAt: existingData.expiresAt && existingData.expiresAt.toDate ?
@@ -136,7 +151,7 @@ async function startDepositWatch(userId, input = {}) {
   await intentRef.set({
     userId: uid,
     asset: ASSET,
-    network: SUPPORTED_NETWORK,
+    network,
     depositAddress: addressResult.depositAddress,
     depositAddressLower: String(addressResult.depositAddress || "").toLowerCase(),
     status: STATUS.pending,
@@ -155,7 +170,7 @@ async function startDepositWatch(userId, input = {}) {
     intentId: intentRef.id,
     userId: uid,
     asset: ASSET,
-    network: SUPPORTED_NETWORK,
+    network,
     address: addressResult.depositAddress,
     status: "monitoring",
     expiresAt: expiresAt.toISOString(),
@@ -210,6 +225,7 @@ async function runDepositWatchLoop(intentId) {
     lastScan = await scanRecentUsdcDepositsForAddress(
         intent.depositAddress,
         LOOKBACK_BLOCKS,
+        intent.network || SUPPORTED_NETWORK,
     );
     const credit = (lastScan.credits || []).find((row) => row.userId === intent.userId);
     if (credit) {
@@ -232,6 +248,7 @@ async function runDepositWatchLoop(intentId) {
 module.exports = {
   ASSET,
   SUPPORTED_NETWORK,
+  PRODUCTION_NETWORK,
   POLL_INTERVAL_MS,
   MONITOR_DURATION_MS,
   MAX_POLLS,

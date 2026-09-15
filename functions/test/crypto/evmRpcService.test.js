@@ -4,7 +4,8 @@
 
 const {Interface} = require("ethers");
 const evmRpcService = require("../../services/crypto/evm/evmRpcService");
-const {ERC20_TRANSFER_ABI, TRANSFER_EVENT_TOPIC} = require("../../services/crypto/evm/fujiNetwork");
+const {ERC20_TRANSFER_ABI, TRANSFER_EVENT_TOPIC, getFujiNetwork} = require("../../services/crypto/evm/fujiNetwork");
+const {getAvalancheNetwork} = require("../../services/crypto/evm/avalancheNetwork");
 const {toUsdcUnits} = require("../../services/crypto/evm/usdcUnits");
 
 const iface = new Interface(ERC20_TRANSFER_ABI);
@@ -105,5 +106,22 @@ describe("on-chain balances via mocked provider", () => {
 
   it("throws on an invalid address", async () => {
     await expect(evmRpcService.getOnChainBalances("nope")).rejects.toThrow("Invalid destination");
+  });
+
+  it("queries the network-specific USDC contract", async () => {
+    const captured = [];
+    const mock = {
+      getLogs: jest.fn(async (query) => {
+        captured.push(query);
+        return [];
+      }),
+    };
+    evmRpcService.setProviderForTests(mock);
+    await evmRpcService.getUsdcTransferLogs(10, 20, undefined, "avalanche-fuji");
+    await evmRpcService.getUsdcTransferLogs(10, 20, undefined, "avalanche");
+    expect(captured[0].address).toBe(getFujiNetwork().usdcContract);
+    expect(captured[1].address).toBe(getAvalancheNetwork().usdcContract);
+    expect(getFujiNetwork().chainId).toBe(43113);
+    expect(getAvalancheNetwork().chainId).toBe(43114);
   });
 });

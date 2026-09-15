@@ -11,6 +11,7 @@ const {getFujiNetwork, isTreasuryAddress, isValidEvmAddress, normalizeAddress} =
 const {unsupportedNetwork} = require("../cryptoErrors");
 
 const SUPPORTED_NETWORK = "avalanche-fuji";
+const PRODUCTION_NETWORK = "avalanche";
 const ASSET = "USDC";
 
 class DepositAddressError extends Error {
@@ -127,7 +128,7 @@ async function getOrCreateUserDepositAddress(userId, network) {
   await assertUserExists(uid);
 
   const existing = await hierarchicalAccountService.findLiveCustomerWallet(uid) ||
-    await turnkeyWalletService.getWallet(uid);
+    await turnkeyWalletService.getWallet(uid, {network: SUPPORTED_NETWORK});
   if (existing && existing.address) {
     if (isTreasuryAddress(existing.address)) {
       throw new DepositAddressError(
@@ -187,6 +188,42 @@ async function getOrCreateUserDepositAddress(userId, network) {
 }
 
 /**
+ * Lazy production Avalanche USDC address. After the production mapping is live,
+ * this user's Fuji/dev cryptoWallets records are deleted.
+ * @param {unknown} userId
+ * @returns {Promise<Object>}
+ */
+async function getOrCreateProductionCustomerDepositAddress(userId) {
+  const uid = assertUserId(userId);
+  await assertUserExists(uid);
+  const allocated = await hierarchicalAccountService.allocateProductionCustomerDepositAddress(uid);
+  const wallet = allocated.wallet;
+  if (isTreasuryAddress(wallet.address)) {
+    throw new DepositAddressError(
+        "TREASURY_ADDRESS",
+        "Refusing to assign the treasury address to a customer",
+    );
+  }
+  if (!isValidEvmAddress(wallet.address)) {
+    throw new DepositAddressError("INVALID_ADDRESS", "Turnkey returned an invalid deposit address");
+  }
+  await turnkeyWalletService.deleteFujiCustomerWallets(uid);
+  return {
+    success: true,
+    created: allocated.created === true,
+    userId: uid,
+    environment: "production",
+    network: PRODUCTION_NETWORK,
+    asset: ASSET,
+    address: wallet.address,
+    status: wallet.status || "live",
+    turnkeyWalletId: wallet.turnkeyWalletId || wallet.walletId ||
+      hierarchicalAccountService.PRODUCTION_PARENT_WALLET_ID,
+    derivationIndex: wallet.derivationIndex,
+  };
+}
+
+/**
  * Future scanner lookup: network + recipient address → user mapping.
  * @param {unknown} network
  * @param {unknown} address
@@ -202,10 +239,12 @@ async function getUserByDepositAddress(network, address) {
 
 module.exports = {
   SUPPORTED_NETWORK,
+  PRODUCTION_NETWORK,
   ASSET,
   DepositAddressError,
   assertSupportedNetwork,
   getOrCreateUserDepositAddress,
   getOrCreateCustomerDepositAddress,
+  getOrCreateProductionCustomerDepositAddress,
   getUserByDepositAddress,
 };

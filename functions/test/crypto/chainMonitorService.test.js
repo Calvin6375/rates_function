@@ -17,8 +17,12 @@ const mockWalletDocs = [{
     address: USER_ADDR,
     addressLower: USER_ADDR,
     provider: "turnkey",
+    network: "avalanche-fuji",
+    asset: "USDC",
+    status: "live",
   }),
 }];
+const mockCursors = new Map();
 
 const mockPendingDocs = [];
 const mockEventDocs = new Map();
@@ -43,7 +47,10 @@ jest.mock("../../libs/firestore", () => ({
         path: `${name}/${id}`,
         get: jest.fn(async () => {
           if (name === "cryptoChainCursors") {
-            return {exists: false};
+            return {
+              exists: mockCursors.has(id),
+              data: () => mockCursors.get(id) || {lastProcessedBlock: 0},
+            };
           }
           if (name === "webhookEvents") {
             return {exists: mockEventDocs.has(id), data: () => mockEventDocs.get(id)};
@@ -52,6 +59,7 @@ jest.mock("../../libs/firestore", () => ({
         }),
         set: jest.fn(async (data) => {
           if (name === "webhookEvents") mockEventDocs.set(id, data);
+          if (name === "cryptoChainCursors") mockCursors.set(id, data);
         }),
         update: jest.fn(async () => undefined),
       })),
@@ -116,6 +124,7 @@ function transferLog({to = USER_ADDR, amount = "3", txHash = "0xdep1", index = 0
 describe("chainMonitorService deposits", () => {
   beforeEach(() => {
     mockEventDocs.clear();
+    mockCursors.clear();
     mockPendingDocs.length = 0;
     mockTxQueryDocs.length = 0;
     jest.clearAllMocks();
@@ -184,6 +193,18 @@ describe("chainMonitorService deposits", () => {
     expect(ledgerService.appendTransaction).toHaveBeenCalledTimes(1);
   });
 
+  it("runChainMonitor scans Avalanche mainnet, not Fuji", async () => {
+    evmRpcService.getUsdcTransferLogs.mockResolvedValue([]);
+    const result = await chainMonitorService.runChainMonitor();
+    expect(result.deposits.network).toBe("avalanche");
+    expect(evmRpcService.getUsdcTransferLogs).toHaveBeenCalledWith(
+        expect.any(Number),
+        expect.any(Number),
+        undefined,
+        "avalanche",
+    );
+  });
+
   it("ignores transfers to unknown addresses", async () => {
     evmRpcService.getUsdcTransferLogs.mockResolvedValue([
       transferLog({to: "0x9999999999999999999999999999999999999999"}),
@@ -244,5 +265,149 @@ describe("chainMonitorService outbound confirmation", () => {
     expect(result.failed).toBe(1);
     expect(reservationService.releaseReservation).toHaveBeenCalledWith("res_fail");
     expect(ledgerService.appendTransaction).not.toHaveBeenCalled();
+  });
+});
+
+const PROD_ADDR = "0x3333333333333333333333333333333333333333";
+const productionWallet = {
+  id: "w_prod",
+  data: () => ({
+    userId: "user_prod",
+    walletId: "tk-prod",
+    address: PROD_ADDR,
+    addressLower: PROD_ADDR,
+    provider: "turnkey",
+    network: "avalanche",
+    asset: "USDC",
+    status: "live",
+  }),
+};
+
+describe("chainMonitorService production Avalanche deposits", () => {
+  beforeEach(() => {
+    mockEventDocs.clear();
+    mockCursors.clear();
+    mockPendingDocs.length = 0;
+    mockTxQueryDocs.length = 0;
+    mockWalletDocs.length = 1;
+    mockWalletDocs.push(productionWallet);
+    jest.clearAllMocks();
+    ledgerService.hasLedgerEntry.mockResolvedValue(false);
+    evmRpcService.getBlockNumber.mockResolvedValue(200);
+  });
+
+  afterEach(() => {
+    mockWalletDocs.length = 1;
+  });
+
+  it("credits a mainnet USDC deposit to the production wallet only", async () => {
+    evmRpcService.getUsdcTransferLogs.mockResolvedValue([transferLog({to: PROD_ADDR, txHash: "0xprod1"})]);
+    const result = await chainMonitorService.processConfirmedMainnetDeposits();
+    expect(result.network).toBe("avalanche");
+    expect(result.credited).toBe(1);
+    expect(ledgerService.appendTransaction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: "user_prod",
+          type: "deposit",
+          asset: "USDC",
+          amount: 3,
+          referenceId: "0xprod1_0",
+        }),
+    );
+    expect(evmRpcService.getUsdcTransferLogs).toHaveBeenCalledWith(
+        expect.any(Number),
+        expect.any(Number),
+        undefined,
+        "avalanche",
+    );
+  });
+
+  it("never credits a Fuji address during a production scan", async () => {
+    evmRpcService.getUsdcTransferLogs.mockResolvedValue([transferLog({to: USER_ADDR, txHash: "0xfuji"})]);
+    const result = await chainMonitorService.processConfirmedMainnetDeposits();
+    expect(result.credited).toBe(0);
+    expect(ledgerService.appendTransaction).not.toHaveBeenCalled();
+  });
+
+  it("never credits a production address during a Fuji scan", async () => {
+    evmRpcService.getUsdcTransferLogs.mockResolvedValue([transferLog({to: PROD_ADDR, txHash: "0xprod2"})]);
+    const result = await chainMonitorService.processConfirmedDeposits();
+    expect(result.network).toBe("avalanche-fuji");
+    expect(result.credited).toBe(0);
+    expect(ledgerService.appendTransaction).not.toHaveBeenCalled();
+    expect(evmRpcService.getUsdcTransferLogs).toHaveBeenCalledWith(
+        expect.any(Number),
+        expect.any(Number),
+        undefined,
+        "avalanche-fuji",
+    );
+  });
+
+  it("ignores an inactive production address", async () => {
+    mockWalletDocs[1] = {
+      id: "w_prod_inactive",
+      data: () => ({
+        ...productionWallet.data(),
+        status: "inactive",
+      }),
+    };
+    const result = await chainMonitorService.creditDeposit({
+      from: "0x1111111111111111111111111111111111111111",
+      to: PROD_ADDR,
+      value: 3_000_000n,
+      txHash: "0xinactive",
+      logIndex: 0,
+      blockNumber: 150,
+    }, mockWalletDocs[1].data(), {network: "avalanche"});
+    expect(result).toEqual({credited: false, ignored: true, reason: "inactive"});
+    expect(ledgerService.appendTransaction).not.toHaveBeenCalled();
+  });
+
+  it("does not credit a Fuji wallet on the production path", async () => {
+    const result = await chainMonitorService.creditDeposit({
+      from: "0x1111111111111111111111111111111111111111",
+      to: USER_ADDR,
+      value: 3_000_000n,
+      txHash: "0xwrongnet",
+      logIndex: 0,
+      blockNumber: 150,
+    }, mockWalletDocs[0].data(), {network: "avalanche"});
+    expect(result.reason).toBe("wrong-network");
+    expect(ledgerService.appendTransaction).not.toHaveBeenCalled();
+  });
+
+  it("uses a production event lock distinct from Fuji", async () => {
+    await chainMonitorService.creditDeposit({
+      from: "0x1111111111111111111111111111111111111111",
+      to: PROD_ADDR,
+      value: 3_000_000n,
+      txHash: "0xlock1",
+      logIndex: 0,
+      blockNumber: 150,
+    }, productionWallet.data(), {network: "avalanche"});
+    const eventKeys = [...mockEventDocs.keys()].map(String);
+    expect(eventKeys.some((key) => key.includes("avax:0xlock1_0"))).toBe(true);
+    expect(eventKeys.some((key) => key.includes("avax-fuji:0xlock1_0"))).toBe(false);
+
+    const second = await chainMonitorService.creditDeposit({
+      from: "0x1111111111111111111111111111111111111111",
+      to: PROD_ADDR,
+      value: 3_000_000n,
+      txHash: "0xlock1",
+      logIndex: 0,
+      blockNumber: 150,
+    }, productionWallet.data(), {network: "avalanche"});
+    expect(second.duplicate).toBe(true);
+    expect(ledgerService.appendTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps production and Fuji chain cursors independent", async () => {
+    evmRpcService.getUsdcTransferLogs.mockResolvedValue([]);
+    await chainMonitorService.processConfirmedDeposits();
+    await chainMonitorService.processConfirmedMainnetDeposits();
+    expect(mockCursors.has("avalanche-fuji")).toBe(true);
+    expect(mockCursors.has("avalanche")).toBe(true);
+    expect(mockCursors.get("avalanche-fuji").network).toBe("avalanche-fuji");
+    expect(mockCursors.get("avalanche").network).toBe("avalanche");
   });
 });

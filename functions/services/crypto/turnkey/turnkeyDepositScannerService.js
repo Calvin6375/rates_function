@@ -5,13 +5,19 @@
 
 const {collection} = require("../../../libs/firestore");
 const evmRpcService = require("../evm/evmRpcService");
-const {getFujiNetwork, normalizeAddress} = require("../evm/fujiNetwork");
+const {normalizeAddress} = require("../evm/fujiNetwork");
+const {
+  FUJI_NETWORK,
+  MAINNET_NETWORK,
+  getNetworkConfig,
+  normalizeNetworkName,
+} = require("../evm/networkConfig");
 const {fromUsdcUnits} = require("../evm/usdcUnits");
 const chainMonitorService = require("../chainMonitorService");
 
 const ASSET = "USDC";
 const PROVIDER = "turnkey";
-const SUPPORTED_NETWORK = "avalanche-fuji";
+const SUPPORTED_NETWORK = FUJI_NETWORK;
 const EXPECTED_CHAIN_ID = 43113;
 const MAX_BLOCK_RANGE = 2000;
 
@@ -64,22 +70,28 @@ function assertBlockRange(fromBlock, toBlock) {
  * @param {Object} wallet
  * @returns {boolean}
  */
-function isLiveFujiUsdcWallet(wallet) {
+function isLiveNetworkUsdcWallet(wallet, network = SUPPORTED_NETWORK) {
   if (!wallet || !wallet.userId) return false;
   if (String(wallet.provider || "").toLowerCase() !== PROVIDER) return false;
   if (String(wallet.status || "").toLowerCase() !== "live") return false;
-  if (String(wallet.network || "").toLowerCase() !== SUPPORTED_NETWORK) return false;
+  const rowNetwork = String(wallet.network || SUPPORTED_NETWORK).toLowerCase();
+  if (rowNetwork !== String(network).toLowerCase()) return false;
   if (String(wallet.asset || "").toUpperCase() !== ASSET) return false;
   return true;
+}
+
+function isLiveFujiUsdcWallet(wallet) {
+  return isLiveNetworkUsdcWallet(wallet, SUPPORTED_NETWORK);
 }
 
 /**
  * @param {string} address
  * @returns {Promise<{ wallet: Object|null, reason: string|null }>}
  */
-async function resolveCustomerWallet(address) {
+async function resolveCustomerWallet(address, network = SUPPORTED_NETWORK) {
   const normalized = normalizeAddress(address);
   if (!normalized) return {wallet: null, reason: "unknown"};
+  const resolvedNetwork = normalizeNetworkName(network);
 
   const snap = await collection("cryptoWallets")
       .where("addressLower", "==", normalized)
@@ -87,8 +99,11 @@ async function resolveCustomerWallet(address) {
   if (snap.empty) return {wallet: null, reason: "unknown"};
 
   const matches = snap.docs.map((doc) => ({id: doc.id, ...doc.data()}));
-  const live = matches.filter(isLiveFujiUsdcWallet);
-  if (!live.length) return {wallet: null, reason: "inactive"};
+  const live = matches.filter((row) => isLiveNetworkUsdcWallet(row, resolvedNetwork));
+  if (!live.length) {
+    const otherNetwork = matches.some((row) => row.status === "live");
+    return {wallet: null, reason: otherNetwork ? "wrong-network" : "inactive"};
+  }
   const userIds = new Set(live.map((row) => String(row.userId)));
   if (userIds.size > 1) {
     return {wallet: null, reason: "ambiguous"};
@@ -103,12 +118,9 @@ async function resolveCustomerWallet(address) {
  * @param {number} currentBlock
  * @returns {string|null} ignore reason or null if valid
  */
-function validateTransfer(transfer, receipt, transaction, currentBlock) {
-  const network = getFujiNetwork();
-  if (Number(network.chainId) !== EXPECTED_CHAIN_ID) {
-    return "wrong-network";
-  }
-  if (transaction && Number(transaction.chainId) !== EXPECTED_CHAIN_ID) {
+function validateTransfer(transfer, receipt, transaction, currentBlock, networkName = SUPPORTED_NETWORK) {
+  const network = getNetworkConfig(networkName);
+  if (transaction && Number(transaction.chainId) !== Number(network.chainId)) {
     return "wrong-network";
   }
   if (!receipt || Number(receipt.status) !== 1) {
@@ -137,8 +149,11 @@ function isConfiguredUsdcLog(log, network) {
  * @param {Object} [input]
  */
 function assertSupportedScanTarget(input = {}) {
-  if (input.network && String(input.network).toLowerCase() !== SUPPORTED_NETWORK) {
-    throw new DepositScanError("WRONG_NETWORK", "Scanner only supports Avalanche Fuji");
+  if (input.network) {
+    const network = String(input.network).toLowerCase();
+    if (network !== SUPPORTED_NETWORK && network !== MAINNET_NETWORK) {
+      throw new DepositScanError("WRONG_NETWORK", "Scanner only supports Avalanche Fuji or Avalanche");
+    }
   }
   if (input.asset && String(input.asset).toUpperCase() !== ASSET) {
     throw new DepositScanError("WRONG_ASSET", "Scanner only supports USDC");
@@ -152,14 +167,17 @@ function assertSupportedScanTarget(input = {}) {
 async function scanUsdcDeposits(range) {
   assertSupportedScanTarget(range);
   const {fromBlock, toBlock} = assertBlockRange(range.fromBlock, range.toBlock);
-  const network = getFujiNetwork();
-  if (Number(network.chainId) !== EXPECTED_CHAIN_ID || network.network !== SUPPORTED_NETWORK) {
-    throw new DepositScanError("WRONG_NETWORK", "Scanner only supports Avalanche Fuji");
-  }
+  const networkName = normalizeNetworkName(range.network || SUPPORTED_NETWORK);
+  const network = getNetworkConfig(networkName);
 
-  const currentBlock = await evmRpcService.getBlockNumber();
+  const currentBlock = await evmRpcService.getBlockNumber(networkName);
   const toAddress = range.toAddress ? normalizeAddress(range.toAddress) : null;
-  const logs = await evmRpcService.getUsdcTransferLogs(fromBlock, toBlock, toAddress || undefined);
+  const logs = await evmRpcService.getUsdcTransferLogs(
+      fromBlock,
+      toBlock,
+      toAddress || undefined,
+      networkName,
+  );
   const receiptCache = new Map();
   const txCache = new Map();
 
@@ -168,12 +186,14 @@ async function scanUsdcDeposits(range) {
   let creditedDeposits = 0;
   let alreadyProcessed = 0;
   let ignoredEvents = 0;
+  const ignored = [];
   const credits = [];
 
   for (const log of logs) {
     scannedEvents += 1;
     if (!isConfiguredUsdcLog(log, network)) {
       ignoredEvents += 1;
+      ignored.push({reason: "wrong-token", txHash: log.transactionHash || null});
       continue;
     }
     const transfer = evmRpcService.parseUsdcTransferLog(log);
@@ -189,30 +209,42 @@ async function scanUsdcDeposits(range) {
 
     const txHash = transfer.txHash;
     if (!receiptCache.has(txHash)) {
-      receiptCache.set(txHash, await evmRpcService.getTransactionReceipt(txHash));
+      receiptCache.set(txHash, await evmRpcService.getTransactionReceipt(txHash, networkName));
     }
     if (!txCache.has(txHash)) {
-      txCache.set(txHash, await evmRpcService.getTransaction(txHash));
+      txCache.set(txHash, await evmRpcService.getTransaction(txHash, networkName));
     }
     const reason = validateTransfer(
         transfer,
         receiptCache.get(txHash),
         txCache.get(txHash),
         currentBlock,
+        networkName,
     );
     if (reason) {
       ignoredEvents += 1;
+      ignored.push({reason, txHash, to: transfer.to});
       continue;
     }
 
-    const resolved = await resolveCustomerWallet(transfer.to);
+    const resolved = await resolveCustomerWallet(transfer.to, networkName);
     if (!resolved.wallet) {
       ignoredEvents += 1;
+      ignored.push({reason: resolved.reason || "unknown", txHash, to: transfer.to});
+      if (networkName === MAINNET_NETWORK) {
+        console.warn("Production USDC deposit not credited", {
+          reason: resolved.reason,
+          txHash,
+          to: transfer.to,
+        });
+      }
       continue;
     }
     matchedDeposits += 1;
 
-    const result = await chainMonitorService.creditDeposit(transfer, resolved.wallet);
+    const result = await chainMonitorService.creditDeposit(transfer, resolved.wallet, {
+      network: networkName,
+    });
     if (result.credited || result.duplicate) {
       credits.push({
         userId: resolved.wallet.userId,
@@ -234,7 +266,7 @@ async function scanUsdcDeposits(range) {
 
   return {
     success: true,
-    network: SUPPORTED_NETWORK,
+    network: networkName,
     asset: ASSET,
     fromBlock,
     toBlock,
@@ -243,6 +275,7 @@ async function scanUsdcDeposits(range) {
     creditedDeposits,
     alreadyProcessed,
     ignoredEvents,
+    ignored,
     credits,
   };
 }
@@ -251,16 +284,18 @@ async function scanUsdcDeposits(range) {
  * Targeted recent-block scan for one customer address. Does not move the global cursor.
  * @param {string} toAddress
  * @param {number} [lookbackBlocks]
+ * @param {string} [network]
  * @returns {Promise<Object>}
  */
-async function scanRecentUsdcDepositsForAddress(toAddress, lookbackBlocks = 80) {
-  const currentBlock = await evmRpcService.getBlockNumber();
+async function scanRecentUsdcDepositsForAddress(toAddress, lookbackBlocks = 80, network = SUPPORTED_NETWORK) {
+  const networkName = normalizeNetworkName(network);
+  const currentBlock = await evmRpcService.getBlockNumber(networkName);
   const fromBlock = Math.max(0, currentBlock - Math.max(1, Number(lookbackBlocks) || 80));
   return scanUsdcDeposits({
     fromBlock,
     toBlock: currentBlock,
     toAddress,
-    network: SUPPORTED_NETWORK,
+    network: networkName,
     asset: ASSET,
   });
 }
@@ -268,12 +303,14 @@ async function scanRecentUsdcDepositsForAddress(toAddress, lookbackBlocks = 80) 
 module.exports = {
   ASSET,
   SUPPORTED_NETWORK,
+  MAINNET_NETWORK,
   EXPECTED_CHAIN_ID,
   MAX_BLOCK_RANGE,
   DepositScanError,
   assertBlockRange,
   assertSupportedScanTarget,
   isLiveFujiUsdcWallet,
+  isLiveNetworkUsdcWallet,
   resolveCustomerWallet,
   validateTransfer,
   scanUsdcDeposits,

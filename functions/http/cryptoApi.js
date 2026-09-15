@@ -14,6 +14,12 @@ const {
   startDepositWatch,
   DepositWatchError,
 } = require("../services/crypto/turnkey/cryptoDepositMonitoringService");
+const {
+  getOrCreateProductionCustomerDepositAddress,
+  DepositAddressError,
+  PRODUCTION_NETWORK,
+} = require("../services/crypto/turnkey/turnkeyDepositAddressService");
+const turnkeyWalletService = require("../services/crypto/turnkey/turnkeyWalletService");
 const {getCryptoFunctionSecrets} = require("../services/crypto/cryptoRailSecrets");
 const {
   C2B_ENCRYPTION_SECRETS,
@@ -91,6 +97,8 @@ function checkSendRateLimit(userId) {
 
 /**
  * GET /crypto/wallet
+ * Default (no network / avalanche-fuji): existing Fuji rail wallet.
+ * network=avalanche: return production mapping only — never create, never fall back to Fuji.
  */
 app.get("/crypto/wallet", async (req, res) => {
   const auth = await verifyFirebaseAuth(req);
@@ -99,7 +107,39 @@ app.get("/crypto/wallet", async (req, res) => {
     return;
   }
 
+  const requestedNetwork = String(req.query.network || "").trim().toLowerCase();
+  if (requestedNetwork && requestedNetwork !== "avalanche-fuji" && requestedNetwork !== PRODUCTION_NETWORK) {
+    res.status(400).json({success: false, error: "Unsupported network"});
+    return;
+  }
+
   try {
+    if (requestedNetwork === PRODUCTION_NETWORK) {
+      const wallet = await turnkeyWalletService.getWallet(auth.userId, {network: PRODUCTION_NETWORK});
+      if (!wallet) {
+        res.status(404).json({success: false, error: "Production crypto wallet not found"});
+        return;
+      }
+      const qrDataUrl = await QRCode.toDataURL(wallet.address, {
+        errorCorrectionLevel: "M",
+        margin: 1,
+        width: 256,
+      });
+      res.json({
+        success: true,
+        data: {
+          address: wallet.address,
+          chain: wallet.chain,
+          asset: wallet.asset || "USDC",
+          walletId: wallet.walletId,
+          network: wallet.network,
+          qrDataUrl,
+          qrPayload: wallet.address,
+        },
+      });
+      return;
+    }
+
     let wallet = await cryptoRailProvider.getWallet(auth.userId);
     if (!wallet && cryptoRailProvider.isRailConfigured()) {
       wallet = await cryptoRailProvider.createWallet(auth.userId);
@@ -129,6 +169,27 @@ app.get("/crypto/wallet", async (req, res) => {
   } catch (err) {
     console.error("GET /crypto/wallet failed", { userId: auth.userId, error: err.message });
     res.status(500).json({ success: false, error: "Failed to load crypto wallet" });
+  }
+});
+
+/**
+ * GET /crypto/wallet/status
+ * Read-only: is this user still on a Fuji testnet address?
+ * Never creates Fuji or production wallets. userId comes from the token.
+ */
+app.get("/crypto/wallet/status", async (req, res) => {
+  const auth = await verifyFirebaseAuth(req);
+  if (!auth.success) {
+    res.status(401).json({success: false, error: "Unauthorized"});
+    return;
+  }
+
+  try {
+    const result = await turnkeyWalletService.getCustomerWalletNetworkStatus(auth.userId);
+    res.json(result);
+  } catch (err) {
+    console.error("GET /crypto/wallet/status failed", {userId: auth.userId, error: err.message});
+    res.status(500).json({success: false, error: "Failed to load wallet status"});
   }
 });
 
@@ -228,6 +289,36 @@ app.post("/crypto/send", async (req, res) => {
         message.includes("in progress") ? 409 : 500);
     console.error("POST /crypto/send failed", { userId: auth.userId, error: message });
     res.status(status).json({ success: false, error: message });
+  }
+});
+
+/**
+ * POST /crypto/wallet/production
+ * Lazy Avalanche mainnet USDC address. userId comes from the Firebase token.
+ */
+app.post("/crypto/wallet/production", async (req, res) => {
+  const auth = await verifyFirebaseAuth(req);
+  if (!auth.success) {
+    res.status(401).json({success: false, error: "Unauthorized"});
+    return;
+  }
+
+  const asset = String((req.body && req.body.asset) || "USDC").toUpperCase();
+  if (asset !== "USDC") {
+    res.status(400).json({success: false, error: "Only USDC is supported"});
+    return;
+  }
+
+  try {
+    const result = await getOrCreateProductionCustomerDepositAddress(auth.userId);
+    res.json(result);
+  } catch (err) {
+    const message = err.message || "Failed to load production crypto wallet";
+    const status = (err instanceof DepositAddressError || err.name === "DepositAddressError") ?
+      (err.code === "INVALID_USER" ? 404 : 400) :
+      500;
+    console.error("POST /crypto/wallet/production failed", {userId: auth.userId, error: message});
+    res.status(status).json({success: false, error: message});
   }
 });
 

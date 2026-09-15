@@ -10,7 +10,8 @@ const {collection, serverTimestamp} = require("../../libs/firestore");
 const ledgerService = require("../ledger/ledgerService");
 const reservationService = require("../ledger/reservationService");
 const evmRpcService = require("./evm/evmRpcService");
-const {getFujiNetwork, normalizeAddress} = require("./evm/fujiNetwork");
+const {normalizeAddress} = require("./evm/fujiNetwork");
+const {depositEventPrefix, getNetworkConfig, normalizeNetworkName} = require("./evm/networkConfig");
 const {fromUsdcUnits} = require("./evm/usdcUnits");
 const config = require("../../config");
 
@@ -43,7 +44,8 @@ async function setCursor(network, lastProcessedBlock) {
 /**
  * @returns {Promise<Set<string>>}
  */
-async function loadWatchedAddresses() {
+async function loadWatchedAddresses(networkName = "avalanche-fuji") {
+  const expectedNetwork = normalizeNetworkName(networkName);
   const snap = await collection("cryptoWallets")
       .where("provider", "==", PROVIDER)
       .limit(500)
@@ -52,6 +54,12 @@ async function loadWatchedAddresses() {
   const byAddress = new Map();
   for (const doc of snap.docs) {
     const data = doc.data();
+    const rowNetwork = normalizeNetworkName(data.network || "avalanche-fuji");
+    if (rowNetwork !== expectedNetwork) continue;
+    if (expectedNetwork === "avalanche") {
+      if (String(data.status || "").toLowerCase() !== "live") continue;
+      if (String(data.asset || ASSET).toUpperCase() !== ASSET) continue;
+    }
     const addr = normalizeAddress(data.addressLower || data.address);
     if (!addr) continue;
     addresses.add(addr);
@@ -100,16 +108,32 @@ async function markChainEventProcessed(eventId, meta = {}) {
  * @param {Object} wallet
  * @returns {Promise<{ credited: boolean, duplicate?: boolean }>}
  */
-async function creditDeposit(transfer, wallet) {
-  const network = getFujiNetwork();
-  const currentBlock = await evmRpcService.getBlockNumber();
+async function creditDeposit(transfer, wallet, opts = {}) {
+  const networkName = normalizeNetworkName(opts.network || wallet.network || "avalanche-fuji");
+  const walletNetwork = normalizeNetworkName(wallet.network || "avalanche-fuji");
+  if (walletNetwork !== networkName) {
+    return {credited: false, ignored: true, reason: "wrong-network"};
+  }
+  if (networkName === "avalanche") {
+    if (String(wallet.provider || "").toLowerCase() !== PROVIDER) {
+      return {credited: false, ignored: true, reason: "wrong-provider"};
+    }
+    if (String(wallet.status || "").toLowerCase() !== "live") {
+      return {credited: false, ignored: true, reason: "inactive"};
+    }
+    if (String(wallet.asset || ASSET).toUpperCase() !== ASSET) {
+      return {credited: false, ignored: true, reason: "wrong-asset"};
+    }
+  }
+  const network = getNetworkConfig(networkName);
+  const currentBlock = await evmRpcService.getBlockNumber(networkName);
   const head = evmRpcService.confirmedHeadBlock(currentBlock, network.confirmations);
   if (Number(transfer.blockNumber) > head) {
     return {credited: false, unconfirmed: true};
   }
 
   const referenceId = `${transfer.txHash}_${transfer.logIndex}`;
-  const eventId = `avax-fuji:${referenceId}`;
+  const eventId = `${depositEventPrefix(networkName)}:${referenceId}`;
   const acquired = await acquireChainEventLock(eventId);
   if (!acquired) {
     return {credited: false, duplicate: true};
@@ -159,15 +183,15 @@ async function creditDeposit(transfer, wallet) {
         fromAddress: transfer.from,
         fromWalletId: wallet.walletId,
         provider: PROVIDER,
-        network: getFujiNetwork().network,
-        chainId: getFujiNetwork().chainId,
+        network: network.network,
+        chainId: network.chainId,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
     }
 
     await markChainEventProcessed(eventId, {type: "deposit", userId: wallet.userId});
-    console.log("Fuji USDC deposit credited", {
+    console.log("USDC deposit credited", {network: networkName,
       userId: wallet.userId,
       txHash: transfer.txHash,
       amount,
@@ -185,9 +209,10 @@ async function creditDeposit(transfer, wallet) {
 /**
  * @returns {Promise<{ scanned: number, credited: number, duplicates: number }>}
  */
-async function processConfirmedDeposits() {
-  const network = getFujiNetwork();
-  const currentBlock = await evmRpcService.getBlockNumber();
+async function processConfirmedDepositsForNetwork(networkName = "avalanche-fuji") {
+  const resolved = normalizeNetworkName(networkName);
+  const network = getNetworkConfig(resolved);
+  const currentBlock = await evmRpcService.getBlockNumber(resolved);
   const head = evmRpcService.confirmedHeadBlock(currentBlock, network.confirmations);
   const cursor = await getCursor(network.network);
 
@@ -196,10 +221,10 @@ async function processConfirmedDeposits() {
     fromBlock = Math.max(0, head - 500);
   }
   if (fromBlock > head) {
-    return {scanned: 0, credited: 0, duplicates: 0};
+    return {scanned: 0, credited: 0, duplicates: 0, network: resolved};
   }
 
-  const {addresses, byAddress} = await loadWatchedAddresses();
+  const {addresses, byAddress} = await loadWatchedAddresses(resolved);
   let credited = 0;
   let duplicates = 0;
   let scanned = 0;
@@ -207,7 +232,7 @@ async function processConfirmedDeposits() {
 
   for (let start = fromBlock; start <= head; start += LOG_SCAN_CHUNK) {
     const end = Math.min(head, start + LOG_SCAN_CHUNK - 1);
-    const logs = await evmRpcService.getUsdcTransferLogs(start, end);
+    const logs = await evmRpcService.getUsdcTransferLogs(start, end, undefined, resolved);
     scanned += logs.length;
     for (const log of logs) {
       const transfer = evmRpcService.parseUsdcTransferLog(log);
@@ -215,7 +240,7 @@ async function processConfirmedDeposits() {
       if (!addresses.has(transfer.to)) continue;
       const wallet = byAddress.get(transfer.to);
       if (!wallet) continue;
-      const result = await creditDeposit(transfer, wallet);
+      const result = await creditDeposit(transfer, wallet, {network: resolved});
       if (result.credited) credited++;
       if (result.duplicate) duplicates++;
     }
@@ -223,7 +248,15 @@ async function processConfirmedDeposits() {
   }
 
   await setCursor(network.network, last);
-  return {scanned, credited, duplicates, fromBlock, toBlock: last};
+  return {scanned, credited, duplicates, fromBlock, toBlock: last, network: resolved};
+}
+
+async function processConfirmedDeposits() {
+  return processConfirmedDepositsForNetwork("avalanche-fuji");
+}
+
+async function processConfirmedMainnetDeposits() {
+  return processConfirmedDepositsForNetwork("avalanche");
 }
 
 /**
@@ -322,7 +355,7 @@ async function processPendingSends() {
  * @returns {Promise<Object>}
  */
 async function runChainMonitor() {
-  const deposits = await processConfirmedDeposits();
+  const deposits = await processConfirmedMainnetDeposits();
   const sends = await processPendingSends();
   return {deposits, sends};
 }
@@ -331,7 +364,10 @@ module.exports = {
   getCursor,
   setCursor,
   creditDeposit,
+  loadWatchedAddresses,
   processConfirmedDeposits,
+  processConfirmedDepositsForNetwork,
+  processConfirmedMainnetDeposits,
   processPendingSends,
   finalizeOutboundSend,
   runChainMonitor,

@@ -252,6 +252,7 @@ describe("scanUsdcDeposits", () => {
           logIndex: 0,
         }),
         expect.objectContaining({userId: USER_ID}),
+        expect.objectContaining({network: "avalanche-fuji"}),
     );
   });
 
@@ -361,6 +362,138 @@ describe("scanUsdcDeposits", () => {
     );
     const result = await scanUsdcDeposits({fromBlock: 140, toBlock: 160});
     expect(result.ignoredEvents).toBe(1);
+    expect(chainMonitorService.creditDeposit).not.toHaveBeenCalled();
+  });
+});
+
+const MAINNET_USDC = "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E";
+const PROD_CUSTOMER = "0x4444444444444444444444444444444444444444";
+
+function liveProductionWallet(overrides = {}) {
+  return liveWallet({
+    id: "wal_prod",
+    userId: "prod_user",
+    network: "avalanche",
+    address: PROD_CUSTOMER,
+    addressLower: PROD_CUSTOMER.toLowerCase(),
+    ...overrides,
+  });
+}
+
+describe("production Avalanche scanner isolation", () => {
+  beforeEach(() => {
+    mockWalletDocs.length = 0;
+    jest.clearAllMocks();
+    evmRpcService.getBlockNumber.mockResolvedValue(200);
+    evmRpcService.getTransactionReceipt.mockResolvedValue(okReceipt());
+    evmRpcService.getTransaction.mockResolvedValue({hash: TX_HASH, chainId: 43114});
+    chainMonitorService.creditDeposit.mockResolvedValue({credited: true});
+  });
+
+  it("credits a mainnet Transfer to a live production address", async () => {
+    mockWalletDocs.push(liveProductionWallet());
+    evmRpcService.getUsdcTransferLogs.mockResolvedValue([
+      transferLog({token: MAINNET_USDC, to: PROD_CUSTOMER}),
+    ]);
+    const result = await scanUsdcDeposits({
+      fromBlock: 140,
+      toBlock: 160,
+      network: "avalanche",
+    });
+    expect(result.network).toBe("avalanche");
+    expect(result.creditedDeposits).toBe(1);
+    expect(chainMonitorService.creditDeposit).toHaveBeenCalledWith(
+        expect.objectContaining({to: PROD_CUSTOMER.toLowerCase()}),
+        expect.objectContaining({userId: "prod_user", network: "avalanche"}),
+        expect.objectContaining({network: "avalanche"}),
+    );
+    expect(evmRpcService.getUsdcTransferLogs).toHaveBeenCalledWith(
+        140,
+        160,
+        undefined,
+        "avalanche",
+    );
+  });
+
+  it("does not credit a Fuji address during a production scan", async () => {
+    mockWalletDocs.push(liveWallet(), liveProductionWallet());
+    evmRpcService.getUsdcTransferLogs.mockResolvedValue([
+      transferLog({token: MAINNET_USDC, to: CUSTOMER}),
+    ]);
+    const result = await scanUsdcDeposits({
+      fromBlock: 140,
+      toBlock: 160,
+      network: "avalanche",
+    });
+    expect(result.creditedDeposits).toBe(0);
+    expect(chainMonitorService.creditDeposit).not.toHaveBeenCalled();
+  });
+
+  it("does not credit a production address during a Fuji scan", async () => {
+    mockWalletDocs.push(liveWallet(), liveProductionWallet());
+    evmRpcService.getUsdcTransferLogs.mockResolvedValue([
+      transferLog({to: PROD_CUSTOMER}),
+    ]);
+    evmRpcService.getTransaction.mockResolvedValue(okTx());
+    const result = await scanUsdcDeposits({fromBlock: 140, toBlock: 160});
+    expect(result.network).toBe("avalanche-fuji");
+    expect(result.creditedDeposits).toBe(0);
+    expect(chainMonitorService.creditDeposit).not.toHaveBeenCalled();
+  });
+
+  it("ignores an unknown production recipient", async () => {
+    evmRpcService.getUsdcTransferLogs.mockResolvedValue([
+      transferLog({token: MAINNET_USDC, to: UNKNOWN}),
+    ]);
+    const result = await scanUsdcDeposits({
+      fromBlock: 140,
+      toBlock: 160,
+      network: "avalanche",
+    });
+    expect(result.ignored.some((row) => row.reason === "unknown")).toBe(true);
+    expect(chainMonitorService.creditDeposit).not.toHaveBeenCalled();
+  });
+
+  it("ignores the wrong token on mainnet", async () => {
+    mockWalletDocs.push(liveProductionWallet());
+    evmRpcService.getUsdcTransferLogs.mockResolvedValue([
+      transferLog({token: OTHER_TOKEN, to: PROD_CUSTOMER}),
+    ]);
+    const result = await scanUsdcDeposits({
+      fromBlock: 140,
+      toBlock: 160,
+      network: "avalanche",
+    });
+    expect(result.ignored.some((row) => row.reason === "wrong-token")).toBe(true);
+    expect(chainMonitorService.creditDeposit).not.toHaveBeenCalled();
+  });
+
+  it("ignores a transfer on the wrong chain", async () => {
+    mockWalletDocs.push(liveProductionWallet());
+    evmRpcService.getUsdcTransferLogs.mockResolvedValue([
+      transferLog({token: MAINNET_USDC, to: PROD_CUSTOMER}),
+    ]);
+    evmRpcService.getTransaction.mockResolvedValue({chainId: 43113});
+    const result = await scanUsdcDeposits({
+      fromBlock: 140,
+      toBlock: 160,
+      network: "avalanche",
+    });
+    expect(result.ignored.some((row) => row.reason === "wrong-network")).toBe(true);
+    expect(chainMonitorService.creditDeposit).not.toHaveBeenCalled();
+  });
+
+  it("ignores an inactive production address", async () => {
+    mockWalletDocs.push(liveProductionWallet({status: "inactive"}));
+    evmRpcService.getUsdcTransferLogs.mockResolvedValue([
+      transferLog({token: MAINNET_USDC, to: PROD_CUSTOMER}),
+    ]);
+    const result = await scanUsdcDeposits({
+      fromBlock: 140,
+      toBlock: 160,
+      network: "avalanche",
+    });
+    expect(result.ignored.some((row) => row.reason === "inactive")).toBe(true);
     expect(chainMonitorService.creditDeposit).not.toHaveBeenCalled();
   });
 });
