@@ -219,6 +219,62 @@
         {"fieldPath": "userId", "order": "ASCENDING"},
         {"fieldPath": "createdAt", "order": "DESCENDING"}
       ]
+    },
+    {
+      "collectionGroup": "cryptoWallets",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "userId", "order": "ASCENDING"},
+        {"fieldPath": "provider", "order": "ASCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "cryptoWallets",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "walletId", "order": "ASCENDING"},
+        {"fieldPath": "provider", "order": "ASCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "cryptoWallets",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "addressLower", "order": "ASCENDING"},
+        {"fieldPath": "provider", "order": "ASCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "cryptoTransactions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "userId", "order": "ASCENDING"},
+        {"fieldPath": "createdAt", "order": "DESCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "cryptoTransactions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "status", "order": "ASCENDING"},
+        {"fieldPath": "provider", "order": "ASCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "pendingReservations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "userId", "order": "ASCENDING"},
+        {"fieldPath": "status", "order": "ASCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "pendingReservations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "userId", "order": "ASCENDING"},
+        {"fieldPath": "circleTransactionId", "order": "ASCENDING"}
+      ]
     }
   ],
   "fieldOverrides": []
