@@ -257,6 +257,8 @@ Requires **`sessionScope: "platform_admin"`** (`userType: "admin"`). Partner ses
 | `GET` | `/platform/admins` | Super admin — list operations teammates. |
 | `DELETE` | `/platform/admins/:userId` | Super admin. |
 | `GET` | `/platform/me` | Any operations teammate — `{ userType, role, admin: true, sessionScope: "platform_admin" }`. |
+| `GET` | `/platform/funds` | Super admin / finance / operations — Liquidity Funds balances. |
+| `GET` | `/platform/funds/history` | Super admin / finance / operations — payout account snapshot trail. |
 
 `POST /platform/partners` + email still creates a **partner owner** (`sessionScope: "partner"`). `POST /platform/partners/{id}/members` still creates a **partner teammate** only.
 
@@ -465,6 +467,96 @@ Local top-up / Add Money surcharge is **not** included.
       { "key": "collection", "label": "Collection", "revenue": 0, "count": 0, "currency": "KES" }
     ],
     "salesChart": { "granularity": "day", "current": [], "previous": [] }
+  }
+}
+```
+
+---
+
+#### `GET /platform/funds`
+
+**Liquidity → Funds.** Latest platform book balances for the admin Funds page. Same host and Bearer token as `GET /platform/dashboard`.
+
+**Auth:** Platform admin (`finance_admin`, `operations_admin`, or super admin).
+
+**Payout account (KES)** is recorded from the IntaSend **disbursement** webhook `wallet` object (`current_balance`, `available_balance`) onto `platformFunds/payoutAccount`. Collection and digital-asset rows are reserved in the payload (`null`) until those sources are wired.
+
+**Response** `200`
+
+```json
+{
+  "success": true,
+  "data": {
+    "updatedAt": "2026-09-14T15:47:34.090Z",
+    "collectionsAccount": {
+      "label": "Collections account",
+      "currencies": [
+        { "code": "KES", "currentBalance": null, "availableBalance": null, "updatedAt": null },
+        { "code": "USD", "currentBalance": null, "availableBalance": null, "updatedAt": null }
+      ]
+    },
+    "payoutAccount": {
+      "label": "Payout account",
+      "currencies": [
+        {
+          "code": "KES",
+          "currentBalance": 852.04,
+          "availableBalance": 852.04,
+          "walletId": "KNOVXDY",
+          "walletType": "SETTLEMENT",
+          "label": "default",
+          "canDisburse": false,
+          "source": "intasend_disbursement_webhook",
+          "trackingId": "3c23562d-9d9a-4f27-aea5-5b6bb24f5044",
+          "providerUpdatedAt": "2026-09-14T15:47:34.090Z",
+          "updatedAt": "2026-09-14T15:47:34.090Z"
+        }
+      ]
+    },
+    "digitalAssets": {
+      "crypto": [
+        { "code": "BTC", "currentBalance": null, "availableBalance": null, "updatedAt": null }
+      ],
+      "stablecoin": [
+        { "code": "USDT", "currentBalance": null, "availableBalance": null, "updatedAt": null },
+        { "code": "USDC", "currentBalance": null, "availableBalance": null, "updatedAt": null }
+      ]
+    }
+  }
+}
+```
+
+#### `GET /platform/funds/history`
+
+Payout-account snapshot trail (one row per distinct IntaSend wallet `updated_at`).
+
+**Query**
+
+| Parameter | Default | Notes |
+|-----------|---------|--------|
+| `account` | `payout` | Only `payout` is supported |
+| `limit` | `50` | Max `200` |
+| `startAfter` | — | Previous page `nextCursor` (snapshot doc id) |
+
+**Response** `200`
+
+```json
+{
+  "success": true,
+  "data": {
+    "items": [
+      {
+        "snapshotId": "payout_KNOVXDY_2026-09-14T18_47_34_090755_03_00",
+        "accountType": "payout",
+        "currency": "KES",
+        "currentBalance": 852.04,
+        "availableBalance": 852.04,
+        "source": "intasend_disbursement_webhook",
+        "trackingId": "3c23562d-9d9a-4f27-aea5-5b6bb24f5044",
+        "recordedAt": "2026-09-14T15:48:01.000Z"
+      }
+    ],
+    "nextCursor": null
   }
 }
 ```

@@ -219,6 +219,8 @@ const config = {
     safariCardPayouts: "safariCardPayouts",
     /** Safari Card payout idempotency keys */
     safariCardPayoutIdempotency: "safariCardPayoutIdempotency",
+    /** Platform liquidity snapshots (payout / collections / digital assets) */
+    platformFunds: "platformFunds",
   },
 
   paymentLinks: {

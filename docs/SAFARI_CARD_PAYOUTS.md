@@ -288,6 +288,8 @@ Verification: same as collection — `x-intasend-signature` HMAC and/or `INTASEN
 
 Payload: IntaSend [send money events](https://developers.intasend.com/docs/send-money-events) with `tracking_id` and `transactions[]`.
 
+When the payload includes `wallet.current_balance` / `wallet.available_balance` (IntaSend settlement wallet), the handler **always** writes that snapshot as the platform **payout account** (`platformFunds/payoutAccount`), including on webhook retries. Super-admin / finance / operations read it from `GET /b2bPortal/platform/funds`.
+
 ## Firestore collections
 
 ### `safariCardPayouts/{payoutId}`
@@ -317,6 +319,8 @@ Maps client request → `payoutId`.
 - `fiatLedger` / `walletAggregatesFiat` — settled debit on SUCCESS
 - `transactionRecords` — `withdrawal` type audit
 - `webhookReceipts` — disbursement webhook dedup
+- `platformFunds/payoutAccount` — latest IntaSend settlement wallet (payout account)
+- `platformFunds/payoutAccount/snapshots/{id}` — payout balance history
 
 ## Idempotency
 

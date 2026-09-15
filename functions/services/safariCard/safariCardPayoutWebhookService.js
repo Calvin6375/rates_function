@@ -8,6 +8,7 @@ const config = require("../../config");
 const { collection, serverTimestamp } = require("../../libs/firestore");
 const paymentsLib = require("../../libs/payments");
 const safariCardPayoutService = require("./safariCardPayoutService");
+const platformFundsService = require("../platformFundsService");
 
 const RECEIPTS_COL = config.collections.webhookReceipts;
 
@@ -53,16 +54,25 @@ function buildEventKey(payload) {
 
 /**
  * @param {Object} payload
- * @returns {Promise<{ success: boolean, duplicate?: boolean, payout?: Object|null }>}
+ * @returns {Promise<{
+ *   success: boolean,
+ *   duplicate?: boolean,
+ *   payout?: Object|null,
+ *   funds?: {recorded: boolean, snapshot?: Object},
+ *   handled?: boolean,
+ *   error?: string,
+ * }>}
  */
 async function processDisbursementWebhook(payload) {
   if (!payload || typeof payload !== "object") {
     return { success: false, error: "Invalid payload" };
   }
 
+  const funds = await platformFundsService.recordPayoutAccountFromDisbursement(payload);
+
   const eventKey = buildEventKey(payload);
   if (await isDuplicateWebhook(eventKey)) {
-    return { success: true, duplicate: true };
+    return { success: true, duplicate: true, funds };
   }
 
   const result = await safariCardPayoutService.applyProviderStatusUpdate(payload);
@@ -73,6 +83,7 @@ async function processDisbursementWebhook(payload) {
     handled: result.handled,
     payout: result.payout || null,
     duplicate: result.duplicate || false,
+    funds,
   };
 }
 

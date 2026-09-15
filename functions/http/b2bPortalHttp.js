@@ -53,6 +53,7 @@ const partnerRecipientService = require("../services/partnerRecipientService");
 const b2bSendService = require("../services/b2bSendService");
 const b2bPortalDashboardService = require("../services/b2bPortalDashboardService");
 const platformReportsService = require("../services/platformReportsService");
+const platformFundsService = require("../services/platformFundsService");
 const partnerWalletAdminService = require("../services/partnerWalletAdminService");
 const b2bWalletBalanceSync = require("../services/b2bWalletBalanceSync");
 const partnerAdminProvisioningService = require("../services/partnerAdminProvisioningService");
@@ -2776,6 +2777,41 @@ app.get("/platform/reports", loadFirebaseUser, requirePlatformAdmin, requireAdmi
   } catch (err) {
     console.error("b2bPortal GET /platform/reports:", err.message);
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * Liquidity → Funds. Payout KES is the IntaSend settlement wallet from
+ * disbursement webhooks. Collections / digital assets are reserved (null).
+ */
+app.get("/platform/funds", loadFirebaseUser, requirePlatformAdmin, requireAdminRoles("finance_admin", "operations_admin"), async (req, res) => {
+  try {
+    const data = await platformFundsService.getPlatformFunds();
+    res.status(200).json({success: true, data});
+  } catch (err) {
+    console.error("b2bPortal GET /platform/funds:", err.message);
+    res.status(500).json({success: false, error: err.message});
+  }
+});
+
+app.get("/platform/funds/history", loadFirebaseUser, requirePlatformAdmin, requireAdminRoles("finance_admin", "operations_admin"), async (req, res) => {
+  try {
+    const data = await platformFundsService.listFundHistory({
+      account: req.query.account ? String(req.query.account) : "payout",
+      limit: req.query.limit,
+      startAfter: req.query.startAfter ? String(req.query.startAfter) : null,
+    });
+    res.status(200).json({success: true, data});
+  } catch (err) {
+    const status = err.statusCode || 500;
+    if (status >= 500) {
+      console.error("b2bPortal GET /platform/funds/history:", err.message);
+    }
+    res.status(status).json({
+      success: false,
+      error: err.message,
+      ...(err.code ? {code: err.code} : {}),
+    });
   }
 });
 
