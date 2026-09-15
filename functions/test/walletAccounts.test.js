@@ -50,9 +50,11 @@ jest.mock("../services/crypto/cryptoRailProvider", () => ({
 }));
 
 const fiatLedgerService = require("../services/ledger/fiatLedgerService");
+const ledgerService = require("../services/ledger/ledgerService");
 const {
   buildAccountBalancesFromUserData,
   STANDARD_FIAT_CURRENCIES,
+  getCryptoBalance,
   syncFiatLedgerFromUserProjection,
 } = require("../services/walletService");
 
@@ -89,6 +91,18 @@ describe("buildAccountBalancesFromUserData", () => {
     const {fiat, crypto} = buildAccountBalancesFromUserData(null);
     expect(fiat.KES).toBe(0);
     expect(crypto.USDC).toBe(0);
+  });
+});
+
+describe("getCryptoBalance", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it("reads USDC from the ledger even when no Circle/Turnkey wallet row exists", async () => {
+    ledgerService.getAvailableBalance.mockResolvedValue(20);
+    await expect(getCryptoBalance("user_1")).resolves.toBe(20);
+    expect(ledgerService.getAvailableBalance).toHaveBeenCalledWith("user_1", "USDC");
   });
 });
 

@@ -1,5 +1,6 @@
 const {
   enrichTransactionForFeed,
+  mapCryptoTransactionForFeed,
   resolveTransactionDisplayName,
   resolveTransactionDirection,
 } = require("../../utils/transactionFeedLabels");
@@ -78,5 +79,42 @@ describe("transactionFeedLabels", () => {
       amount: 100,
       status: "pending",
     }).displayName).toBe("Direct top-up");
+  });
+
+  test("USDC deposit is credit with USDC deposit label", () => {
+    const tx = enrichTransactionForFeed({
+      type: "deposit",
+      amount: 20,
+      currency: "USDC",
+      status: "completed",
+      provider: "turnkey",
+    });
+    expect(tx.direction).toBe("credit");
+    expect(tx.signedAmount).toBe(20);
+    expect(tx.displayName).toBe("USDC deposit");
+    expect(tx.reconType).toBe("usdc_deposit");
+  });
+
+  test("mapCryptoTransactionForFeed normalizes complete status and currency", () => {
+    const row = mapCryptoTransactionForFeed("abc", {
+      type: "deposit",
+      amount: 20,
+      asset: "USDC",
+      status: "complete",
+      provider: "turnkey",
+      txHash: "0xabc",
+      createdAt: {toDate: () => new Date("2026-09-15T08:50:00.000Z")},
+    }, "user_1");
+    expect(row).toMatchObject({
+      id: "crypto_abc",
+      type: "deposit",
+      status: "completed",
+      amount: 20,
+      currency: "USDC",
+      userId: "user_1",
+      source: "cryptoTransactions",
+      txHash: "0xabc",
+    });
+    expect(row.timestamp).toBe("2026-09-15T08:50:00.000Z");
   });
 });

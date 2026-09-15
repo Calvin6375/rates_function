@@ -299,20 +299,36 @@ async function broadcastTransaction(signedTx) {
 }
 
 /**
+ * @param {string} [toAddress]
+ * @returns {Array<string|null>}
+ */
+function buildUsdcTransferTopics(toAddress) {
+  const topics = [TRANSFER_EVENT_TOPIC];
+  if (!toAddress) return topics;
+  if (!isValidEvmAddress(toAddress)) {
+    throw invalidAddress();
+  }
+  topics.push(null, ethers.zeroPadValue(normalizeAddress(toAddress), 32));
+  return topics;
+}
+
+/**
  * @param {number} fromBlock
  * @param {number} toBlock
+ * @param {string} [toAddress] optional recipient filter (topic2)
  * @returns {Promise<Array<Object>>}
  */
-async function getUsdcTransferLogs(fromBlock, toBlock) {
+async function getUsdcTransferLogs(fromBlock, toBlock, toAddress) {
   const network = getFujiNetwork();
   try {
     return await getProvider().getLogs({
       address: network.usdcContract,
       fromBlock,
       toBlock,
-      topics: [TRANSFER_EVENT_TOPIC],
+      topics: buildUsdcTransferTopics(toAddress),
     });
   } catch (err) {
+    if (err.code === "INVALID_ADDRESS") throw err;
     throw rpcFailure(err.message || "getLogs failed");
   }
 }
@@ -398,6 +414,7 @@ module.exports = {
   assertSufficientGas,
   broadcastTransaction,
   getUsdcTransferLogs,
+  buildUsdcTransferTopics,
   parseUsdcTransferLog,
   encodeUsdcTransfer,
   serializeUnsignedTransaction,

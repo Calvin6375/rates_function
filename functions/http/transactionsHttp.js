@@ -8,7 +8,10 @@ const admin = require("../admin");
 const express = require("express");
 const config = require("../config");
 const {verifyFirebaseAuth} = require("../libs/auth");
-const {enrichTransactionForFeed} = require("../utils/transactionFeedLabels");
+const {
+  enrichTransactionForFeed,
+  mapCryptoTransactionForFeed,
+} = require("../utils/transactionFeedLabels");
 const {
   enrichTransactionWithSafariCardPayout,
   enrichTransactionsWithSafariCardPayouts,
@@ -284,6 +287,36 @@ async function fetchUserFundingOrdersForTransactionFeed(
     }));
     rows.sort((a, b) => b.ms - a.ms);
     return rows.map((r) => r.row).filter(Boolean).slice(0, cap);
+  }
+}
+
+/**
+ * Credited USDC deposits / sends from cryptoTransactions (Turnkey or Circle).
+ * @param {string} userId
+ * @param {number} limit
+ * @returns {Promise<Array>}
+ */
+async function fetchUserCryptoTransactionsForTransactionFeed(userId, limit) {
+  const col = firestore.collection(config.collections.cryptoTransactions);
+  const cap = Math.min(limit || 50, 50);
+  try {
+    const snap = await col
+        .where("userId", "==", userId)
+        .orderBy("createdAt", "desc")
+        .limit(cap)
+        .get();
+    return snap.docs.map((doc) => mapCryptoTransactionForFeed(doc.id, doc.data(), userId));
+  } catch (err) {
+    if (!isFirestoreIndexMissingError(err)) {
+      throw err;
+    }
+    const snap = await col.where("userId", "==", userId).limit(200).get();
+    const rows = snap.docs.map((doc) => ({
+      ms: orderDocCreatedMs(doc.data()),
+      row: mapCryptoTransactionForFeed(doc.id, doc.data(), userId),
+    }));
+    rows.sort((a, b) => b.ms - a.ms);
+    return rows.map((r) => r.row).slice(0, cap);
   }
 }
 
@@ -613,6 +646,19 @@ async function getTransactionsFromFirestore(userId, options = {}) {
       console.warn(
           "⚠️ Could not load legacy IntaSend top-up orders for feed:",
           legacyErr.message,
+      );
+    }
+
+    try {
+      const cryptoFeed = await fetchUserCryptoTransactionsForTransactionFeed(
+          userId,
+          limit,
+      );
+      transactions.push(...cryptoFeed);
+    } catch (cryptoErr) {
+      console.warn(
+          "⚠️ Could not load USDC crypto transactions for feed:",
+          cryptoErr.message,
       );
     }
 

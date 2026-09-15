@@ -13,7 +13,6 @@ const { syncBalanceToRealtimeDatabase } = require("../utils/firestore");
 const ledgerService = require("./ledger/ledgerService");
 const fiatLedgerService = require("./ledger/fiatLedgerService");
 const fiatReservationService = require("./ledger/fiatReservationService");
-const cryptoRailProvider = require("./crypto/cryptoRailProvider");
 
 const OWNER_TYPES = Object.freeze({ user: "user", partner: "partner" });
 const DEFAULT_BALANCES = { USD: 0, KES: 0, USDT: 0 };
@@ -214,13 +213,13 @@ async function cacheRatesInRealtime(rates) {
 
 /**
  * Get TruePay USDC available balance for a user (ledger minus reservations).
+ * Reads walletAggregates / cryptoLedger only — does not require a Circle or
+ * Turnkey cryptoWallets row (those are address metadata, not balances).
  *
  * @param {string} userId
  * @returns {Promise<number>}
  */
 async function getCryptoBalance(userId) {
-  const wallet = await cryptoRailProvider.getWallet(userId);
-  if (!wallet) return 0;
   return ledgerService.getAvailableBalance(userId, "USDC");
 }
 

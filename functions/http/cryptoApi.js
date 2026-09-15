@@ -10,6 +10,10 @@ const config = require("../config");
 const { verifyFirebaseAuth } = require("../libs/auth");
 const cryptoRailProvider = require("../services/crypto/cryptoRailProvider");
 const {publicErrorMessage} = require("../services/crypto/cryptoErrors");
+const {
+  startDepositWatch,
+  DepositWatchError,
+} = require("../services/crypto/turnkey/cryptoDepositMonitoringService");
 const {getCryptoFunctionSecrets} = require("../services/crypto/cryptoRailSecrets");
 const {
   C2B_ENCRYPTION_SECRETS,
@@ -224,6 +228,40 @@ app.post("/crypto/send", async (req, res) => {
         message.includes("in progress") ? 409 : 500);
     console.error("POST /crypto/send failed", { userId: auth.userId, error: message });
     res.status(status).json({ success: false, error: message });
+  }
+});
+
+/**
+ * POST /crypto/deposit/watch
+ * Authenticated SafariTap / B2B caller starts a 60s inbound USDC monitor.
+ * userId is taken from the Firebase ID token, never from the body.
+ */
+app.post("/crypto/deposit/watch", async (req, res) => {
+  const auth = await verifyFirebaseAuth(req);
+  if (!auth.success) {
+    res.status(401).json({success: false, error: "Unauthorized"});
+    return;
+  }
+
+  try {
+    const result = await startDepositWatch(auth.userId, req.body || {});
+    res.json({
+      success: true,
+      intentId: result.intentId,
+      userId: result.userId,
+      asset: result.asset,
+      network: result.network,
+      address: result.address,
+      status: result.status,
+      expiresAt: result.expiresAt,
+    });
+  } catch (err) {
+    const message = err.message || "Failed to start deposit monitoring";
+    const status = (err instanceof DepositWatchError || err.name === "DepositWatchError") ?
+      (err.code === "UNAUTHENTICATED" ? 401 : 400) :
+      500;
+    console.error("POST /crypto/deposit/watch failed", {userId: auth.userId, error: message});
+    res.status(status).json({success: false, error: message});
   }
 });
 

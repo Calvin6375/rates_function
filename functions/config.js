@@ -180,6 +180,12 @@ const config = {
     webhookEvents: "webhookEvents",
     /** Last-scanned block per chain for deposit/confirmation monitors */
     cryptoChainCursors: "cryptoChainCursors",
+    /** Atomic HD index + parent wallet for customer deposit addresses */
+    cryptoWalletAddressCounters: "cryptoWalletAddressCounters",
+    /** Short-lived inbound USDC watch sessions (not an accounting ledger) */
+    cryptoDepositIntents: "cryptoDepositIntents",
+    /** Audit log for Circle → Turnkey deposit-address migration */
+    cryptoWalletMigrations: "cryptoWalletMigrations",
     platformAdmins: "platformAdmins",
     sendIdempotencyKeys: "sendIdempotencyKeys",
     pendingReservations: "pendingReservations",

@@ -15,7 +15,8 @@
     "test": "jest --passWithNoTests",
     "test:funding": "jest test/funding --passWithNoTests",
     "test:crypto": "jest test/crypto --passWithNoTests",
-    "turnkey:ping": "node scripts/test-turnkey-connection.js"
+    "turnkey:ping": "node scripts/test-turnkey-connection.js",
+    "crypto:migrate-circle-wallets": "node scripts/migrate-circle-wallets-to-turnkey.js"
   },
   "engines": {
     "node": "22"

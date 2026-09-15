@@ -203,7 +203,8 @@ async function send(params) {
     throw invalidAmount();
   }
 
-  const wallet = await turnkeyWalletService.getWalletByProviderId(fromWalletId);
+  const wallet = (userId && await turnkeyWalletService.getWallet(userId)) ||
+    await turnkeyWalletService.getWalletByProviderId(fromWalletId);
   if (!wallet) throw new Error("Source wallet not found");
 
   const ownerId = userId || wallet.userId;

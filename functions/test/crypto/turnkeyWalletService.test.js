@@ -23,33 +23,42 @@ jest.mock("../../libs/firestore", () => {
   };
 });
 
-jest.mock("../../services/crypto/turnkey/turnkeyClient", () => ({
-  isTurnkeyConfigured: jest.fn(() => true),
-  getApiClient: jest.fn(),
+jest.mock("../../services/crypto/turnkey/turnkeyHierarchicalAccountService", () => ({
+  allocateCustomerDepositAddress: jest.fn(),
 }));
 
 const firestore = require("../../libs/firestore");
-const turnkeyClient = require("../../services/crypto/turnkey/turnkeyClient");
+const hierarchicalAccountService = require("../../services/crypto/turnkey/turnkeyHierarchicalAccountService");
 const turnkeyWalletService = require("../../services/crypto/turnkey/turnkeyWalletService");
 
 describe("turnkeyWalletService", () => {
   beforeEach(() => {
     firestore.__store.docs = [];
     jest.clearAllMocks();
-    turnkeyClient.isTurnkeyConfigured.mockReturnValue(true);
+    hierarchicalAccountService.allocateCustomerDepositAddress.mockResolvedValue({
+      created: true,
+      wallet: {
+        userId: "user_a",
+        provider: "turnkey",
+        walletId: "parent_wallet",
+        turnkeyWalletId: "parent_wallet",
+        address: "0x1111111111111111111111111111111111111111",
+        addressLower: "0x1111111111111111111111111111111111111111",
+        network: "avalanche-fuji",
+        chainId: 43113,
+        blockchain: "AVALANCHE",
+        asset: "USDC",
+        status: "live",
+        derivationIndex: 0,
+        derivationPath: "m/44'/60'/0'/0/0",
+      },
+    });
   });
 
-  it("creates a unique Turnkey wallet and persists metadata", async () => {
-    turnkeyClient.getApiClient.mockReturnValue({
-      createWallet: jest.fn(async () => ({
-        walletId: "tk-wallet-1",
-        addresses: ["0x1111111111111111111111111111111111111111"],
-      })),
-    });
-
+  it("creates a unique hierarchical deposit address and persists metadata", async () => {
     const wallet = await turnkeyWalletService.createWallet("user_a");
     expect(wallet.provider).toBe("turnkey");
-    expect(wallet.walletId).toBe("tk-wallet-1");
+    expect(wallet.walletId).toBe("parent_wallet");
     expect(wallet.address).toBe("0x1111111111111111111111111111111111111111");
     expect(wallet.addressLower).toBe("0x1111111111111111111111111111111111111111");
     expect(wallet.network).toBe("avalanche-fuji");
@@ -58,6 +67,9 @@ describe("turnkeyWalletService", () => {
     expect(wallet.asset).toBe("USDC");
     expect(wallet.status).toBe("live");
     expect(wallet.userId).toBe("user_a");
+    expect(wallet.derivationPath).toBe("m/44'/60'/0'/0/0");
+    expect(hierarchicalAccountService.allocateCustomerDepositAddress)
+        .toHaveBeenCalledWith("user_a");
   });
 
   it("returns the existing wallet instead of creating another", async () => {
@@ -70,28 +82,14 @@ describe("turnkeyWalletService", () => {
         address: "0x2222222222222222222222222222222222222222",
       }),
     }];
-    const createWallet = jest.fn();
-    turnkeyClient.getApiClient.mockReturnValue({createWallet});
 
     const wallet = await turnkeyWalletService.createWallet("user_a");
     expect(wallet.walletId).toBe("tk-existing");
-    expect(createWallet).not.toHaveBeenCalled();
+    expect(hierarchicalAccountService.allocateCustomerDepositAddress).not.toHaveBeenCalled();
   });
 
-  it("refuses to assign the treasury address to a customer", async () => {
-    turnkeyClient.getApiClient.mockReturnValue({
-      createWallet: jest.fn(async () => ({
-        walletId: "tk-treasury",
-        addresses: ["0x952bBC4952A98a49E112d06DBaAe0FAA37eF080A"],
-      })),
-    });
-    await expect(turnkeyWalletService.createWallet("user_b"))
-        .rejects.toThrow(/treasury/i);
-  });
-
-  it("fails clearly when Turnkey is not configured", async () => {
-    turnkeyClient.isTurnkeyConfigured.mockReturnValue(false);
-    await expect(turnkeyWalletService.createWallet("user_c"))
-        .rejects.toThrow(/not configured/i);
+  it("fails clearly when userId is missing", async () => {
+    await expect(turnkeyWalletService.createWallet(""))
+        .rejects.toThrow(/userId is required/i);
   });
 });

@@ -39,6 +39,14 @@ describe("USDC Transfer event parsing", () => {
   it("uses the canonical Transfer topic", () => {
     expect(TRANSFER_EVENT_TOPIC).toBe(iface.getEvent("Transfer").topicHash);
   });
+
+  it("adds a recipient topic when filtering deposits", () => {
+    const to = "0x3fa194303A09bEa29a76201D3f4C96E321345b2d";
+    const topics = evmRpcService.buildUsdcTransferTopics(to);
+    expect(topics[0]).toBe(TRANSFER_EVENT_TOPIC);
+    expect(topics[1]).toBeNull();
+    expect(topics[2].endsWith(to.slice(2).toLowerCase())).toBe(true);
+  });
 });
 
 describe("USDC transfer calldata and unsigned tx", () => {

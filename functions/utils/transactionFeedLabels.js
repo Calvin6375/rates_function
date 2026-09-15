@@ -21,6 +21,7 @@ const CREDIT_TYPES = new Set([
   "funding",
   "direct_topup",
   "receive",
+  "deposit",
   "crypto_onramp",
   "b2b_funding",
 ]);
@@ -40,6 +41,7 @@ function providerDisplayName(provider) {
     transak: "Transak",
     transfi: "TransFi",
     circle: "Circle",
+    turnkey: "Turnkey",
     stripe: "Stripe",
     customer_direct_topup: "Direct deposit",
   };
@@ -94,6 +96,9 @@ function resolveReconType(tx) {
   }
   if (type === "direct_payout") {
     return "direct_payout";
+  }
+  if (type === "deposit" || type === "crypto_onramp") {
+    return "usdc_deposit";
   }
   if (type === "funding") {
     return provider ? `funding_${provider}` : "funding";
@@ -214,6 +219,7 @@ function resolveTransactionDisplayName(tx) {
       return "Send money";
     case "receive":
       return "Money received";
+    case "deposit":
     case "crypto_onramp":
       return "USDC deposit";
     case "crypto_offramp":
@@ -229,6 +235,41 @@ function resolveTransactionDisplayName(tx) {
     return "Payment sent";
   }
   return provider ? `Wallet top-up (${provider})` : "Wallet top-up";
+}
+
+/**
+ * Map a cryptoTransactions doc into the C2B home feed shape.
+ * @param {string} docId
+ * @param {Object} data
+ * @param {string} userId
+ * @returns {Object}
+ */
+function mapCryptoTransactionForFeed(docId, data, userId) {
+  const row = data && typeof data === "object" ? data : {};
+  const type = String(row.type || "deposit").toLowerCase();
+  const rawStatus = String(row.status || "complete").toLowerCase();
+  const status = rawStatus === "complete" ? "completed" : rawStatus;
+  const created = row.createdAt?.toDate?.()?.toISOString?.() || row.createdAt || null;
+  return {
+    id: `crypto_${docId}`,
+    type,
+    status,
+    amount: Number(row.amount) || 0,
+    currency: row.asset || "USDC",
+    timestamp: created,
+    createdAt: created,
+    provider: row.provider || null,
+    txHash: row.txHash || row.circleTransactionId || null,
+    source: "cryptoTransactions",
+    userId,
+    metadata: {
+      provider: row.provider || null,
+      txHash: row.txHash || null,
+      asset: row.asset || "USDC",
+      network: row.network || null,
+      type,
+    },
+  };
 }
 
 /**
@@ -260,6 +301,7 @@ function enrichTransactionForFeed(tx) {
 
 module.exports = {
   enrichTransactionForFeed,
+  mapCryptoTransactionForFeed,
   resolveTransactionDirection,
   resolveTransactionDisplayName,
   resolveReconType,

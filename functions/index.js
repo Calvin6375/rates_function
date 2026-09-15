@@ -15,6 +15,9 @@ const customerWalletsHttp = require("./http/customerWalletsHttp");
 const adminHttp = require("./http/adminHttp");
 const turnkeyHttp = require("./http/turnkeyHttp");
 const cryptoTestHttp = require("./http/cryptoTestHttp");
+const turnkeyDepositHttp = require("./http/turnkeyDepositHttp");
+const turnkeyDepositScanHttp = require("./http/turnkeyDepositScanHttp");
+const migrateCircleWalletsHttp = require("./http/migrateCircleWalletsHttp");
 const migrateUsersHttp = require("./http/migrateUsersHttp");
 const transactionsHttp = require("./http/transactionsHttp");
 const notificationsHttp = require("./http/notificationsHttp");
@@ -39,6 +42,7 @@ const retrySettlementJobsJob = require("./jobs/retrySettlementJobs");
 const usersTrigger = require("./triggers/usersTrigger");
 const userBootstrap = require("./triggers/userBootstrap");
 const authUserCleanup = require("./triggers/authUserCleanup");
+const cryptoDepositIntentTrigger = require("./triggers/cryptoDepositIntentTrigger");
 
 // Export rates functions
 exports.fetchBinanceRatesHttp = ratesHttp.fetchBinanceRatesHttp;
@@ -91,6 +95,7 @@ exports.notificationsApi = notificationsHttp.notificationsApi;
 exports.onUserCreated = usersTrigger.onUserCreated;
 exports.userBootstrap = userBootstrap.userBootstrap;
 exports.onAuthUserDeleted = authUserCleanup.onAuthUserDeleted;
+exports.watchCryptoDepositIntent = cryptoDepositIntentTrigger.watchCryptoDepositIntent;
 
 // Customer app: password reset email (Identity Toolkit; requires WEB_API_KEY)
 exports.requestPasswordReset = customerAuthHttp.requestPasswordReset;
@@ -120,6 +125,12 @@ exports.getTurnkeyTreasuryWallet = turnkeyHttp.getTurnkeyTreasuryWallet;
 exports.getTurnkeyTreasuryBalances = turnkeyHttp.getTurnkeyTreasuryBalances;
 exports.testProcessUsdcDeposit = cryptoTestHttp.testProcessUsdcDeposit;
 exports.runTestProcessUsdcDeposit = cryptoTestHttp.runTestProcessUsdcDeposit;
+exports.createOrGetTurnkeyDepositAddress = turnkeyDepositHttp.createOrGetTurnkeyDepositAddress;
+exports.runCreateOrGetTurnkeyDepositAddress = turnkeyDepositHttp.runCreateOrGetTurnkeyDepositAddress;
+exports.scanTurnkeyUsdcDeposits = turnkeyDepositScanHttp.scanTurnkeyUsdcDeposits;
+exports.runScanTurnkeyUsdcDeposits = turnkeyDepositScanHttp.runScanTurnkeyUsdcDeposits;
+exports.migrateCircleWalletsToTurnkey = migrateCircleWalletsHttp.migrateCircleWalletsToTurnkey;
+exports.runMigrateCircleWalletsToTurnkey = migrateCircleWalletsHttp.runMigrateCircleWalletsToTurnkey;
 
 // Export admin claims management functions
 exports.setAdminClaim = adminClaimsHttp.setAdminClaim;
