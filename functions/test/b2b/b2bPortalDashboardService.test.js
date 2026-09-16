@@ -1,8 +1,35 @@
+jest.mock("../../admin", () => ({
+  firestore: jest.fn(() => ({collection: jest.fn()})),
+  database: jest.fn(() => ({ref: jest.fn()})),
+}));
+jest.mock("../../libs/firestore", () => ({
+  collection: jest.fn(),
+  serverTimestamp: jest.fn(),
+}));
+jest.mock("../../utils/transactions", () => ({
+  logTransaction: jest.fn(),
+  generateTransactionId: jest.fn(),
+}));
+jest.mock("../../services/ledgerService", () => ({createDoubleEntry: jest.fn()}));
+jest.mock("../../services/walletService", () => ({}));
+jest.mock("../../services/funding/fundingOrderService", () => ({}));
+jest.mock("../../services/b2bSendService", () => ({
+  listSendPayments: jest.fn(),
+  serializePayment: jest.fn(),
+}));
+jest.mock("../../services/settlementService", () => ({
+  STATUSES: {pending: "pending", scheduled: "scheduled", processing: "processing"},
+}));
+jest.mock("../../utils/notifications", () => ({getUserNotifications: jest.fn()}));
+
 const {
   resolveDashboardPeriod,
   resolveDashboardTypes,
   formatRecentSendRow,
   formatRecentCollectionRow,
+  sumCollectedPayments,
+  sumKesCompleted,
+  sumTruePayFee,
 } = require("../../services/b2bPortalDashboardService");
 
 describe("b2bPortalDashboardService", () => {
@@ -60,5 +87,64 @@ describe("b2bPortalDashboardService", () => {
     expect(row.guestOrBookingRef).toBe("BK-99");
     expect(row.payerName).toBe("Jane Doe");
     expect(row.kesEquivalent).toBe(4500);
+  });
+
+  test("KES settled is net credit after TruePay fee, not face amount", () => {
+    const rows = [
+      {
+        id: "txr_a",
+        type: "b2b_payment",
+        amount: 150,
+        currency: "KES",
+        status: "completed",
+        metadata: {platformFee: 60.75, netCredit: 89.25},
+      },
+      {
+        id: "txr_b",
+        type: "b2b_payment",
+        amount: 150,
+        currency: "KES",
+        status: "completed",
+        metadata: {platformFee: 60.75, netCredit: 89.25},
+      },
+      {
+        id: "txr_c",
+        type: "b2b_payment",
+        amount: 150,
+        currency: "KES",
+        status: "completed",
+        metadata: {platformFee: 60.75, netCredit: 89.25},
+      },
+      {
+        id: "txr_fund",
+        type: "b2b_funding",
+        amount: 1000,
+        currency: "KES",
+        status: "completed",
+      },
+    ];
+
+    expect(sumCollectedPayments(rows).amount).toBe(450);
+    expect(sumKesCompleted(rows)).toBe(267.75);
+    expect(sumTruePayFee(rows)).toBe(182.25);
+  });
+
+  test("formatRecentCollectionRow exposes fee and settled amounts", () => {
+    const row = formatRecentCollectionRow({
+      id: "txr_fee",
+      type: "b2b_payment",
+      amount: 150,
+      currency: "KES",
+      status: "completed",
+      metadata: {
+        bookingReference: "teststd",
+        payerName: "Calvin Rumba",
+        platformFee: 60.75,
+        netCredit: 89.25,
+      },
+    });
+    expect(row.amount).toBe(150);
+    expect(row.truePayFee).toBe(60.75);
+    expect(row.kesSettled).toBe(89.25);
   });
 });

@@ -87,6 +87,40 @@ describe("productPricingService", () => {
     }
   });
 
+  it("computes payment_links fee at 2.5% + 57 on 100 KES", async () => {
+    mockConfigDoc(true, {
+      products: {
+        payment_links: {enabled: true, feePercent: 2.5, flatFeeKes: 57},
+      },
+    });
+    const fee = await productPricingService.computeProductFee({
+      productKey: "payment_links",
+      amount: 100,
+      currency: "KES",
+      forceRefresh: true,
+    });
+    expect(fee.applied).toBe(true);
+    expect(fee.feeAmount).toBe(59.5);
+    expect(fee.flatFee).toBe(57);
+    expect(fee.feePercent).toBe(2.5);
+  });
+
+  it("reads flatFeeKES alias from stored config", async () => {
+    mockConfigDoc(true, {
+      products: {
+        payment_links: {enabled: true, feePercent: 2.5, flatFeeKES: 57},
+      },
+    });
+    const fee = await productPricingService.computeProductFee({
+      productKey: "payment_links",
+      amount: 150,
+      currency: "KES",
+      forceRefresh: true,
+    });
+    expect(fee.applied).toBe(true);
+    expect(fee.feeAmount).toBe(60.75);
+  });
+
   it("computes pay_bill fee at 1.25% + 10 on 1000 KES", async () => {
     mockConfigDoc(true, {
       products: {

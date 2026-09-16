@@ -17,6 +17,7 @@ const {
   FUNDING_PROVIDERS,
   FUNDING_STATUSES,
 } = require("../utils/fundingTypes");
+const transactionService = require("./transactionService");
 
 const firestore = admin.firestore();
 const B2B_PURPOSE = "b2b_payment_link";
@@ -157,6 +158,7 @@ async function persistCheckoutRecords(params) {
     rail,
     bookingReference: link.bookingReference || null,
     payerName: identity.payerName,
+    partnerName: link.partnerName || null,
     metadata: {
       purpose: B2B_PURPOSE,
       partnerId,
@@ -168,6 +170,7 @@ async function persistCheckoutRecords(params) {
       rail,
       bookingReference: link.bookingReference || null,
       payerName: identity.payerName,
+      partnerName: link.partnerName || null,
       apiRef,
       createdAt: new Date().toISOString(),
       ...extraMapping.metadata,
@@ -192,6 +195,7 @@ async function persistCheckoutRecords(params) {
     status: "pending",
     bookingReference: link.bookingReference || null,
     payerName: identity.payerName,
+    partnerName: link.partnerName || null,
     apiRef,
     createdAt: serverTimestamp(),
     ...extraMapping,
@@ -210,6 +214,55 @@ async function persistCheckoutRecords(params) {
   });
 
   return orderId;
+}
+
+/**
+ * Visible in GET /platform/transactions as pending until Paystack verifies success.
+ *
+ * @param {Object} params
+ * @returns {Promise<string>}
+ */
+async function createPendingPaymentLinkTransaction(params) {
+  const {
+    partnerId,
+    link,
+    identity,
+    linkId,
+    orderId,
+    checkoutId,
+    invoiceId,
+    rail,
+    fundingOrderId = null,
+  } = params;
+  const {transactionId} = await transactionService.createTransactionRecord({
+    type: transactionService.TRANSACTION_TYPES.b2b_payment,
+    partnerId,
+    amount: Number(link.amount),
+    currency: String(link.currency || "KES").toUpperCase(),
+    status: transactionService.STATUSES.pending,
+    metadata: {
+      reference: link.bookingReference || null,
+      bookingReference: link.bookingReference || null,
+      payerName: identity.payerName || null,
+      partnerName: link.partnerName || null,
+      linkId,
+      orderId,
+      invoiceId,
+      checkoutId,
+      rail,
+      source: rail,
+      fundingOrderId,
+    },
+    logLegacy: false,
+  });
+
+  const mappingsCol = firestore.collection(config.collections.invoiceMappings);
+  await mappingsCol.doc(checkoutId).set({transactionRecordId: transactionId}, {merge: true});
+  await firestore.collection(config.collections.orders).doc(orderId).update({
+    transactionRecordId: transactionId,
+    updatedAt: serverTimestamp(),
+  });
+  return transactionId;
 }
 
 /**
@@ -246,6 +299,7 @@ async function startPaystackCheckout(linkId, partnerId, link, identity, payer) {
       fxRate: fx.fxRate,
       chargeAmount: fx.amountKes,
       payerName: identity.payerName,
+      partnerName: link.partnerName || null,
       bookingReference: link.bookingReference || null,
       apiRef,
     },
@@ -297,13 +351,27 @@ async function startPaystackCheckout(linkId, partnerId, link, identity, payer) {
     },
   });
 
+  const transactionRecordId = await createPendingPaymentLinkTransaction({
+    partnerId,
+    link,
+    identity,
+    linkId,
+    orderId,
+    checkoutId,
+    invoiceId,
+    rail: FUNDING_PROVIDERS.paystack,
+    fundingOrderId: fundingOrder.id,
+  });
+
   await fundingOrderService.updateFundingOrder(fundingOrder.id, {
+    transactionRecordId,
     metadata: {
       ...fundingOrder.metadata,
       orderId,
       checkoutId,
       invoiceId,
       checkoutUrl: session.checkoutUrl,
+      transactionRecordId,
     },
   });
 
@@ -312,6 +380,7 @@ async function startPaystackCheckout(linkId, partnerId, link, identity, payer) {
     partnerId,
     orderId,
     fundingOrderId: fundingOrder.id,
+    transactionRecordId,
     rail: FUNDING_PROVIDERS.paystack,
     checkoutUrl: session.checkoutUrl,
     checkoutId,
@@ -472,6 +541,8 @@ async function getPublicLinkStatus(linkId, partnerId = null, checkoutId = null) 
       paidAt: mapping.completedAt?.toDate?.()?.toISOString?.() ?? null,
       transactionId: mapping.transactionId ?? null,
       invoiceId: mapping.invoiceId ?? mapping.checkoutId ?? checkoutId,
+      description: d.description ?? null,
+      successRedirectUrl: d.successRedirectUrl ?? null,
     };
   }
 
@@ -489,6 +560,8 @@ async function getPublicLinkStatus(linkId, partnerId = null, checkoutId = null) 
     lastPaidAt: d.lastPaidAt?.toDate?.()?.toISOString?.() ?? null,
     lastPayerName: d.lastPayerName ?? null,
     expiresAt: d.expiresAt?.toDate?.()?.toISOString() ?? null,
+    description: d.description ?? null,
+    successRedirectUrl: d.successRedirectUrl ?? null,
   };
 }
 

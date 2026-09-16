@@ -3,8 +3,10 @@
  */
 
 const mockOrderSet = jest.fn();
+const mockOrderUpdate = jest.fn();
 const mockMappingSet = jest.fn();
 const mockLinkUpdate = jest.fn();
+const mockCreateTransactionRecord = jest.fn();
 
 jest.mock("../../admin", () => {
   const firestoreFn = jest.fn(() => ({
@@ -14,6 +16,7 @@ jest.mock("../../admin", () => {
           doc: () => ({
             id: "ord_pl_1",
             set: mockOrderSet,
+            update: mockOrderUpdate,
           }),
         };
       }
@@ -77,6 +80,12 @@ jest.mock("../../services/funding/fundingRailService", () => ({
   initializePayment: jest.fn(),
 }));
 
+jest.mock("../../services/transactionService", () => ({
+  TRANSACTION_TYPES: {b2b_payment: "b2b_payment"},
+  STATUSES: {pending: "pending", completed: "completed"},
+  createTransactionRecord: (...args) => mockCreateTransactionRecord(...args),
+}));
+
 jest.mock("../../services/paymentRailService", () => ({
   SUPPORTED_RAILS: {
     paystack: "paystack",
@@ -101,8 +110,10 @@ describe("b2b payment link Paystack checkout", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockOrderSet.mockResolvedValue(undefined);
+    mockOrderUpdate.mockResolvedValue(undefined);
     mockMappingSet.mockResolvedValue(undefined);
     mockLinkUpdate.mockResolvedValue(undefined);
+    mockCreateTransactionRecord.mockResolvedValue({transactionId: "txr_pending_1"});
 
     paymentLinkService.getPublicPaymentLink.mockResolvedValue({
       linkId: "pl_1",
@@ -164,6 +175,19 @@ describe("b2b payment link Paystack checkout", () => {
     expect(result.rail).toBe("paystack");
     expect(result.checkoutUrl).toBe("https://checkout.paystack.com/pl_test");
     expect(result.checkoutId).toBe("fund_pl_1");
+    expect(result.transactionRecordId).toBe("txr_pending_1");
+    expect(mockCreateTransactionRecord).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "b2b_payment",
+          status: "pending",
+          partnerId: "partner_1",
+          amount: 1000,
+        }),
+    );
+    expect(fundingOrderService.updateFundingOrder).toHaveBeenCalledWith(
+        "fund_pl_1",
+        expect.objectContaining({transactionRecordId: "txr_pending_1"}),
+    );
     expect(mockMappingSet).toHaveBeenCalled();
     expect(mockLinkUpdate).toHaveBeenCalled();
   });

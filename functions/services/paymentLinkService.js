@@ -85,6 +85,31 @@ function generateLinkId() {
 }
 
 /**
+ * Optional post-payment https URL stored on the payment link.
+ * @param {unknown} raw
+ * @returns {string|null}
+ */
+function sanitizeSuccessRedirectUrl(raw) {
+  if (raw == null) {
+    return null;
+  }
+  const value = String(raw).trim();
+  if (!value) {
+    return null;
+  }
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch (err) {
+    throw new Error("successRedirectUrl must be a valid http(s) URL");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("successRedirectUrl must be a valid http(s) URL");
+  }
+  return parsed.toString();
+}
+
+/**
  * @param {string} linkId
  * @param {string} partnerId
  * @returns {string}
@@ -166,6 +191,7 @@ function serializePaymentLink(doc, opts = {}) {
     lastCheckoutId: d.lastCheckoutId ?? null,
     invoiceId: d.invoiceId ?? null,
     lastCheckoutRail: d.lastCheckoutRail ?? null,
+    successRedirectUrl: d.successRedirectUrl ?? null,
   };
   if (opts.includeUrl !== false && partnerId && linkId) {
     out.url = buildHostedUrl(linkId, partnerId);
@@ -175,7 +201,7 @@ function serializePaymentLink(doc, opts = {}) {
 
 /**
  * @param {Object} body
- * @returns {{ amount: number, currency: string, bookingReference: string, description: string|null, expiryHours: number }}
+ * @returns {{ amount: number, currency: string, bookingReference: string, description: string|null, expiryHours: number, successRedirectUrl: string|null }}
  */
 function validateCreateBody(body) {
   const amount = Number(body?.amount);
@@ -199,12 +225,16 @@ function validateCreateBody(body) {
   }
   const description = body?.description ? String(body.description).trim() : null;
   const expiryHours = parseExpiryHours(body || {});
+  const successRedirectUrl = sanitizeSuccessRedirectUrl(
+      body?.successRedirectUrl ?? body?.redirectUrl ?? null,
+  );
   return {
     amount,
     currency,
     bookingReference,
     description,
     expiryHours,
+    successRedirectUrl,
   };
 }
 
@@ -233,6 +263,7 @@ async function createPaymentLink(partnerId, actorUid, body) {
     paymentCount: 0,
     createdAt: serverTimestamp(),
     createdByUid: actorUid,
+    successRedirectUrl: parsed.successRedirectUrl,
   };
   if (parsed.expiryHours != null) {
     linkDoc.expiresAt = admin.firestore.Timestamp.fromDate(
@@ -414,6 +445,12 @@ async function updatePaymentLink(linkId, actorUid, body, options = {}) {
     updates.description = b.description ? String(b.description).trim() : null;
   }
 
+  if (b.successRedirectUrl !== undefined || b.redirectUrl !== undefined) {
+    updates.successRedirectUrl = sanitizeSuccessRedirectUrl(
+        b.successRedirectUrl !== undefined ? b.successRedirectUrl : b.redirectUrl,
+    );
+  }
+
   if (b.status !== undefined) {
     const status = String(b.status).trim().toLowerCase();
     if (!VALID_STATUSES.includes(status)) {
@@ -495,6 +532,7 @@ async function getPublicPaymentLink(linkId, partnerId) {
     paymentCount: Number(d.paymentCount || 0),
     lastPaidAt: d.lastPaidAt?.toDate?.()?.toISOString() ?? null,
     lastPayerName: d.lastPayerName ?? null,
+    successRedirectUrl: d.successRedirectUrl ?? null,
   };
 }
 
@@ -510,6 +548,7 @@ module.exports = {
   buildHostedSuccessUrl,
   paymentLinkBaseUrl,
   effectiveStatus,
+  sanitizeSuccessRedirectUrl,
   VALID_CURRENCIES,
   VALID_STATUSES,
 };

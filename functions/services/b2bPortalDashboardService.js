@@ -206,7 +206,17 @@ function filterRowsByPeriod(rows, fromMs, toMs) {
   return rows.filter((row) => inRangeMs(isoToMs(row.createdAt), fromMs, toMs));
 }
 
+function isDashboardCollectionRow(row) {
+  return row.type === "b2b_payment" || row.type === "funding" || row.type === "topup";
+}
+
+function isCompletedRow(row) {
+  return String(row.status || "").toLowerCase() === "completed";
+}
+
 /**
+ * Gross amount the payer paid (before TruePay fee).
+ *
  * @param {Array<Object>} rows
  * @returns {{ amount: number, currency: string }}
  */
@@ -214,10 +224,7 @@ function sumCollectedPayments(rows) {
   let amount = 0;
   let currency = "KES";
   for (const row of rows) {
-    if (row.type !== "b2b_payment" && row.type !== "funding" && row.type !== "topup") {
-      continue;
-    }
-    if (String(row.status || "").toLowerCase() !== "completed") {
+    if (!isDashboardCollectionRow(row) || !isCompletedRow(row)) {
       continue;
     }
     amount += Number(row.amount) || 0;
@@ -237,23 +244,57 @@ function round2(n) {
 }
 
 /**
+ * Partner wallet credit after TruePay fee. Falls back to face amount only when
+ * no fee / net-credit fields were stored (legacy rows).
+ *
+ * @param {Object} row
+ * @returns {number}
+ */
+function settledKesForRow(row) {
+  const serialized = transactionService.serializePortalTransaction(row);
+  if (serialized.kesSettled != null) {
+    return Number(serialized.kesSettled) || 0;
+  }
+  if (serialized.currency === "KES" && serialized.amount != null) {
+    return Number(serialized.amount) || 0;
+  }
+  return Number(serialized.kesEquivalent) || 0;
+}
+
+/**
  * @param {Array<Object>} rows
  * @returns {number}
  */
 function sumKesCompleted(rows) {
   let total = 0;
   for (const row of rows) {
-    if (String(row.status || "").toLowerCase() !== "completed") {
+    if (!isDashboardCollectionRow(row) || !isCompletedRow(row)) {
       continue;
     }
-    const cur = String(row.currency || "").toUpperCase();
-    if (cur === "KES") {
-      total += Number(row.amount) || 0;
+    total += settledKesForRow(row);
+  }
+  return round2(total);
+}
+
+/**
+ * @param {Array<Object>} rows
+ * @returns {number}
+ */
+function sumTruePayFee(rows) {
+  let total = 0;
+  for (const row of rows) {
+    if (!isDashboardCollectionRow(row) || !isCompletedRow(row)) {
+      continue;
     }
-    const meta = row.metadata && typeof row.metadata === "object" ? row.metadata : {};
-    if (Number.isFinite(Number(meta.amountKes))) {
-      total += Number(meta.amountKes);
+    const serialized = transactionService.serializePortalTransaction(row);
+    if (serialized.truePayFee != null) {
+      total += Number(serialized.truePayFee) || 0;
+      continue;
     }
+    const equivalent = serialized.kesEquivalent != null ?
+      Number(serialized.kesEquivalent) :
+      0;
+    total += Math.max(0, equivalent - settledKesForRow(row));
   }
   return round2(total);
 }
@@ -271,7 +312,7 @@ function bucketSalesByDay(rows, from, to) {
   const toMs = to.getTime();
 
   for (const row of rows) {
-    if (row.type !== "b2b_payment" && row.type !== "funding" && row.type !== "topup") {
+    if (!isDashboardCollectionRow(row)) {
       continue;
     }
     const ms = isoToMs(row.createdAt);
@@ -335,31 +376,27 @@ function formatRecentSendRow(payment) {
  * @returns {Object}
  */
 function formatRecentCollectionRow(row) {
-  const meta = row.metadata && typeof row.metadata === "object" ? row.metadata : {};
-  const currency = String(row.currency || "KES").toUpperCase();
-  const amount = Number(row.amount) || 0;
-  let kesEquivalent = null;
-  if (currency === "KES") {
-    kesEquivalent = amount;
-  } else if (Number.isFinite(Number(meta.amountKes))) {
-    kesEquivalent = Number(meta.amountKes);
-  }
-
+  const serialized = transactionService.serializePortalTransaction(row);
+  const meta = serialized.metadata || {};
   return {
     id: row.id,
     date: row.createdAt || null,
     guestOrBookingRef:
-      meta.bookingReference ||
-      meta.reference ||
+      serialized.bookingReference ||
       meta.invoiceId ||
       row.id,
-    payerName: meta.payerName || meta.guestName || null,
-    currency,
-    amount,
-    kesEquivalent,
+    payerName: serialized.payerName,
+    currency: serialized.currency || "KES",
+    amount: serialized.amountReceived != null ? serialized.amountReceived : (Number(row.amount) || 0),
+    kesEquivalent: serialized.kesEquivalent,
+    truePayFee: serialized.truePayFee,
+    platformFee: serialized.platformFee,
+    kesSettled: serialized.kesSettled != null ? serialized.kesSettled : settledKesForRow(row),
+    netCredit: serialized.netCredit,
     status: row.status || "unknown",
     linkId: meta.linkId || null,
     partnerId: row.partnerId || null,
+    partnerName: serialized.partnerName || null,
     type: row.type,
   };
 }
@@ -489,6 +526,7 @@ async function getPartnerDashboard(params) {
 
   const collected = sumCollectedPayments(currentRows);
   const kesSettled = sumKesCompleted(currentRows);
+  const truePayFee = sumTruePayFee(currentRows);
   const pendingSettlements = await getPendingSettlementsSummary(partnerId);
 
   const completedPayments = currentRows.filter(
@@ -499,6 +537,7 @@ async function getPartnerDashboard(params) {
   const summary = {
     totalPaymentsCollected: collected,
     kesSettled: { amount: kesSettled, currency: "KES" },
+    truePayFee: { amount: truePayFee, currency: collected.currency || "KES" },
     transactionCount: currentRows.length,
     completedPaymentCount: completedPayments.length,
     pendingSettlements,
@@ -577,4 +616,8 @@ module.exports = {
   loadDashboardTransactions,
   formatRecentSendRow,
   formatRecentCollectionRow,
+  sumCollectedPayments,
+  sumKesCompleted,
+  sumTruePayFee,
+  settledKesForRow,
 };

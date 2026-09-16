@@ -223,6 +223,16 @@ async function resolveTransactionCursor(cursorId) {
  * @param {Object} row
  * @returns {Object}
  */
+function firstFiniteNumber(...values) {
+  for (const value of values) {
+    const n = Number(value);
+    if (Number.isFinite(n)) {
+      return n;
+    }
+  }
+  return null;
+}
+
 function serializePortalTransaction(row) {
   const metadata = row.metadata && typeof row.metadata === "object" ? { ...row.metadata } : {};
   const bookingReference =
@@ -235,24 +245,58 @@ function serializePortalTransaction(row) {
     row.payerName ||
     metadata.guestName ||
     null;
+  const partnerName =
+    row.partnerName ||
+    metadata.partnerName ||
+    null;
   if (payerName) {
     metadata.payerName = payerName;
+  }
+  if (partnerName) {
+    metadata.partnerName = partnerName;
   }
   if (bookingReference) {
     metadata.bookingReference = bookingReference;
   }
+  const amount = firstFiniteNumber(row.amount);
+  const currency = row.currency ? String(row.currency).toUpperCase() : null;
+  const platformFee = firstFiniteNumber(
+      metadata.platformFee,
+      metadata.feeAmount,
+      row.platformFee,
+      row.truePayFee,
+  );
+  const netCredit = firstFiniteNumber(metadata.netCredit, row.netCredit, row.kesSettled);
+  const fxRate = firstFiniteNumber(metadata.fxRate, row.fxRate);
+  const kesEquivalent = currency === "KES" ?
+    amount :
+    firstFiniteNumber(metadata.amountKes, metadata.kesEquivalent);
+  const kesSettled = currency === "KES" ?
+    (netCredit != null ? netCredit : (amount != null && platformFee != null ? amount - platformFee : null)) :
+    firstFiniteNumber(metadata.netCreditKes, metadata.kesSettled);
+
   return {
     transactionId: row.id,
     id: row.id,
     type: row.type,
     partnerId: row.partnerId ?? null,
+    partnerName,
     userId: row.userId ?? null,
-    amount: row.amount,
-    currency: row.currency,
+    amount,
+    amountReceived: amount,
+    currency,
     status: row.status,
     createdAt: row.createdAt ?? null,
     updatedAt: row.updatedAt ?? null,
     payerName,
+    bookingReference,
+    channel: row.partnerId || String(row.type || "").startsWith("b2b") ? "b2b" : "c2b",
+    fxRate: fxRate != null ? fxRate : (currency === "KES" ? 1 : null),
+    kesEquivalent,
+    platformFee,
+    truePayFee: platformFee,
+    netCredit,
+    kesSettled,
     metadata,
   };
 }
@@ -479,6 +523,9 @@ async function completeB2bSelfTopupOrder(params) {
  */
 async function completeB2bPaymentLinkOrder(params) {
   const { fundingOrder, verifiedEvent } = params;
+  if (String(verifiedEvent?.status || "").toLowerCase() !== "success") {
+    return { success: false, error: "Paystack payment is not verified as success" };
+  }
   const meta = fundingOrder.metadata && typeof fundingOrder.metadata === "object" ?
     fundingOrder.metadata :
     {};
@@ -511,8 +558,13 @@ async function completeB2bPaymentLinkOrder(params) {
       rail: "paystack",
       bookingReference: meta.bookingReference || null,
       payerName: meta.payerName || null,
+      partnerName: meta.partnerName || null,
       fundingOrderId: fundingOrder.id,
+      transactionRecordId: fundingOrder.transactionRecordId || meta.transactionRecordId || null,
     };
+  } else if (!mapping.transactionRecordId) {
+    mapping.transactionRecordId =
+      fundingOrder.transactionRecordId || meta.transactionRecordId || null;
   }
 
   const creditAmount = Number.isFinite(Number(meta.requestedAmount)) && Number(meta.requestedAmount) > 0 ?

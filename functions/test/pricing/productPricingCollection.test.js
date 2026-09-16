@@ -46,8 +46,10 @@ jest.mock("../../services/walletService", () => ({
 
 jest.mock("../../services/transactionService", () => ({
   TRANSACTION_TYPES: {b2b_payment: "b2b_payment"},
-  STATUSES: {completed: "completed"},
+  STATUSES: {pending: "pending", completed: "completed"},
   createTransactionRecord: (...args) => mockCreateTransactionRecord(...args),
+  getTransactionRecord: jest.fn().mockResolvedValue(null),
+  updateTransactionStatus: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock("../../libs/idempotency", () => ({
@@ -108,6 +110,28 @@ describe("collection webhook pricing", () => {
             platformFee: 25,
             netCredit: 975,
             pricingProductKey: "checkout",
+          }),
+        }),
+    );
+  });
+
+  it("deducts 2.5% plus KES 57 flat from partner credit", async () => {
+    mockPricing({
+      payment_links: {enabled: true, feePercent: 2.5, flatFeeKes: 57},
+    });
+    await processB2bPaymentWebhook(
+        {paymentId: "pay_flat", amount: 100, currency: "KES", completedAt: null, account: null},
+        {verifiedEvent: {status: "success"}},
+        {partnerId: "p1", linkId: "link_1", amount: 100, currency: "KES", rail: "paystack"},
+    );
+    expect(mockUpdatePartnerWalletBalance).toHaveBeenCalledWith("p1", "KES", 40.5);
+    expect(mockCreateTransactionRecord).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            platformFee: 59.5,
+            netCredit: 40.5,
+            feePercent: 2.5,
+            flatFeeKes: 57,
           }),
         }),
     );

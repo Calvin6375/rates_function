@@ -64,10 +64,13 @@ Authorization: Bearer <Firebase ID token>
       "status": "completed",
       "createdAt": "2026-06-05T12:00:00.000Z",
       "payerName": "Jane Doe",
+      "partnerId": "partner_…",
+      "partnerName": "Safishha",
       "metadata": {
         "linkId": "pl_…",
         "bookingReference": "DELUXE-TENT-A",
-        "payerName": "Jane Doe"
+        "payerName": "Jane Doe",
+        "partnerName": "Safishha"
       }
     }],
     "nextPageCursor": "txr_…",
@@ -158,7 +161,7 @@ Authorization: Bearer …
 }
 ```
 
-Filter or badge **`type === "b2b_payment"`** for payment-link collections. Use **`metadata.payerName`** for the guest/payer column in transaction tables.
+Filter or badge **`type === "b2b_payment"`** for payment-link collections. Use **`payerName`** / **`metadata.payerName`** for the guest/payer column, and **`partnerName`** for the partner column on the platform Partners table.
 
 ### 3.2b Merchant profile QR (SafariTap Pay)
 
@@ -312,7 +315,7 @@ Payment links allow `USD`, `KES`, `USDT`, `NGN`, `GHS`. **IntaSend checkout** cu
 
 - Remove **Guest name** from create form and list columns (same as partner portal).
 - Show **`paymentCount`**, **`lastPaidAt`**, **`lastPayerName`** on link rows.
-- Transaction tables: column **Guest / Payer** from **`metadata.payerName`**, not from the link.
+- Transaction tables: column **Guest / Payer** from **`payerName`** / **`metadata.payerName`**, not from the link. Platform Partners table: column **Partner** from **`partnerName`**.
 
 ---
 

@@ -6,6 +6,7 @@ const {
   normalizeMethodType,
   resolveSafariTapPeriod,
   resolveFailureReason,
+  isSafariTapC2bTopupDoc,
   METHOD_TYPES,
 } = require("../services/c2bSafariTapAdminListService");
 
@@ -61,5 +62,38 @@ describe("resolveFailureReason", () => {
 
   it("returns null when no reason is stored", () => {
     expect(resolveFailureReason({status: "failed", metadata: {}})).toBeNull();
+  });
+});
+
+describe("isSafariTapC2bTopupDoc", () => {
+  it("keeps C2B tourist / consumer funding", () => {
+    expect(isSafariTapC2bTopupDoc({
+      userId: "uid_consumer",
+      type: "funding",
+      metadata: {product: "tourist", source: "c2b_createPayment"},
+    })).toBe(true);
+    expect(isSafariTapC2bTopupDoc({
+      userId: "uid_consumer",
+      type: "topup",
+      metadata: {},
+    })).toBe(true);
+  });
+
+  it("drops partner wallet and payment-link funding", () => {
+    expect(isSafariTapC2bTopupDoc({
+      userId: "partner:abc",
+      provider: "paystack",
+      metadata: {product: "b2b_payment_link", partnerId: "abc"},
+    })).toBe(false);
+    expect(isSafariTapC2bTopupDoc({
+      userId: "partner:abc",
+      provider: "paystack",
+      metadata: {product: "b2b_self_topup", partnerId: "abc"},
+    })).toBe(false);
+    expect(isSafariTapC2bTopupDoc({
+      userId: "uid_1",
+      type: "b2b_funding",
+      metadata: {product: "b2b_self_topup", partnerId: "p1"},
+    })).toBe(false);
   });
 });

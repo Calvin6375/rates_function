@@ -175,6 +175,32 @@ describe("completeFundingOrder B2B self-topup", () => {
     );
   });
 
+  it("does not settle a payment-link order unless Paystack verify is success", async () => {
+    const result = await transactionService.completeFundingOrder({
+      fundingOrder: {
+        id: "fund_pl_2",
+        userId: "partner:partner_1",
+        provider: "paystack",
+        amount: 100,
+        currency: "KES",
+        status: "pending",
+        providerReference: "fund_pl_2",
+        metadata: {
+          product: "b2b_payment_link",
+          partnerId: "partner_1",
+        },
+      },
+      verifiedEvent: {
+        providerReference: "fund_pl_2",
+        status: "abandoned",
+      },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/not verified as success/);
+    expect(b2bPayments.processB2bPaymentWebhook).not.toHaveBeenCalled();
+  });
+
   it("credits partner wallet when product missing but partnerId present", async () => {
     const result = await transactionService.completeFundingOrder({
       fundingOrder: {

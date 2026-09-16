@@ -26,6 +26,65 @@ const MAX_SCAN = 1500;
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
 
+const B2B_FUNDING_PRODUCTS = new Set([
+  "b2b_self_topup",
+  "b2b_payment_link",
+  "b2b",
+]);
+
+const B2B_TX_TYPES = new Set([
+  "b2b_payment",
+  "b2b_funding",
+  "b2b_send",
+  "b2b_admin_topup",
+]);
+
+/**
+ * Safari Tap Topups is C2B consumer funding only — not partner wallet / payment-link collection.
+ * @param {Object|null|undefined} data
+ * @returns {boolean}
+ */
+function isSafariTapC2bTopupDoc(data) {
+  if (!data || typeof data !== "object") {
+    return false;
+  }
+  const meta = data.metadata && typeof data.metadata === "object" ? data.metadata : {};
+  const product = String(meta.product || "").toLowerCase();
+  const source = String(meta.source || data.source || "").toLowerCase();
+  const type = String(data.type || data.orderType || "").toLowerCase();
+  const userId = String(data.userId || "");
+
+  if (userId.startsWith("partner:")) {
+    return false;
+  }
+  if (B2B_FUNDING_PRODUCTS.has(product)) {
+    return false;
+  }
+  if (B2B_TX_TYPES.has(type)) {
+    return false;
+  }
+  if (source === "b2b" || source.startsWith("b2b_")) {
+    return false;
+  }
+
+  if (product === "tourist" || product === "tourist_payments" || product === "c2b") {
+    return true;
+  }
+  if (source === "c2b_createpayment" || source.startsWith("c2b_")) {
+    return true;
+  }
+  if (type === "topup" || type === "direct_topup" || type === "crypto_onramp") {
+    return true;
+  }
+  if (type === "funding") {
+    return true;
+  }
+  if (data.provider && !B2B_FUNDING_PRODUCTS.has(product)) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * @param {unknown} raw
  * @returns {string|null}
@@ -294,7 +353,7 @@ function mapTopupRows(docs, users) {
   const rows = [];
   for (const {id, data} of docs) {
     const meta = data.metadata && typeof data.metadata === "object" ? data.metadata : {};
-    if (String(meta.product || "").toLowerCase() === "b2b_self_topup") continue;
+    if (!isSafariTapC2bTopupDoc(data)) continue;
 
     const type = String(data.type || data.orderType || "funding").toLowerCase();
     const userId = data.userId || null;
@@ -511,17 +570,15 @@ async function collectDocsForMethod(method) {
       scanRecent(config.collections.fundingOrders),
       scanRecent(config.collections.orders),
     ]);
-    const fundingFiltered = funding.filter((d) => {
-      const product = String(d.data.metadata?.product || "").toLowerCase();
-      return product !== "b2b_self_topup" && product !== "b2b";
-    });
+    const fundingFiltered = funding.filter((d) => isSafariTapC2bTopupDoc(d.data));
     const orderFiltered = orders.filter((d) => {
       const ot = String(d.data.orderType || "").toLowerCase();
-      return ot === "topup" || ot === "direct_topup";
+      return (ot === "topup" || ot === "direct_topup") && isSafariTapC2bTopupDoc(d.data);
     });
     const txrFiltered = txr.filter((d) => {
       const t = String(d.data.type || "").toLowerCase();
-      return t === "funding" || t === "topup" || t === "crypto_onramp";
+      return (t === "funding" || t === "topup" || t === "crypto_onramp") &&
+        isSafariTapC2bTopupDoc(d.data);
     });
     return [...txrFiltered, ...fundingFiltered, ...orderFiltered];
   }
@@ -691,4 +748,5 @@ module.exports = {
   listSafariTapTransactions,
   buildRow,
   resolveFailureReason,
+  isSafariTapC2bTopupDoc,
 };

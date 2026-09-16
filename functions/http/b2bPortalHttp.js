@@ -32,7 +32,13 @@ const b2bPaymentLinkCheckoutService = require("../services/b2bPaymentLinkCheckou
 const paymentRailService = require("../services/paymentRailService");
 const walletService = require("../services/walletService");
 const transactionService = require("../services/transactionService");
-const { renderCheckoutHtml, renderErrorHtml, renderSuccessHtml } = require("../utils/paymentLinkCheckoutPage");
+const {
+  renderCheckoutHtml,
+  renderErrorHtml,
+  renderSuccessHtml,
+  sendCheckoutLogo,
+  sendWatermarkLogo,
+} = require("../utils/paymentLinkCheckoutPage");
 const { logAdminAction } = require("../utils/transactions");
 
 const intaSendPublishableKey = defineSecret(config.secrets.intaSendPublishableKey);
@@ -364,8 +370,17 @@ async function fetchPortalTransactions(req, scope) {
   }
 
   const { transactions, nextPageCursor } = await transactionService.listTransactionRecords(listOpts);
+  const partnerNames = await partnerService.getPartnerNamesByIds(
+      transactions.map((row) => row.partnerId),
+  );
   return {
-    transactions: transactions.map(transactionService.serializePortalTransaction),
+    transactions: transactions.map((row) => transactionService.serializePortalTransaction({
+      ...row,
+      partnerName: row.partnerName ||
+        row.metadata?.partnerName ||
+        partnerNames.get(row.partnerId) ||
+        null,
+    })),
     nextPageCursor,
     channel: channel || (scope.platformScope ? "b2b" : null),
   };
@@ -2868,6 +2883,26 @@ app.get("/platform/transactions", loadFirebaseUser, requirePlatformAdmin, async 
   } catch (err) {
     console.error("b2bPortal GET /platform/transactions:", err.message);
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/** Checkout brand mark used by hosted payer pages. */
+app.get("/public/checkout-logo.png", (req, res) => {
+  try {
+    sendCheckoutLogo(res);
+  } catch (err) {
+    console.error("b2bPortal GET /public/checkout-logo.png:", err.message);
+    res.status(404).end();
+  }
+});
+
+/** Watermark logo for downloaded payment receipts. */
+app.get("/public/troupay-logo.png", (req, res) => {
+  try {
+    sendWatermarkLogo(res);
+  } catch (err) {
+    console.error("b2bPortal GET /public/troupay-logo.png:", err.message);
+    res.status(404).end();
   }
 });
 

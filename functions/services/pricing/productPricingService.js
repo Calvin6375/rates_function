@@ -219,12 +219,23 @@ function toIso(value) {
  * @param {Object} raw
  * @returns {{ enabled: boolean, feePercent: number, flatFeeKes: number, updatedAt: string|null, updatedBy: string|null }}
  */
+/**
+ * Accept dashboard aliases so a saved KES 57 flat is not dropped.
+ * @param {Object} data
+ * @returns {number}
+ */
+function readFlatFeeKes(data) {
+  const raw = data.flatFeeKes ?? data.flatFeeKES ?? data.flat_fee_kes ?? data.flatFee;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+
 function normalizeProductEntry(raw) {
   const data = raw && typeof raw === "object" ? raw : {};
   return {
     enabled: data.enabled === true,
     feePercent: Number.isFinite(Number(data.feePercent)) ? Number(data.feePercent) : 0,
-    flatFeeKes: Number.isFinite(Number(data.flatFeeKes)) ? Number(data.flatFeeKes) : 0,
+    flatFeeKes: readFlatFeeKes(data),
     updatedAt: toIso(data.updatedAt),
     updatedBy: data.updatedBy != null ? String(data.updatedBy) : null,
   };
@@ -302,10 +313,10 @@ async function getPricingConfig(options = {}) {
  * @param {string} productKey
  * @returns {Promise<{key: string, enabled: boolean, feePercent: number, flatFeeKes: number, source: string}|null>}
  */
-async function getProductPricing(productKey) {
+async function getProductPricing(productKey, options = {}) {
   const key = String(productKey || "");
   if (!CATALOG[key]) return null;
-  const cfg = await getPricingConfig();
+  const cfg = await getPricingConfig(options);
   const product = cfg.products[key];
   return {
     key,
@@ -412,7 +423,9 @@ async function computeProductFee(params) {
 
   let priced;
   try {
-    priced = await getProductPricing(productKey);
+    priced = await getProductPricing(productKey, {
+      forceRefresh: params.forceRefresh === true,
+    });
   } catch (err) {
     console.warn("productPricingService.computeProductFee:", err.message);
     return {...base, reason: "config_error", source: "defaults_on_error"};
@@ -486,8 +499,9 @@ function validateProductPatch(patch, key) {
       throw err;
     }
   }
-  if (patch.flatFeeKes !== undefined) {
-    const f = Number(patch.flatFeeKes);
+  const flatRaw = patch.flatFeeKes ?? patch.flatFeeKES ?? patch.flat_fee_kes ?? patch.flatFee;
+  if (flatRaw !== undefined) {
+    const f = Number(flatRaw);
     if (!Number.isFinite(f) || f < 0) {
       const err = new Error(`products.${key}.flatFeeKes must be a number >= 0`);
       err.statusCode = 400;
@@ -498,7 +512,7 @@ function validateProductPatch(patch, key) {
   const out = {};
   if (patch.enabled !== undefined) out.enabled = patch.enabled;
   if (patch.feePercent !== undefined) out.feePercent = Number(patch.feePercent);
-  if (patch.flatFeeKes !== undefined) out.flatFeeKes = Number(patch.flatFeeKes);
+  if (flatRaw !== undefined) out.flatFeeKes = Number(flatRaw);
   return out;
 }
 

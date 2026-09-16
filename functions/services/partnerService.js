@@ -210,6 +210,27 @@ async function listPartners(limit = 50, startAfter = null) {
   return { partners, lastDoc };
 }
 
+/**
+ * @param {string[]} partnerIds
+ * @returns {Promise<Map<string, string>>}
+ */
+async function getPartnerNamesByIds(partnerIds) {
+  const names = new Map();
+  const unique = [...new Set((partnerIds || []).map((id) => String(id || "").trim()).filter(Boolean))];
+  await Promise.all(unique.map(async (partnerId) => {
+    try {
+      const partner = await getPartner(partnerId);
+      const name = partner && partner.name ? String(partner.name).trim() : "";
+      if (name) {
+        names.set(partnerId, name);
+      }
+    } catch (_err) {
+      // ignore missing partners
+    }
+  }));
+  return names;
+}
+
 module.exports = {
   generateApiKey,
   createPartner,
@@ -220,4 +241,5 @@ module.exports = {
   getPartnerByApiKey,
   updatePartner,
   listPartners,
+  getPartnerNamesByIds,
 };

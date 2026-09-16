@@ -149,9 +149,17 @@ async function processB2bPaymentWebhook(paymentData, payload, mapping) {
   const { paymentId, amount, currency, completedAt, account } = paymentData;
   const partnerId = mapping.partnerId;
   const linkId = mapping.linkId || null;
+  const rail = String(mapping.rail || payload.source || "").toLowerCase();
 
   if (!partnerId) {
     return { success: false, error: "B2B mapping missing partnerId" };
+  }
+
+  if (rail === "paystack") {
+    const verifiedStatus = String(payload?.verifiedEvent?.status || "").toLowerCase();
+    if (verifiedStatus !== "success") {
+      return { success: false, error: "Paystack payment is not verified as success" };
+    }
   }
 
   const paymentRecordRef = firestore.collection("payments").doc(paymentId);
@@ -170,15 +178,20 @@ async function processB2bPaymentWebhook(paymentData, payload, mapping) {
   const pricingProductKey = linkId ? "payment_links" : "checkout";
   let platformFee = 0;
   let feeSource = "none";
+  let feePercent = 0;
+  let flatFeeKes = 0;
   try {
     const priced = await productPricingService.computeProductFee({
       productKey: pricingProductKey,
       amount: creditAmount,
       currency: creditCurrency,
+      forceRefresh: true,
     });
     if (priced.applied) {
       platformFee = Math.min(Number(priced.feeAmount) || 0, creditAmount);
       feeSource = priced.source;
+      feePercent = Number(priced.feePercent) || 0;
+      flatFeeKes = Number(priced.flatFee) || 0;
     }
   } catch (pricingErr) {
     console.warn("processB2bPaymentWebhook pricing:", pricingErr.message);
@@ -205,33 +218,58 @@ async function processB2bPaymentWebhook(paymentData, payload, mapping) {
               netCredit,
           );
 
-          const { transactionId } = await transactionService.createTransactionRecord({
-            type: transactionService.TRANSACTION_TYPES.b2b_payment,
-            partnerId,
-            amount: creditAmount,
-            currency: creditCurrency,
-            status: transactionService.STATUSES.completed,
-            metadata: {
-              reference: mapping.bookingReference || null,
-              bookingReference: mapping.bookingReference || null,
-              payerName: mapping.payerName || null,
-              linkId,
-              orderId: mapping.orderId || null,
-              invoiceId: paymentId,
-              checkoutId: mapping.checkoutId || paymentId,
-              rail: mapping.rail || "paystack",
-              account: account || null,
-              previousBalance,
-              newBalance,
-              source: mapping.rail || payload.source || "paystack",
-              completedAt,
-              platformFee,
-              netCredit,
-              feeSource,
-              pricingProductKey,
-            },
-            logLegacy: false,
-          });
+          const settlementMeta = {
+            reference: mapping.bookingReference || null,
+            bookingReference: mapping.bookingReference || null,
+            payerName: mapping.payerName || null,
+            partnerName: mapping.partnerName || null,
+            linkId,
+            orderId: mapping.orderId || null,
+            invoiceId: paymentId,
+            checkoutId: mapping.checkoutId || paymentId,
+            rail: mapping.rail || "paystack",
+            account: account || null,
+            previousBalance,
+            newBalance,
+            source: mapping.rail || payload.source || "paystack",
+            completedAt,
+            platformFee,
+            netCredit,
+            feePercent,
+            flatFeeKes,
+            feeSource,
+            pricingProductKey,
+            fundingOrderId: mapping.fundingOrderId || payload.fundingOrderId || null,
+          };
+          let transactionId = mapping.transactionRecordId || null;
+          if (transactionId) {
+            const existing = await transactionService.getTransactionRecord(transactionId);
+            if (existing && existing.status === transactionService.STATUSES.completed) {
+              return { transactionId, previousBalance, newBalance, duplicate: true };
+            }
+            if (existing) {
+              await transactionService.updateTransactionStatus(transactionId, transactionService.STATUSES.completed, {
+                metadata: {
+                  ...(existing.metadata && typeof existing.metadata === "object" ? existing.metadata : {}),
+                  ...settlementMeta,
+                },
+              });
+            } else {
+              transactionId = null;
+            }
+          }
+          if (!transactionId) {
+            const created = await transactionService.createTransactionRecord({
+              type: transactionService.TRANSACTION_TYPES.b2b_payment,
+              partnerId,
+              amount: creditAmount,
+              currency: creditCurrency,
+              status: transactionService.STATUSES.completed,
+              metadata: settlementMeta,
+              logLegacy: false,
+            });
+            transactionId = created.transactionId;
+          }
 
           if (linkId) {
             await recordPaymentOnLink(linkId, {

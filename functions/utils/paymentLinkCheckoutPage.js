@@ -3,6 +3,154 @@
  * Styled to match TruePay dashboard: pearl background, teal accents, responsive layout.
  */
 
+const fs = require("fs");
+const path = require("path");
+const {receiptClientJs} = require("./paymentLinkReceiptClient");
+
+const CHECKOUT_LOGO_PATH = path.join(__dirname, "../assets/logo-checkout.png");
+const WATERMARK_LOGO_PATH = path.join(__dirname, "../assets/troupay-logo.png");
+const DEFAULT_API_BASE = "/b2bPortal";
+const DEFAULT_APP_RETURN =
+    "truepay://payment/link-complete?status=paid";
+
+/**
+ * @param {string} [apiBasePath]
+ * @returns {string}
+ */
+function checkoutLogoUrl(apiBasePath) {
+  const base = String(apiBasePath || DEFAULT_API_BASE).replace(/\/+$/, "");
+  return `${base}/public/checkout-logo.png`;
+}
+
+/**
+ * @param {string} [apiBasePath]
+ * @returns {string}
+ */
+function checkoutWatermarkUrl(apiBasePath) {
+  const base = String(apiBasePath || DEFAULT_API_BASE).replace(/\/+$/, "");
+  return `${base}/public/troupay-logo.png`;
+}
+
+/**
+ * @param {string} [apiBasePath]
+ * @returns {string}
+ */
+function brandMarkup(apiBasePath) {
+  return `<div class="brand">
+      <img class="brand-logo" src="${escapeHtml(checkoutLogoUrl(apiBasePath))}" alt="TruePay" width="36" height="36"/>
+      <span class="brand-name">TruePay</span>
+    </div>`;
+}
+
+/**
+ * Optional post-success https URL from env (B2B_PAYMENT_SUCCESS_REDIRECT_URL).
+ * @returns {string}
+ */
+function defaultPaidRedirectUrl() {
+  const raw = process.env.B2B_PAYMENT_SUCCESS_REDIRECT_URL;
+  if (!raw || !String(raw).trim()) {
+    return "";
+  }
+  try {
+    const parsed = new URL(String(raw).trim());
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return parsed.toString();
+    }
+  } catch (err) {
+    // ignore invalid env
+  }
+  return "";
+}
+
+/**
+ * Serve the checkout brand mark (PNG).
+ * @param {import("express").Response} res
+ */
+function sendPngFile(res, filePath) {
+  const buf = fs.readFileSync(filePath);
+  res.set("Content-Type", "image/png");
+  res.set("Cache-Control", "public, max-age=86400");
+  res.send(buf);
+}
+
+function sendCheckoutLogo(res) {
+  sendPngFile(res, CHECKOUT_LOGO_PATH);
+}
+
+function sendWatermarkLogo(res) {
+  sendPngFile(res, WATERMARK_LOGO_PATH);
+}
+
+/**
+ * Client helpers: resolve a post-pay URL and redirect after a short receipt pause.
+ * @param {string} defaultRedirectUrl
+ * @returns {string}
+ */
+function paidRedirectClientJs(defaultRedirectUrl) {
+  return `
+      var defaultPaidRedirect = ${JSON.stringify(defaultRedirectUrl || "")};
+      var paidRedirectTimer = null;
+
+      function sanitizeHttpRedirect(raw) {
+        if (!raw) return null;
+        try {
+          var u = new URL(String(raw), window.location.href);
+          if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+          return u.href;
+        } catch (e) {
+          return null;
+        }
+      }
+
+      function resolvePaidRedirectUrl(link) {
+        var q = urlParams.get("redirect") || urlParams.get("returnUrl");
+        var fromLink = link && (link.successRedirectUrl || link.redirectUrl);
+        return sanitizeHttpRedirect(q) ||
+          sanitizeHttpRedirect(fromLink) ||
+          sanitizeHttpRedirect(defaultPaidRedirect) ||
+          (${JSON.stringify(DEFAULT_APP_RETURN)} + "&linkId=" + encodeURIComponent(linkId));
+      }
+
+      function schedulePaidRedirect(link) {
+        if (!app || document.getElementById("redirectNote")) {
+          return;
+        }
+        var dest = resolvePaidRedirectUrl(link);
+        var cardBody = app.querySelector(".card-body");
+        if (!cardBody) {
+          paidRedirectTimer = window.setTimeout(function () { window.location.replace(dest); }, 20000);
+          return;
+        }
+        var note = document.createElement("p");
+        note.className = "note note-waiting";
+        note.id = "redirectNote";
+        note.innerHTML = "Redirecting in <span id=\\"redirectSecs\\">20</span>s… " +
+          "<a class=\\"note-link\\" href=\\"#\\" id=\\"redirectNow\\">Go now</a>";
+        cardBody.appendChild(note);
+        var secs = 20;
+        paidRedirectTimer = window.setInterval(function () {
+          secs -= 1;
+          var el = document.getElementById("redirectSecs");
+          if (el) {
+            el.textContent = String(Math.max(secs, 0));
+          }
+          if (secs <= 0) {
+            window.clearInterval(paidRedirectTimer);
+            window.location.replace(dest);
+          }
+        }, 1000);
+        var now = document.getElementById("redirectNow");
+        if (now) {
+          now.addEventListener("click", function (ev) {
+            ev.preventDefault();
+            window.clearInterval(paidRedirectTimer);
+            window.location.replace(dest);
+          });
+        }
+      }
+`;
+}
+
 /**
  * Shared CSS tokens aligned with the admin dashboard.
  * @returns {string}
@@ -53,18 +201,12 @@ function checkoutThemeStyles() {
       align-items: center;
       gap: 10px;
     }
-    .brand-mark {
+    .brand-logo {
       width: 36px;
       height: 36px;
-      border-radius: 10px;
-      background: linear-gradient(135deg, var(--teal), var(--teal-dark));
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: var(--white);
-      font-weight: 700;
-      font-size: 1.1rem;
+      object-fit: contain;
       flex-shrink: 0;
+      display: block;
     }
     .brand-name {
       font-size: 1.125rem;
@@ -334,9 +476,10 @@ function checkoutThemeStyles() {
 /**
  * @param {string} title
  * @param {string} message
+ * @param {string} [apiBasePath]
  * @returns {string}
  */
-function renderErrorHtml(title, message) {
+function renderErrorHtml(title, message, apiBasePath) {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -347,10 +490,7 @@ function renderErrorHtml(title, message) {
 </head>
 <body>
   <div class="page">
-    <div class="brand">
-      <div class="brand-mark">T</div>
-      <span class="brand-name">TruePay</span>
-    </div>
+    ${brandMarkup(apiBasePath)}
     <div class="shell">
       <div class="card">
         <div class="err">
@@ -382,10 +522,7 @@ function renderCheckoutHtml(linkId, partnerId, apiBasePath) {
 </head>
 <body>
   <div class="page">
-    <div class="brand">
-      <div class="brand-mark">T</div>
-      <span class="brand-name">TruePay</span>
-    </div>
+    ${brandMarkup(apiBasePath)}
     <div class="shell">
       <div class="card" id="app">
         <div class="loading">
@@ -403,6 +540,8 @@ function renderCheckoutHtml(linkId, partnerId, apiBasePath) {
       var apiBase = ${JSON.stringify(apiBasePath.replace(/\/+$/, ""))};
       var app = document.getElementById("app");
       var urlParams = new URLSearchParams(window.location.search);
+      ${paidRedirectClientJs(defaultPaidRedirectUrl())}
+      ${receiptClientJs(checkoutWatermarkUrl(apiBasePath))}
       var checkoutInFlight = false;
       var checkoutTabOpened = false;
       var checkoutWindowName = "truepay_checkout_" + linkId;
@@ -516,6 +655,7 @@ function renderCheckoutHtml(linkId, partnerId, apiBasePath) {
               (link.expiresAt && !isPaid ? row("Expires", formatDate(link.expiresAt)) : "") +
               (isPaid && link.paidAt ? row("Paid", formatDate(link.paidAt)) : "") +
             '</div>' +
+            (isPaid ? paidReceiptButtonHtml() : "") +
             (canPay ?
               '<form id="checkoutForm" class="checkout-form" novalidate>' +
                 '<div class="field">' +
@@ -545,6 +685,10 @@ function renderCheckoutHtml(linkId, partnerId, apiBasePath) {
               startCheckout();
             }, { once: false });
           }
+        }
+        if (isPaid) {
+          bindPaidReceipt(link);
+          schedulePaidRedirect(link);
         }
       }
 
@@ -744,10 +888,7 @@ function renderSuccessHtml(linkId, apiBasePath) {
 </head>
 <body>
   <div class="page">
-    <div class="brand">
-      <div class="brand-mark">T</div>
-      <span class="brand-name">TruePay</span>
-    </div>
+    ${brandMarkup(apiBasePath)}
     <div class="shell">
       <div class="card" id="app">
         <div class="loading">
@@ -765,6 +906,8 @@ function renderSuccessHtml(linkId, apiBasePath) {
       var app = document.getElementById("app");
       var storageKey = "truepay_checkout_" + linkId;
       var urlParams = new URLSearchParams(window.location.search);
+      ${paidRedirectClientJs(defaultPaidRedirectUrl())}
+      ${receiptClientJs(checkoutWatermarkUrl(apiBasePath))}
       var activeCheckoutId = urlParams.get("reference") ||
         urlParams.get("trxref") ||
         sessionStorage.getItem(storageKey);
@@ -839,7 +982,10 @@ function renderSuccessHtml(linkId, apiBasePath) {
               (link.payerName ? row("Paid by", link.payerName) : "") +
               (link.paidAt ? row("Paid", formatDate(link.paidAt)) : "") +
             '</div>' +
+            paidReceiptButtonHtml() +
           '</div>';
+        bindPaidReceipt(link);
+        schedulePaidRedirect(link);
       }
 
       function poll(attempt) {
@@ -889,4 +1035,9 @@ module.exports = {
   renderSuccessHtml,
   renderErrorHtml,
   checkoutThemeStyles,
+  sendCheckoutLogo,
+  sendWatermarkLogo,
+  checkoutLogoUrl,
+  checkoutWatermarkUrl,
+  defaultPaidRedirectUrl,
 };
