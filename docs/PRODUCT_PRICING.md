@@ -40,8 +40,8 @@ Document: **`config/productPricing`**
 
 | Key | Category | Suggested (UI only) | Live path | Fee model |
 |-----|----------|---------------------|-----------|-----------|
-| `buy_goods` | pay | 1.5% / 0 | Safari Card Till | Wallet debit + fee |
-| `pay_bill` | pay | 1.25% / 10 | Safari Card PayBill | Wallet debit + fee |
+| `buy_goods` | pay | 1.5% / 0 | Safari Tap Till | Wallet debit + fee |
+| `pay_bill` | pay | 1.25% / 10 | Safari Tap PayBill | Wallet debit + fee |
 | `pochi` | pay | 1% / 5 | Catalog only | none |
 | `send_ke` | send | 0.75% / 15 | **C2B Send Money** (MPESA_B2C + bank/PesaLink + SafariTap) **and** B2B `KES_KES` | Wallet debit + fee |
 | `send_et` … `send_ae` | send | see UI | B2B `KES_*` corridors | Wallet debit + fee |

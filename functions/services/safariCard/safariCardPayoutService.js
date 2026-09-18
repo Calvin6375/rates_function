@@ -1,5 +1,5 @@
 /**
- * @fileoverview Safari Card payout lifecycle — reserve, initiate, finalize, idempotency.
+ * @fileoverview Safari Tap payout lifecycle — reserve, initiate, finalize, idempotency.
  */
 
 const admin = require("../../admin");
@@ -219,7 +219,7 @@ function buildProviderPayload(payout) {
       provider: intasendDisbursement.DISBURSEMENT_PROVIDERS.MPESA_B2C,
       transaction: intasendDisbursement.buildMpesaB2cTransaction({
         ...base,
-        name: payout.recipient?.name || "Safari Card Customer",
+        name: payout.recipient?.name || "Safari Tap Customer",
         account: payout.recipient.phoneNumber,
       }),
     };
@@ -230,7 +230,7 @@ function buildProviderPayload(payout) {
       provider: intasendDisbursement.DISBURSEMENT_PROVIDERS.MPESA_B2B,
       transaction: intasendDisbursement.buildMpesaB2bTransaction({
         ...base,
-        name: payout.recipient?.name || "Safari Card Merchant",
+        name: payout.recipient?.name || "Safari Tap Merchant",
         account: payout.recipient.account,
         accountType: payout.recipient.accountType,
         accountReference: payout.recipient.accountReference,
@@ -242,7 +242,7 @@ function buildProviderPayload(payout) {
     provider: intasendDisbursement.DISBURSEMENT_PROVIDERS.PESALINK,
     transaction: intasendDisbursement.buildBankTransaction({
       ...base,
-      name: payout.recipient?.accountName || "Safari Card Beneficiary",
+      name: payout.recipient?.accountName || "Safari Tap Beneficiary",
       account: payout.recipient.accountNumber,
       bankCode: payout.recipient.bankCode,
     }),
@@ -931,7 +931,7 @@ async function createPayout(userId, body) {
     }),
   });
 
-  console.log("Safari Card payout initiated", {
+  console.log("Safari Tap payout initiated", {
     payoutId,
     userId,
     type: parsed.type,

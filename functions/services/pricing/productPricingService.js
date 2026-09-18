@@ -26,7 +26,7 @@ const CATALOG = Object.freeze({
     suggested: Object.freeze({feePercent: 1.5, flatFeeKes: 0}),
     liveChargePath: "safari_card_mpesa_b2b_till",
     feeModel: "wallet_debit_surcharge",
-    adminHint: "Fee is added to the Safari Card Pay debit (customer pays amount + fee from wallet).",
+    adminHint: "Fee is added to the Safari Tap Pay debit (customer pays amount + fee from wallet).",
   }),
   pay_bill: Object.freeze({
     key: "pay_bill",
@@ -36,7 +36,7 @@ const CATALOG = Object.freeze({
     suggested: Object.freeze({feePercent: 1.25, flatFeeKes: 10}),
     liveChargePath: "safari_card_mpesa_b2b_paybill",
     feeModel: "wallet_debit_surcharge",
-    adminHint: "Fee is added to the Safari Card Pay debit (customer pays amount + fee from wallet).",
+    adminHint: "Fee is added to the Safari Tap Pay debit (customer pays amount + fee from wallet).",
   }),
   pochi: Object.freeze({
     key: "pochi",
@@ -699,7 +699,7 @@ async function getAdminPricingView() {
 }
 
 /**
- * Resolve Safari Card Pay product key from payout type + recipient.
+ * Resolve Safari Tap Pay product key from payout type + recipient.
  *
  * @param {string} payoutType
  * @param {Object} [recipient]
@@ -714,7 +714,7 @@ function resolveSafariPayProductKey(payoutType, recipient) {
 }
 
 /**
- * Resolve Safari Card Send Money product key (C2B M-Pesa / bank / SafariTap).
+ * Resolve Safari Tap Send Money product key (C2B M-Pesa / bank / SafariTap).
  *
  * @param {string} payoutType
  * @returns {string|null}
@@ -733,7 +733,7 @@ function resolveSafariSendProductKey(payoutType) {
 }
 
 /**
- * Resolve any Safari Card payout product key (Pay Till/PayBill, then Send).
+ * Resolve any Safari Tap payout product key (Pay Till/PayBill, then Send).
  *
  * @param {string} payoutType
  * @param {Object} [recipient]

@@ -6,7 +6,7 @@ const {
 } = require("../../utils/safariCardTransactionEnrichment");
 
 describe("safariCardTransactionEnrichment", () => {
-  it("detects safari card payout transactions", () => {
+  it("detects safari tap payout transactions", () => {
     expect(isSafariCardPayoutTransaction({
       metadata: { source: "safari_card_payout", payoutId: "abc" },
     })).toBe(true);
@@ -22,7 +22,7 @@ describe("safariCardTransactionEnrichment", () => {
       currency: "KES",
       fee: 0,
       totalDebit: 13,
-      narrative: "Safari Card payment",
+      narrative: "Safari Tap payment",
       clientRequestId: "client-req-001",
       providerReference: "UHKUE3131L",
       providerTransactionId: "KZBPGV6",

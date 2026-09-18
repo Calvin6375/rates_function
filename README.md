@@ -8,7 +8,7 @@ Firebase Cloud Functions backend for **TruePay** — a cryptocurrency exchange a
 
 | Surface | Users | Examples |
 |---------|-------|----------|
-| **Consumer (C2B)** | Tourist / retail Flutter app | Wallet top-up (Paystack), pay merchants (USD → KES via Daraja), **Safari Card** M-Pesa payouts (Till / PayBill / Pochi / Send Money), **pay TruePay merchants via profile QR**, swap, USDC (Circle) |
+| **Consumer (C2B)** | Tourist / retail Flutter app | Wallet top-up (Paystack), pay merchants (USD → KES via Daraja), **Safari Tap** M-Pesa payouts (Till / PayBill / Pochi / Send Money), **pay TruePay merchants via profile QR**, swap, USDC (Circle) |
 | **B2B** | Partners & portals | Partner API (`X-API-KEY`), hosted **product** payment links, **merchant profile QR**, team portal, sandbox |
 | **Platform** | Ops & admin | User/partner management, funding reconciliation, settlement retries |
 
@@ -44,15 +44,15 @@ Base URL: `https://us-central1-truepay-72060.cloudfunctions.net/<name>`
 | Export | Auth | Purpose |
 |--------|------|---------|
 | [`api`](./docs/api.md) | Firebase Bearer | Customer REST — wallets, funding, merchant payments, register |
-| [`transactionsApi`](./docs/TRANSACTIONS_API.md) | Firebase Bearer | Transaction history feed (labels, Safari Card enrichment) |
+| [`transactionsApi`](./docs/TRANSACTIONS_API.md) | Firebase Bearer | Transaction history feed (labels, Safari Tap enrichment) |
 | [`notificationsApi`](./docs/api.md) | Firebase Bearer | In-app notifications |
 | [`cryptoApi`](./docs/circle_c2b.md) | Firebase Bearer | Circle USDC wallet & send |
-| [`safariCardApi`](./docs/pay.md) | Firebase Bearer | Safari Card validate / pay / payout (IntaSend + TruePay merchant profile) |
+| [`safariCardApi`](./docs/pay.md) | Firebase Bearer | Safari Tap validate / pay / payout (IntaSend + TruePay merchant profile) |
 | [`partner`](./docs/B2B_docs.md) | `X-API-KEY` | B2B Partner API |
 | [`b2bPortal`](./docs/B2B_docs.md) | Firebase Bearer | Partner dashboard & platform admin |
 | [`partnerSandbox`](./docs/B2B_SANDBOX.md) | Static sandbox key | In-memory B2B mocks |
 
-**Safari Card (C2B pay tab)** — payouts use:
+**Safari Tap (C2B pay tab)** — payouts use:
 
 ```
 POST /safari-card/payouts
@@ -89,8 +89,8 @@ All guides live in **[`docs/`](./docs/)**. Start with [`docs/INDEX.md`](./docs/I
 | [`docs/BACKEND_ARCHITECTURE.md`](./docs/BACKEND_ARCHITECTURE.md) | Service layer conventions |
 | [`docs/api.md`](./docs/api.md) | Consumer Flutter / REST integration |
 | [`docs/rates.md`](./docs/rates.md) | P2P / customer rates & cross-pair quotes |
-| [`docs/pay.md`](./docs/pay.md) | Safari Card Flutter integration |
-| [`docs/SAFARI_CARD_PAYOUTS.md`](./docs/SAFARI_CARD_PAYOUTS.md) | Safari Card backend (IntaSend, webhooks, Firestore) |
+| [`docs/pay.md`](./docs/pay.md) | Safari Tap Flutter integration |
+| [`docs/SAFARI_CARD_PAYOUTS.md`](./docs/SAFARI_CARD_PAYOUTS.md) | Safari Tap backend (IntaSend, webhooks, Firestore) |
 | [`docs/TRANSACTIONS_API.md`](./docs/TRANSACTIONS_API.md) | Transaction feed API |
 | [`docs/C2B_PAYLOAD_ENCRYPTION.md`](./docs/C2B_PAYLOAD_ENCRYPTION.md) | Optional C2B request/response encryption |
 | [`docs/B2B_docs.md`](./docs/B2B_docs.md) | B2B Partner & portal API reference (includes `GET /portal/profile-qr`) |
@@ -149,7 +149,7 @@ Configured via Firebase params / secrets and `functions/config.js`. Common keys:
 | Paystack / Transak | `PAYSTACK_*`, `TRANSAK_*` |
 | Circle USDC | `CIRCLE_API_KEY`, `CIRCLE_ENTITY_SECRET` |
 | Daraja settlement | `DARAJA_*` |
-| IntaSend collection + Safari Card disbursement | `INTASEND_*` |
+| IntaSend collection + Safari Tap disbursement | `INTASEND_*` |
 | C2B payload encryption (optional) | `C2B_PAYLOAD_ENCRYPTION_KEY` |
 | Email / auth helpers | `SMTP_*`, `WEB_API_KEY` |
 

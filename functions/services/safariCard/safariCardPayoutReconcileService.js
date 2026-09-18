@@ -1,5 +1,5 @@
 /**
- * @fileoverview Poll IntaSend for Safari Card payouts stuck in non-terminal states.
+ * @fileoverview Poll IntaSend for Safari Tap payouts stuck in non-terminal states.
  */
 
 const config = require("../../config");

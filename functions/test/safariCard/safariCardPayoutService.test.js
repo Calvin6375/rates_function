@@ -1,5 +1,5 @@
 /**
- * @fileoverview Safari Card payout service tests (mocked persistence).
+ * @fileoverview Safari Tap payout service tests (mocked persistence).
  */
 
 jest.mock("../../admin", () => {

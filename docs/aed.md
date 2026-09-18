@@ -15,7 +15,7 @@ API details for the partner dashboard: [`B2B_SEND.md`](./B2B_SEND.md).
 | Super-admin alert + pending list | **Done** |
 | Automated AED bank / UAE payout provider | **Not done** — ops pays the merchant offline |
 | Mark send completed / failed in API | **Not done** — `completedAt` exists on the record, no PATCH |
-| C2B tourist AED wallet / Paystack / Safari Card | **Not done** |
+| C2B tourist AED wallet / Paystack / Safari Tap | **Not done** |
 | Customer P2P rates book (`config/customerRates`) | **Not used** for AED — rates are static corridor config |
 
 ---
@@ -76,7 +76,7 @@ Ops is expected to send AED to the IBAN outside the platform, then (later) mark 
 
 - No Emirates NBD, local UAE switch, or other **AED disbursement API**.
 - No C2B `createPayment` / Paystack path for AED (Paystack checkout is KES; other fiats convert to KES then credit the requested C2B wallet — AED is not in that tourist rates flow unless added to `customerRates`).
-- Safari Card payouts are **KES** (M-Pesa, Kenya bank, SafariTap wallet), not AED.
+- Safari Tap payouts are **KES** (M-Pesa, Kenya bank, SafariTap wallet), not AED.
 - C2B accounts are only KES, USD, USDT, and USDC — AED is not a C2B wallet.
 - Partner default wallet balances are `{ USD, KES, USDT }` — send debit uses `balances.USD` or `balances.KES`.
 

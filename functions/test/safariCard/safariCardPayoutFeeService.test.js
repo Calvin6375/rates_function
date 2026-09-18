@@ -1,5 +1,5 @@
 /**
- * @fileoverview Safari Card payout fee tests.
+ * @fileoverview Safari Tap payout fee tests.
  */
 
 jest.mock("../../libs/firestore", () => ({

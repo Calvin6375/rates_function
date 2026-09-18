@@ -1,5 +1,5 @@
 /**
- * @fileoverview Merge Safari Card payout records into C2B transaction feed rows.
+ * @fileoverview Merge Safari Tap payout records into C2B transaction feed rows.
  */
 
 const admin = require("../admin");

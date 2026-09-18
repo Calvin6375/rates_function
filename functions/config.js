@@ -215,9 +215,9 @@ const config = {
     partnerRecipients: "partnerRecipients",
     /** B2B Send — outbound partner → merchant payments */
     partnerSendPayments: "partnerSendPayments",
-    /** Safari Card — IntaSend disbursement payouts */
+    /** Safari Tap — IntaSend disbursement payouts */
     safariCardPayouts: "safariCardPayouts",
-    /** Safari Card payout idempotency keys */
+    /** Safari Tap payout idempotency keys */
     safariCardPayoutIdempotency: "safariCardPayoutIdempotency",
     /** Platform liquidity snapshots (payout / collections / digital assets) */
     platformFunds: "platformFunds",
@@ -374,7 +374,7 @@ const config = {
     settlementRetryBaseMs: Number(getEnv("SETTLEMENT_RETRY_BASE_MS", "60000")),
   },
 
-  /** Safari Card payout flat fees (KES). Override via env. */
+  /** Safari Tap payout flat fees (KES). Override via env. */
   safariCardPayoutFees: {
     mpesaB2c: Number(getEnv("SAFARI_CARD_MPESA_B2C_FEE", "0")),
     mpesaB2b: Number(getEnv("SAFARI_CARD_MPESA_B2B_FEE", "0")),

@@ -194,9 +194,9 @@ function resolveTransactionDisplayName(tx) {
           return `Till ${recipient.account}`;
         }
         if (String(meta.payoutType || "").toLowerCase() === "bank") {
-          return "Safari Card bank payout";
+          return "Safari Tap bank payout";
         }
-        return "Safari Card M-Pesa payout";
+        return "Safari Tap M-Pesa payout";
       }
       return "Withdrawal";
     case "debit":

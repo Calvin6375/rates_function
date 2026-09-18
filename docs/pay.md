@@ -1,6 +1,6 @@
-# Safari Card Pay — Flutter Integration Guide
+# Safari Tap Pay — Flutter Integration Guide
 
-Guide for the **Safari Card** mobile app team to integrate outbound payments (M-Pesa B2C/B2B, bank/PesaLink). The backend owns all IntaSend credentials and disbursement logic. The app only needs **Firebase Auth** and the **`safariCardApi`** REST endpoints.
+Guide for the **Safari Tap** mobile app team to integrate outbound payments (M-Pesa B2C/B2B, bank/PesaLink). The backend owns all IntaSend credentials and disbursement logic. The app only needs **Firebase Auth** and the **`safariCardApi`** REST endpoints.
 
 Backend reference: [`SAFARI_CARD_PAYOUTS.md`](./SAFARI_CARD_PAYOUTS.md).
 
@@ -21,7 +21,7 @@ Backend reference: [`SAFARI_CARD_PAYOUTS.md`](./SAFARI_CARD_PAYOUTS.md).
 | Payment status | `GET /safari-card/payouts/:payoutId` |
 | Payment history | `GET /safari-card/payouts` |
 
-**Currency:** KES only for Safari Card payouts.
+**Currency:** KES only for Safari Tap payouts.
 
 **Do not** integrate IntaSend SDK, secret keys, or disbursement APIs in Flutter. All payouts go through TruePay backend.
 
@@ -123,7 +123,7 @@ Example 401 when the app uses the wrong Firebase project:
 
 ```mermaid
 sequenceDiagram
-  participant User as Safari Card UI
+  participant User as Safari Tap UI
   participant App as Flutter
   participant API as safariCardApi
   participant BE as safariCardPayoutService
@@ -152,7 +152,7 @@ Payout settlement is **asynchronous**. A `201` response means the payout was **i
 
 ## KES balance (before Pay)
 
-Safari Card debits the user's **KES fiat wallet**. Show available balance from Realtime Database:
+Safari Tap debits the user's **KES fiat wallet**. Show available balance from Realtime Database:
 
 **Path:** `wallet/{userId}/fiat/KES`
 
@@ -204,7 +204,7 @@ The backend reserves `amount + fee` before calling IntaSend. If balance is too l
     "phoneNumber": "254712345678",
     "name": "Jane Doe"
   },
-  "narrative": "Safari Card transfer"
+  "narrative": "Safari Tap transfer"
 }
 ```
 
@@ -223,7 +223,7 @@ Phone numbers: prefer `2547XXXXXXXX`. The backend also accepts `07XXXXXXXX` and 
     "account": "512345",
     "name": "Merchant Name"
   },
-  "narrative": "Safari Card payment"
+  "narrative": "Safari Tap payment"
 }
 ```
 
@@ -243,7 +243,7 @@ Phone numbers: prefer `2547XXXXXXXX`. The backend also accepts `07XXXXXXXX` and 
     "accountReference": "INV-10291",
     "name": "Utility Co"
   },
-  "narrative": "Safari Card payment"
+  "narrative": "Safari Tap payment"
 }
 ```
 
@@ -262,7 +262,7 @@ Phone numbers: prefer `2547XXXXXXXX`. The backend also accepts `07XXXXXXXX` and 
     "accountNumber": "0123456789",
     "accountName": "Jane Doe"
   },
-  "narrative": "Safari Card bank transfer"
+  "narrative": "Safari Tap bank transfer"
 }
 ```
 
@@ -449,8 +449,8 @@ await payApi.createPayout(body: {...}, clientRequestId: clientRequestId);
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
-class SafariCardPayApi {
-  SafariCardPayApi({
+class SafariTapPayApi {
+  SafariTapPayApi({
     required this.baseUrl,
     required this.getHeaders,
     http.Client? httpClient,
@@ -540,7 +540,7 @@ class PayApiException implements Exception {
 
 ```dart
 Future<Map<String, dynamic>> pollPayoutUntilTerminal(
-  SafariCardPayApi api,
+  SafariTapPayApi api,
   String payoutId, {
   Duration interval = const Duration(seconds: 2),
   Duration timeout = const Duration(minutes: 3),
@@ -621,6 +621,6 @@ Future<Map<String, dynamic>> pollPayoutUntilTerminal(
 | Doc | Topic |
 |-----|--------|
 | [`SAFARI_CARD_PAYOUTS.md`](./SAFARI_CARD_PAYOUTS.md) | Backend architecture, webhooks, Firestore |
-| [`INTASEND.md`](./INTASEND.md) | IntaSend collection (B2B links — separate from Safari Card pay) |
+| [`INTASEND.md`](./INTASEND.md) | IntaSend collection (B2B links — separate from Safari Tap pay) |
 | [`circle_c2b.md`](./circle_c2b.md) | Pattern for REST + Auth HTTP client |
 | [`api.md`](./api.md) | RTDB wallet paths (`wallet/{uid}/fiat/KES`) |

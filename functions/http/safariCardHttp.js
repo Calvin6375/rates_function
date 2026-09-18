@@ -1,5 +1,5 @@
 /**
- * @fileoverview Safari Card REST API — authenticated payout/disbursement endpoints.
+ * @fileoverview Safari Tap REST API — authenticated payout/disbursement endpoints.
  */
 
 const { onRequest } = require("firebase-functions/v2/https");

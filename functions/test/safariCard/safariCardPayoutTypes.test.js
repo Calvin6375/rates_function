@@ -1,5 +1,5 @@
 /**
- * @fileoverview Safari Card payout status mapping tests.
+ * @fileoverview Safari Tap payout status mapping tests.
  */
 
 const {

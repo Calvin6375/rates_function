@@ -21,9 +21,9 @@
 | [`TRANSACTIONS_API.md`](./TRANSACTIONS_API.md) | Transaction history API |
 | [`circle_c2b.md`](./circle_c2b.md) | Crypto (Circle) Flutter guide |
 | [`CIRCLE.md`](./CIRCLE.md) | Crypto backend |
-| [`pay.md`](./pay.md) | Safari Card pay / payout (Flutter) |
+| [`pay.md`](./pay.md) | Safari Tap pay / payout (Flutter) |
 | [`C2B_PAYLOAD_ENCRYPTION.md`](./C2B_PAYLOAD_ENCRYPTION.md) | Optional C2B mobile payload encryption |
-| [`SAFARI_CARD_PAYOUTS.md`](./SAFARI_CARD_PAYOUTS.md) | Safari Card backend |
+| [`SAFARI_CARD_PAYOUTS.md`](./SAFARI_CARD_PAYOUTS.md) | Safari Tap backend |
 | [`PAYMENTS_CLIENT_FIXES.md`](./PAYMENTS_CLIENT_FIXES.md) | Client integration notes |
 
 ## B2B

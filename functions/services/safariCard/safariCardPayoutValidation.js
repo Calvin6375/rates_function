@@ -1,5 +1,5 @@
 /**
- * @fileoverview Safari Card payout input validation and phone normalization.
+ * @fileoverview Safari Tap payout input validation and phone normalization.
  */
 
 const {
@@ -128,7 +128,7 @@ function validateCreatePayoutRequest(body) {
 
   const narrative = body?.narrative ?
     String(body.narrative).slice(0, 240) :
-    "Safari Card transfer";
+    "Safari Tap transfer";
 
   /** @type {Record<string, unknown>} */
   const recipient = {};
@@ -144,7 +144,7 @@ function validateCreatePayoutRequest(body) {
       );
     }
     recipient.phoneNumber = phone;
-    recipient.name = body?.recipient?.name || body?.name || "Safari Card Customer";
+    recipient.name = body?.recipient?.name || body?.name || "Safari Tap Customer";
   }
 
   if (type === PAYOUT_TYPES.MPESA_B2B) {
@@ -163,7 +163,7 @@ function validateCreatePayoutRequest(body) {
     }
     recipient.account = account.replace(/\D/g, "");
     recipient.accountType = accountType;
-    recipient.name = body?.recipient?.name || body?.name || "Safari Card Merchant";
+    recipient.name = body?.recipient?.name || body?.name || "Safari Tap Merchant";
 
     if (accountType === B2B_ACCOUNT_TYPES.PAYBILL) {
       const accountReference = String(
@@ -200,7 +200,7 @@ function validateCreatePayoutRequest(body) {
     }
     recipient.bankCode = bankCode;
     recipient.accountNumber = accountNumber.replace(/\s/g, "");
-    recipient.accountName = body?.recipient?.accountName || body?.accountName || "Safari Card Beneficiary";
+    recipient.accountName = body?.recipient?.accountName || body?.accountName || "Safari Tap Beneficiary";
   }
 
   if (type === PAYOUT_TYPES.SAFARITAP_WALLET) {

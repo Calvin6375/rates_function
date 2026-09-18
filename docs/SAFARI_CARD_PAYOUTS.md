@@ -1,13 +1,13 @@
-# Safari Card Payouts (IntaSend Disbursement)
+# Safari Tap Payouts (IntaSend Disbursement)
 
-Safari Card outbound payments use **IntaSend Send Money API** server-side. The Flutter app never sees `INTASEND_SECRET_KEY` or other disbursement credentials.
+Safari Tap outbound payments use **IntaSend Send Money API** server-side. The Flutter app never sees `INTASEND_SECRET_KEY` or other disbursement credentials.
 
 Collection (inbound) IntaSend flows are unchanged — see [`INTASEND.md`](./INTASEND.md).
 
 ## Architecture
 
 ```
-Safari Card Flutter
+Safari Tap Flutter
   │ Firebase Auth
   v
 safariCardApi (Cloud Function)
@@ -41,11 +41,11 @@ handleIntaSendDisbursementWebhook
 | `SAFARITAP_WALLET` | **TruePay ledger** (no IntaSend) | Send KES to another SafariTap / C2B user wallet |
 | `TRUEPAY_MERCHANT` | **TruePay ledger** → partner wallet | Pay a B2B merchant via **profile QR** or `merchantId` (not product `/l/` QR) |
 
-Currency: **KES only** (Safari Card disbursement scope).
+Currency: **KES only** (Safari Tap disbursement scope).
 
 ### Balance source (important)
 
-Safari Card spends **available fiat ledger** balance (`walletAggregatesFiat` / `fiatLedger`), not RTDB.
+Safari Tap spends **available fiat ledger** balance (`walletAggregatesFiat` / `fiatLedger`), not RTDB.
 
 Historically, **Exchange swaps** updated `users.kesBalance` (shown on `/api/accounts`) without writing the fiat ledger. Before each payout balance check the server now runs `syncFiatLedgerFromUserProjection` (credit-only) so swapped KES becomes spendable. New swaps also sync the ledger after completion.
 
@@ -208,7 +208,7 @@ POST /safari-card/payouts
   "currency": "KES",
   "clientRequestId": "unique-client-id-min-8-chars",
   "recipient": { "phoneNumber": "254712345678" },
-  "narrative": "Safari Card transfer"
+  "narrative": "Safari Tap transfer"
 }
 ```
 
@@ -364,9 +364,9 @@ Hosts (same as collection):
 
 Official docs: [Send Money introduction](https://developers.intasend.com/docs/send-money.md) · [Authentication](https://developers.intasend.com/docs/authentication.md) · [Transaction status codes](https://developers.intasend.com/docs/payment-statuses-reference.md)
 
-### Endpoints used by Safari Card (backend)
+### Endpoints used by Safari Tap (backend)
 
-| Safari Card flow | IntaSend API | Official reference |
+| Safari Tap flow | IntaSend API | Official reference |
 |------------------|--------------|-------------------|
 | Validate beneficiary | `POST /api/v1/send-money/validate-accounts/` | [Validate Account Name](https://developers.intasend.com/reference/api_v1_send_money_validate_accounts_create) |
 | Create payout (step 1) | `POST /api/v1/send-money/initiate/` | [Initiate Send Money](https://developers.intasend.com/reference/api_v1_send_money_initiate_create) |
@@ -378,7 +378,7 @@ Adapter: `functions/services/intasend/intasendDisbursementProvider.js`
 
 **Initiate body (what we send):**
 
-| Field | Safari Card value |
+| Field | Safari Tap value |
 |-------|-------------------|
 | `currency` | `KES` |
 | `country` | `KE` |
@@ -498,7 +498,7 @@ Alias: `GET /b2bPortal/platform/safari-tap/transactions` (same query).
 | type | Sources |
 |------|---------|
 | `topups` | `funding` / `topup` / `crypto_onramp` + `fundingOrders` + `orders` (`topup`, `direct_topup`) |
-| `pay` | `merchant_payment` + Safari Card `MPESA_B2B` |
+| `pay` | `merchant_payment` + Safari Tap `MPESA_B2B` |
 | `send` | SafariTap wallet + `MPESA_B2C` + `BANK` + P2P `orders.send` |
 | `exchange` | `orders` with `orderType=swap` |
 

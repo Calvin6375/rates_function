@@ -379,11 +379,11 @@ async function listKenyanBankCodes() {
 function buildMpesaB2cTransaction(tx) {
   const account = String(tx.account || "").replace(/\D/g, "");
   return {
-    name: tx.name || "Safari Card Customer",
+    name: tx.name || "Safari Tap Customer",
     account,
     phone_number: account,
     amount: formatDisbursementAmount(tx.amount, {wholeKes: true}),
-    narrative: tx.narrative || "Safari Card transfer",
+    narrative: tx.narrative || "Safari Tap transfer",
     request_reference_id: tx.requestReferenceId || undefined,
   };
 }
@@ -395,11 +395,11 @@ function buildMpesaB2cTransaction(tx) {
 function buildMpesaB2bTransaction(tx) {
   /** @type {Record<string, unknown>} */
   const row = {
-    name: tx.name || "Safari Card Merchant",
+    name: tx.name || "Safari Tap Merchant",
     account: String(tx.account),
     account_type: tx.accountType,
     amount: formatDisbursementAmount(tx.amount),
-    narrative: tx.narrative || "Safari Card payment",
+    narrative: tx.narrative || "Safari Tap payment",
     request_reference_id: tx.requestReferenceId || undefined,
   };
   if (tx.accountType === "PayBill") {
@@ -414,11 +414,11 @@ function buildMpesaB2bTransaction(tx) {
  */
 function buildBankTransaction(tx) {
   return {
-    name: tx.name || "Safari Card Beneficiary",
+    name: tx.name || "Safari Tap Beneficiary",
     account: String(tx.account),
     bank_code: String(tx.bankCode),
     amount: formatDisbursementAmount(tx.amount),
-    narrative: tx.narrative || "Safari Card bank transfer",
+    narrative: tx.narrative || "Safari Tap bank transfer",
     request_reference_id: tx.requestReferenceId || undefined,
   };
 }

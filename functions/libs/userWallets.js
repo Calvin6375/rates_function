@@ -698,7 +698,7 @@ async function debitCustomerWallet(id, amount, description = "Wallet debit", cur
       // Don't fail the operation if sync fails
     }
 
-    // Keep fiatLedger in sync so Safari Card / transfers cannot re-credit wiped users balances.
+    // Keep fiatLedger in sync so Safari Tap / transfers cannot re-credit wiped users balances.
     try {
       const walletService = require("../services/walletService");
       const code = String(currency || "").toUpperCase();

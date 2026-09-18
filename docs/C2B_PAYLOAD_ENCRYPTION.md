@@ -98,7 +98,7 @@ Instead of plain JSON, send:
 }
 ```
 
-The decrypted plaintext is the **normal API JSON** (e.g. Safari Card payout create body).
+The decrypted plaintext is the **normal API JSON** (e.g. Safari Tap payout create body).
 
 ### GET requests
 
@@ -194,6 +194,6 @@ Wrap your HTTP client:
 
 ## Related docs
 
-- [`pay.md`](./pay.md) — Safari Card payout API (encrypt the same JSON bodies)
+- [`pay.md`](./pay.md) — Safari Tap payout API (encrypt the same JSON bodies)
 - [`TRANSACTIONS_API.md`](./TRANSACTIONS_API.md) — transaction feed
 - [`circle_c2b.md`](./circle_c2b.md) — USDC wallet API

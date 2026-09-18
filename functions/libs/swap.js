@@ -396,7 +396,7 @@ async function createSwapOrder(userId, params) {
     console.warn("⚠️ Failed to sync balance to Realtime DB after swap:", syncErr.message);
   }
 
-  // Align fiatLedger with users.*Balance so Safari Card / settlements can spend swapped KES/USD.
+  // Align fiatLedger with users.*Balance so Safari Tap / settlements can spend swapped KES/USD.
   try {
     const walletService = require("../services/walletService");
     for (const ccy of [fromCurrency, toCurrency]) {

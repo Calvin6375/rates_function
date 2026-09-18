@@ -343,7 +343,7 @@ Query param `type=credit` or `type=debit` matches `direction` as well as raw `ty
 
 ---
 
-### Safari Card payout detail fields
+### Safari Tap payout detail fields
 
 When `metadata.source === "safari_card_payout"`, list and single-transaction responses join the linked `safariCardPayouts` document and expose:
 

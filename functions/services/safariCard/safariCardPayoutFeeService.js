@@ -1,5 +1,5 @@
 /**
- * @fileoverview Safari Card payout fee calculation.
+ * @fileoverview Safari Tap payout fee calculation.
  *
  * Precedence:
  *   product pricing (enabled) → env flat fee → 0

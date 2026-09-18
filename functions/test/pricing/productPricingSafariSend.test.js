@@ -1,5 +1,5 @@
 /**
- * @fileoverview Safari Card + B2B Send product pricing precedence.
+ * @fileoverview Safari Tap + B2B Send product pricing precedence.
  */
 
 jest.mock("../../libs/firestore", () => ({
@@ -28,7 +28,7 @@ const walletService = require("../../services/walletService");
 const {calculatePayoutFee} = require("../../services/safariCard/safariCardPayoutFeeService");
 const b2bSendService = require("../../services/b2bSendService");
 
-describe("Safari Card + B2B Send pricing precedence", () => {
+describe("Safari Tap + B2B Send pricing precedence", () => {
   let previousB2b;
   let previousB2c;
 
@@ -58,7 +58,7 @@ describe("Safari Card + B2B Send pricing precedence", () => {
     }));
   }
 
-  it("Safari Card falls back to env fee when pricing disabled", async () => {
+  it("Safari Tap falls back to env fee when pricing disabled", async () => {
     mockConfig({});
     const result = await calculatePayoutFee({
       userId: "u1",
@@ -71,7 +71,7 @@ describe("Safari Card + B2B Send pricing precedence", () => {
     expect(result.feeSource).toBe("env_flat_fee");
   });
 
-  it("Safari Card uses buy_goods pricing for Till", async () => {
+  it("Safari Tap uses buy_goods pricing for Till", async () => {
     mockConfig({
       buy_goods: {enabled: true, feePercent: 1.5, flatFeeKes: 0},
     });

@@ -1,5 +1,5 @@
 /**
- * @fileoverview Safari Card payout types, status mapping, and error codes.
+ * @fileoverview Safari Tap payout types, status mapping, and error codes.
  */
 
 /** @typedef {"MPESA_B2C"|"MPESA_B2B"|"BANK"|"SAFARITAP_WALLET"|"TRUEPAY_MERCHANT"} SafariCardPayoutType */

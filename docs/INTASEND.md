@@ -4,7 +4,7 @@
 
 Consumer C2B tourist top-ups and B2B partner **Add Money** self-topups have moved to **Paystack** — see [`PAYSTACK_TOURIST.md`](./PAYSTACK_TOURIST.md) and [`B2B_ADD_MONEY.md`](./B2B_ADD_MONEY.md). IntaSend remains active for guest payment links and legacy webhook settlement.
 
-**Safari Card outbound disbursements** (M-Pesa B2B/B2C, PesaLink) use a separate Send Money layer — see [`SAFARI_CARD_PAYOUTS.md`](./SAFARI_CARD_PAYOUTS.md). Collection code in this document is unchanged by that feature.
+**Safari Tap outbound disbursements** (M-Pesa B2B/B2C, PesaLink) use a separate Send Money layer — see [`SAFARI_CARD_PAYOUTS.md`](./SAFARI_CARD_PAYOUTS.md). Collection code in this document is unchanged by that feature.
 
 ## Where IntaSend is used today
 

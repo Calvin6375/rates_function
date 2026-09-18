@@ -361,7 +361,7 @@ async function dualWriteUsdBalance(userId, newUsdBalance) {
 }
 
 /**
- * Fiat assets that Safari Card / settlements debit via fiatLedger.
+ * Fiat assets that Safari Tap / settlements debit via fiatLedger.
  * (USDT remains on the legacy users/crypto projection.)
  */
 const FIAT_LEDGER_ASSETS = new Set([
