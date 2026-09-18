@@ -210,7 +210,7 @@ Optional: after credit, refresh `GET /crypto/balance` and `GET /crypto/transacti
 - Circle faucet or Circle wallet create from Flutter
 - Withdraw / sweep / send changes for this task
 
-Send USDC (`POST /crypto/send`) is unchanged and is not part of this top-up flow.
+Send USDC (`POST /crypto/send`) is still ledger-based. After a deposit is credited, the backend sweeps on-chain USDC to the company treasury; the user's app balance does not change. Flutter does not call a sweep API. See [`CRYPTO_SWEEPS.md`](./CRYPTO_SWEEPS.md).
 
 ---
 
