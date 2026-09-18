@@ -7,6 +7,13 @@ const {ethers} = require("ethers");
 const config = require("../../../config");
 const evmRpcService = require("../evm/evmRpcService");
 const {getFujiNetwork, isValidEvmAddress} = require("../evm/fujiNetwork");
+const {
+  FUJI_NETWORK,
+  MAINNET_NETWORK,
+  assertSupportedNetwork,
+  getNetworkConfig,
+} = require("../evm/networkConfig");
+const {CODES} = require("../cryptoErrors");
 const {createLogger} = require("../../../utils/paymentOpsLogger");
 
 const logger = createLogger({service: "turnkeyClient"});
@@ -254,65 +261,137 @@ function getConfiguredUsdtContract() {
 }
 
 /**
+ * @param {unknown} network
+ * @returns {"avalanche-fuji"|"avalanche"}
+ */
+function resolveTreasuryNetwork(network) {
+  if (network == null || network === "") {
+    return FUJI_NETWORK;
+  }
+  return assertSupportedNetwork(network);
+}
+
+/**
+ * @param {string} address
+ * @returns {string}
+ */
+function checksumAddress(address) {
+  return ethers.getAddress(address);
+}
+
+/**
+ * Fail closed when Turnkey's wallet is not the configured treasury.
+ * @param {Object} wallet
+ * @returns {string}
+ */
+function assertVerifiedTreasuryAddress(wallet) {
+  const address = wallet && wallet.address;
+  if (!isValidEvmAddress(address)) {
+    const err = new Error("Treasury wallet has no EVM address");
+    err.code = "TREASURY_CONFIG_INVALID";
+    throw err;
+  }
+  const expected = getExpectedTreasuryAddressLower();
+  const matches = wallet.matchesExpectedAddress === true &&
+    (!expected || String(address).toLowerCase() === expected);
+  if (!matches) {
+    const err = new Error("Treasury address does not match the configured TruePay treasury");
+    err.code = "TREASURY_CONFIG_INVALID";
+    throw err;
+  }
+  return checksumAddress(address);
+}
+
+/**
  * @param {unknown} err
  * @returns {string}
  */
 function sanitizeTreasuryBalanceError(err) {
   let message = sanitizeTurnkeyError(err);
-  const rpcUrl = getFujiNetwork().rpcUrl;
-  if (rpcUrl && message.includes(rpcUrl)) {
-    message = message.split(rpcUrl).join("[redacted-rpc]");
+  const rpcUrls = [getFujiNetwork().rpcUrl, getNetworkConfig(MAINNET_NETWORK).rpcUrl];
+  for (const rpcUrl of rpcUrls) {
+    if (rpcUrl && message.includes(rpcUrl)) {
+      message = message.split(rpcUrl).join("[redacted-rpc]");
+    }
   }
   return message;
 }
 
 /**
+ * @param {{ raw: string, decimals: number }} token
+ * @returns {{ balance: string, rawBalance: string, decimals: number, raw: string }}
+ */
+function serializeErc20Balance(token) {
+  const decimals = Number(token.decimals);
+  const rawBalance = String(token.raw);
+  return {
+    balance: evmRpcService.formatFixedTokenBalance(rawBalance, decimals),
+    rawBalance,
+    decimals,
+    raw: rawBalance,
+  };
+}
+
+/**
  * Read-only on-chain balances for the verified treasury address.
- * USDT is queried only when AVALANCHE_FUJI_USDT_CONTRACT is already set.
+ * Supports avalanche-fuji (default) and avalanche. USDT is queried only
+ * on Fuji when AVALANCHE_FUJI_USDT_CONTRACT is already set.
+ * @param {{ network?: string }} [opts]
  * @returns {Promise<Object>}
  */
-async function getTurnkeyTreasuryBalances() {
-  logger.info("Turnkey treasury balance lookup started");
+async function getTurnkeyTreasuryBalances(opts = {}) {
+  const networkName = resolveTreasuryNetwork(opts.network);
+  logger.info("Turnkey treasury balance lookup started", {network: networkName});
   try {
     const wallet = await getTurnkeyTreasuryWallet();
-    const address = wallet && wallet.address;
-    if (!isValidEvmAddress(address)) {
-      throw new Error("Treasury wallet has no EVM address");
-    }
-
-    const network = getFujiNetwork();
+    const address = assertVerifiedTreasuryAddress(wallet);
+    const network = getNetworkConfig(networkName);
     const balances = {};
 
-    balances.USDC = await evmRpcService.getErc20Balance(network.usdcContract, address);
+    const usdc = await evmRpcService.getErc20Balance(
+        network.usdcContract,
+        address,
+        networkName,
+    );
+    balances.USDC = serializeErc20Balance(usdc);
 
-    const usdtContract = getConfiguredUsdtContract();
-    if (usdtContract) {
-      balances.USDT = await evmRpcService.getErc20Balance(usdtContract, address);
-    } else {
-      balances.USDT = {
-        configured: false,
-        error: "USDT contract is not configured for avalanche-fuji",
-      };
+    if (networkName === FUJI_NETWORK) {
+      const usdtContract = getConfiguredUsdtContract();
+      if (usdtContract) {
+        const usdt = await evmRpcService.getErc20Balance(usdtContract, address, networkName);
+        balances.USDT = serializeErc20Balance(usdt);
+      } else {
+        balances.USDT = {
+          configured: false,
+          error: "USDT contract is not configured for avalanche-fuji",
+        };
+      }
     }
 
-    const avaxWei = await evmRpcService.getAvaxBalanceWei(address);
+    const avaxWei = await evmRpcService.getAvaxBalanceWei(address, networkName);
     balances.AVAX = {
-      raw: avaxWei.toString(),
+      balance: evmRpcService.formatFixedTokenBalance(avaxWei.toString(), 18, 8),
+      rawBalance: avaxWei.toString(),
       decimals: 18,
-      balance: ethers.formatEther(avaxWei),
+      raw: avaxWei.toString(),
     };
 
+    const checkedAt = new Date().toISOString();
     logger.info("Turnkey treasury balance lookup succeeded", {
       network: network.network,
+      chainId: network.chainId,
       usdcConfigured: true,
-      usdtConfigured: !!usdtContract,
+      usdtConfigured: networkName === FUJI_NETWORK && !!getConfiguredUsdtContract(),
     });
 
     return {
       success: true,
-      address,
       network: network.network,
+      chainId: network.chainId,
+      wallet: {address},
+      address,
       balances,
+      checkedAt,
     };
   } catch (err) {
     const safe = sanitizeTreasuryBalanceError(err);
@@ -320,7 +399,14 @@ async function getTurnkeyTreasuryBalances() {
     if (err && err.message === "Turnkey configuration is incomplete") {
       throw err;
     }
-    throw new Error(`Turnkey treasury balance lookup failed: ${safe}`);
+    if (err && (err.code === CODES.UNSUPPORTED_NETWORK || err.code === "TREASURY_CONFIG_INVALID")) {
+      const wrapped = new Error(err.message);
+      wrapped.code = err.code;
+      throw wrapped;
+    }
+    const wrapped = new Error(`Turnkey treasury balance lookup failed: ${safe}`);
+    if (err && err.code) wrapped.code = err.code;
+    throw wrapped;
   }
 }
 
@@ -338,4 +424,6 @@ module.exports = {
   testTurnkeyConnection,
   getTurnkeyTreasuryWallet,
   getTurnkeyTreasuryBalances,
+  resolveTreasuryNetwork,
+  assertVerifiedTreasuryAddress,
 };

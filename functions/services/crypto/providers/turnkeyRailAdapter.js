@@ -1,8 +1,9 @@
 /**
- * @fileoverview Turnkey rail adapter — wallet/key/signing provider for Avalanche Fuji.
- * Ledger, reservations, and Flutter response shapes stay the same as Circle.
+ * @fileoverview Turnkey rail adapter — wallet/key/signing for Avalanche.
+ * Customer balances stay on the ledger. Outbound USDC is signed from treasury.
  */
 
+const {ethers} = require("ethers");
 const {collection, serverTimestamp} = require("../../../libs/firestore");
 const ledgerService = require("../../ledger/ledgerService");
 const reservationService = require("../../ledger/reservationService");
@@ -10,7 +11,8 @@ const sendIdempotencyService = require("../../circle/sendIdempotencyService");
 const turnkeyClient = require("../turnkey/turnkeyClient");
 const turnkeyWalletService = require("../turnkey/turnkeyWalletService");
 const evmRpcService = require("../evm/evmRpcService");
-const {getFujiNetwork, isValidEvmAddress} = require("../evm/fujiNetwork");
+const {isValidEvmAddress} = require("../evm/fujiNetwork");
+const {getNetworkConfig, normalizeNetworkName} = require("../evm/networkConfig");
 const {isValidUsdcAmount, toUsdcUnits} = require("../evm/usdcUnits");
 const {
   CryptoRailError,
@@ -100,25 +102,53 @@ async function signTransaction(unsignedHex, signWith) {
  * @param {string} signedHex
  * @returns {Promise<string>}
  */
-async function broadcastTransaction(signedHex) {
-  return evmRpcService.broadcastTransaction(signedHex);
+async function broadcastTransaction(signedHex, networkName) {
+  return evmRpcService.broadcastTransaction(signedHex, networkName);
 }
 
 /**
  * @param {string} txHash
  * @returns {Promise<Object>}
  */
-async function getTransactionStatus(txHash) {
-  return evmRpcService.getTransactionStatus(txHash);
+async function getTransactionStatus(txHash, networkName) {
+  return evmRpcService.getTransactionStatus(txHash, networkName);
 }
 
 /**
  * @param {Object} params
  * @returns {Promise<{ unsignedHex: string, gasLimit: bigint, maxFeePerGas: bigint }>}
  */
+function getTreasuryAddress(networkName) {
+  const treasury = getNetworkConfig(networkName).treasuryAddress;
+  if (!isValidEvmAddress(treasury)) {
+    throw new Error("Treasury address is not configured");
+  }
+  return ethers.getAddress(treasury);
+}
+
+/**
+ * Prefer the user's production deposit wallet, then Fuji, then provider id.
+ * @param {string} [userId]
+ * @param {string} [fromWalletId]
+ * @returns {Promise<Object|null>}
+ */
+async function resolveSendWallet(userId, fromWalletId) {
+  if (userId) {
+    const mainnet = await turnkeyWalletService.getWallet(userId, {network: "avalanche"});
+    if (mainnet) return mainnet;
+    const fuji = await turnkeyWalletService.getWallet(userId, {network: "avalanche-fuji"});
+    if (fuji) return fuji;
+  }
+  if (fromWalletId && fromWalletId !== "treasury") {
+    return turnkeyWalletService.getWalletByProviderId(fromWalletId);
+  }
+  return null;
+}
+
 async function buildUnsignedTransfer(params) {
   const {fromAddress, toAddress, amount, asset} = params;
-  const network = getFujiNetwork();
+  const networkName = normalizeNetworkName(params.network || "avalanche");
+  const network = getNetworkConfig(networkName);
   if (asset && String(asset).toUpperCase() !== ASSET && String(asset).toUpperCase() !== "AVAX") {
     throw unsupportedAsset(asset);
   }
@@ -133,14 +163,13 @@ async function buildUnsignedTransfer(params) {
     throw invalidAmount();
   }
 
-  const nonce = await evmRpcService.getTransactionCount(fromAddress);
-  const fee = await evmRpcService.getFeeData();
+  const nonce = await evmRpcService.getTransactionCount(fromAddress, networkName);
+  const fee = await evmRpcService.getFeeData(networkName);
 
   let to = toAddress;
   let data = "0x";
   let value = 0n;
   if (isNative) {
-    const {ethers} = require("ethers");
     value = ethers.parseEther(String(amount));
   } else {
     to = network.usdcContract;
@@ -152,8 +181,8 @@ async function buildUnsignedTransfer(params) {
     to,
     data,
     value,
-  });
-  await evmRpcService.assertSufficientGas(fromAddress, gasLimit, fee.maxFeePerGas);
+  }, networkName);
+  await evmRpcService.assertSufficientGas(fromAddress, gasLimit, fee.maxFeePerGas, networkName);
 
   const unsignedHex = evmRpcService.serializeUnsignedTransaction({
     chainId: network.chainId,
@@ -166,7 +195,7 @@ async function buildUnsignedTransfer(params) {
     data,
   });
 
-  return {unsignedHex, gasLimit, maxFeePerGas: fee.maxFeePerGas};
+  return {unsignedHex, gasLimit, maxFeePerGas: fee.maxFeePerGas, network: networkName};
 }
 
 /**
@@ -177,7 +206,7 @@ async function buildUnsignedTransfer(params) {
 async function signAndBroadcast(params) {
   const built = await buildUnsignedTransfer(params);
   const signed = await signTransaction(built.unsignedHex, params.fromAddress);
-  return broadcastTransaction(signed);
+  return broadcastTransaction(signed, params.network || built.network);
 }
 
 /**
@@ -187,7 +216,7 @@ async function signAndBroadcast(params) {
 async function send(params) {
   const {fromWalletId, toAddress, amount, userId, idempotencyKey, asset} = params;
   const numericAmount = Number(amount);
-  if (!fromWalletId || !toAddress || !Number.isFinite(numericAmount) || numericAmount <= 0) {
+  if (!toAddress || !Number.isFinite(numericAmount) || numericAmount <= 0) {
     throw new Error("Invalid send parameters");
   }
   if (!idempotencyKey) {
@@ -203,13 +232,19 @@ async function send(params) {
     throw invalidAmount();
   }
 
-  const wallet = (userId && await turnkeyWalletService.getWallet(userId)) ||
-    await turnkeyWalletService.getWalletByProviderId(fromWalletId);
-  if (!wallet) throw new Error("Source wallet not found");
+  const wallet = await resolveSendWallet(userId, fromWalletId);
+  const ownerId = userId || wallet?.userId;
+  if (!ownerId) throw new Error("Source wallet not found");
 
-  const ownerId = userId || wallet.userId;
+  const networkName = wallet?.network ? normalizeNetworkName(wallet.network) : "avalanche";
+  const network = getNetworkConfig(networkName);
+  const sendFromTreasury = networkName === "avalanche";
+  if (!sendFromTreasury && !wallet?.address) {
+    throw new Error("Source wallet not found");
+  }
+  const fromAddress = sendFromTreasury ? getTreasuryAddress(networkName) : wallet.address;
   const requestData = {
-    fromWalletId,
+    fromWalletId: fromWalletId || wallet?.walletId || "treasury",
     toAddress: String(toAddress).toLowerCase(),
     amount: numericAmount,
     userId: ownerId,
@@ -236,10 +271,11 @@ async function send(params) {
     reservationId = reservation.reservationId;
 
     broadcastedTxHash = await signAndBroadcast({
-      fromAddress: wallet.address,
+      fromAddress,
       toAddress,
       amount: numericAmount,
       asset: ASSET,
+      network: networkName,
     });
 
     await reservationService.attachProviderTransactionId(reservationId, broadcastedTxHash);
@@ -254,10 +290,12 @@ async function send(params) {
       asset: ASSET,
       status: "pending",
       toAddress,
-      fromWalletId,
+      fromAddress,
+      fromWalletId: requestData.fromWalletId,
+      fromTreasury: sendFromTreasury,
       provider: PROVIDER,
-      network: getFujiNetwork().network,
-      chainId: getFujiNetwork().chainId,
+      network: network.network,
+      chainId: network.chainId,
       idempotencyKey,
       reservationId,
       createdAt: serverTimestamp(),

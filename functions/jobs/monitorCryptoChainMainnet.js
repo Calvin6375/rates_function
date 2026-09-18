@@ -1,17 +1,17 @@
 /**
- * @fileoverview Poll Avalanche C-Chain for production USDC deposits.
- * Isolated from the Fuji monitor: different RPC, USDC, cursor, and addresses.
+ * @fileoverview Daily mainnet treasury sweep (08:00 Africa/Nairobi).
+ * Deposit detection stays on the per-minute monitorCryptoChain job.
  */
 
 const {onSchedule} = require("firebase-functions/v2/scheduler");
 const config = require("../config");
 const {getTurnkeyFunctionSecrets} = require("../services/crypto/cryptoRailSecrets");
-const {processConfirmedMainnetDeposits} = require("../services/crypto/chainMonitorService");
 const {getCryptoRailProviderName} = require("../services/crypto/cryptoRailProvider");
 
 exports.monitorCryptoChainMainnet = onSchedule(
     {
-      schedule: "* * * * *",
+      schedule: "0 8 * * *",
+      timeZone: "Africa/Nairobi",
       secrets: getTurnkeyFunctionSecrets(),
       region: config.region,
       cpu: config.resources.cpu,
@@ -22,7 +22,8 @@ exports.monitorCryptoChainMainnet = onSchedule(
         console.log("monitorCryptoChainMainnet: skipped (provider is not turnkey)");
         return;
       }
-      const result = await processConfirmedMainnetDeposits();
+      const treasurySweepService = require("../services/crypto/treasurySweepService");
+      const result = await treasurySweepService.runSweepCycle("avalanche");
       console.log("monitorCryptoChainMainnet complete", result);
     },
 );

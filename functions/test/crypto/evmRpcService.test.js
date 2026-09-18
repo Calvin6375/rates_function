@@ -124,4 +124,10 @@ describe("on-chain balances via mocked provider", () => {
     expect(getFujiNetwork().chainId).toBe(43113);
     expect(getAvalancheNetwork().chainId).toBe(43114);
   });
+
+  it("formats raw USDC units with 6 decimals without floating point", () => {
+    expect(evmRpcService.formatFixedTokenBalance(0n, 6)).toBe("0.000000");
+    expect(evmRpcService.formatFixedTokenBalance(1234567n, 6)).toBe("1.234567");
+    expect(evmRpcService.formatFixedTokenBalance("1000000", 6)).toBe("1.000000");
+  });
 });

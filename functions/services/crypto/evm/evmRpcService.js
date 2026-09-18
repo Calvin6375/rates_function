@@ -116,16 +116,34 @@ function formatTokenBalance(raw, decimals) {
 }
 
 /**
+ * Fixed-place token amount. Uses decimal.js — never JS number division.
+ * @param {string|bigint|number} raw
+ * @param {number} decimals
+ * @param {number} [displayDecimals]
+ * @returns {string}
+ */
+function formatFixedTokenBalance(raw, decimals, displayDecimals) {
+  const places = Number(decimals);
+  const shown = displayDecimals == null ? places : Number(displayDecimals);
+  const value = new Decimal(String(raw)).div(new Decimal(10).pow(places));
+  if (!value.isFinite()) {
+    throw new Error("Invalid token amount");
+  }
+  return value.toFixed(shown);
+}
+
+/**
  * Read-only ERC-20 balanceOf + decimals. Does not send a transaction.
  * @param {string} tokenAddress
  * @param {string} holderAddress
+ * @param {string} [networkName]
  * @returns {Promise<{ raw: string, decimals: number, balance: string }>}
  */
-async function getErc20Balance(tokenAddress, holderAddress) {
+async function getErc20Balance(tokenAddress, holderAddress, networkName) {
   if (!isValidEvmAddress(tokenAddress) || !isValidEvmAddress(holderAddress)) {
     throw invalidAddress();
   }
-  const provider = getProvider();
+  const provider = getProvider(networkName);
   try {
     const [rawResult, decimalsResult] = await Promise.all([
       provider.call({
@@ -174,11 +192,12 @@ async function getUsdcBalanceUnits(address) {
 
 /**
  * @param {string} address
+ * @param {string} [networkName]
  * @returns {Promise<bigint>}
  */
-async function getAvaxBalanceWei(address) {
+async function getAvaxBalanceWei(address, networkName) {
   try {
-    return await getProvider().getBalance(address);
+    return await getProvider(networkName).getBalance(address);
   } catch (err) {
     throw rpcFailure(err.message || "AVAX balance failed");
   }
@@ -223,17 +242,17 @@ async function getTransaction(txHash, networkName) {
  * @param {string} txHash
  * @returns {Promise<{ status: string, confirmations: number, receipt: Object|null }>}
  */
-async function getTransactionStatus(txHash) {
-  const receipt = await getTransactionReceipt(txHash);
+async function getTransactionStatus(txHash, networkName) {
+  const receipt = await getTransactionReceipt(txHash, networkName);
   if (!receipt) {
     return {status: "pending", confirmations: 0, receipt: null};
   }
-  const current = await getBlockNumber();
+  const current = await getBlockNumber(networkName);
   const confirmations = Math.max(0, current - Number(receipt.blockNumber) + 1);
   if (receipt.status === 0) {
     return {status: "failed", confirmations, receipt};
   }
-  const required = getFujiNetwork().confirmations;
+  const required = getNetworkConfig(networkName).confirmations;
   return {
     status: confirmations >= required ? "complete" : "pending",
     confirmations,
@@ -245,9 +264,9 @@ async function getTransactionStatus(txHash) {
  * @param {Object} txRequest
  * @returns {Promise<bigint>}
  */
-async function estimateGas(txRequest) {
+async function estimateGas(txRequest, networkName) {
   try {
-    const estimated = await getProvider().estimateGas(txRequest);
+    const estimated = await getProvider(networkName).estimateGas(txRequest);
     const buffered = (estimated * GAS_LIMIT_BUFFER_BPS) / 10000n;
     return buffered;
   } catch (err) {
@@ -259,9 +278,9 @@ async function estimateGas(txRequest) {
 /**
  * @returns {Promise<{ maxFeePerGas: bigint, maxPriorityFeePerGas: bigint }>}
  */
-async function getFeeData() {
+async function getFeeData(networkName) {
   try {
-    const fee = await getProvider().getFeeData();
+    const fee = await getProvider(networkName).getFeeData();
     const maxPriorityFeePerGas = fee.maxPriorityFeePerGas || 25_000_000_000n;
     const maxFeePerGas = fee.maxFeePerGas || (maxPriorityFeePerGas * 2n);
     return {maxFeePerGas, maxPriorityFeePerGas};
@@ -274,9 +293,9 @@ async function getFeeData() {
  * @param {string} address
  * @returns {Promise<number>}
  */
-async function getTransactionCount(address) {
+async function getTransactionCount(address, networkName) {
   try {
-    return await getProvider().getTransactionCount(address, "pending");
+    return await getProvider(networkName).getTransactionCount(address, "pending");
   } catch (err) {
     throw rpcFailure(err.message || "getTransactionCount failed");
   }
@@ -287,8 +306,8 @@ async function getTransactionCount(address) {
  * @param {bigint} gasLimit
  * @param {bigint} maxFeePerGas
  */
-async function assertSufficientGas(from, gasLimit, maxFeePerGas) {
-  const balance = await getAvaxBalanceWei(from);
+async function assertSufficientGas(from, gasLimit, maxFeePerGas, networkName) {
+  const balance = await getAvaxBalanceWei(from, networkName);
   const cost = gasLimit * maxFeePerGas;
   if (balance < cost) {
     throw insufficientGas();
@@ -299,10 +318,10 @@ async function assertSufficientGas(from, gasLimit, maxFeePerGas) {
  * @param {string} signedTx
  * @returns {Promise<string>}
  */
-async function broadcastTransaction(signedTx) {
+async function broadcastTransaction(signedTx, networkName) {
   const hex = signedTx.startsWith("0x") ? signedTx : `0x${signedTx}`;
   try {
-    const response = await getProvider().broadcastTransaction(hex);
+    const response = await getProvider(networkName).broadcastTransaction(hex);
     return response.hash;
   } catch (err) {
     throw broadcastFailure(err.message || "broadcast failed");
@@ -412,6 +431,7 @@ module.exports = {
   resetProvider,
   getOnChainBalances,
   formatTokenBalance,
+  formatFixedTokenBalance,
   getErc20Balance,
   getUsdcBalanceUnits,
   getAvaxBalanceWei,

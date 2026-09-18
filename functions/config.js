@@ -175,6 +175,8 @@ const config = {
     paymentLinks: "paymentLinks",
     cryptoWallets: "cryptoWallets",
     cryptoTransactions: "cryptoTransactions",
+    /** Customer → treasury USDC sweep jobs (mainnet only; not a ledger) */
+    cryptoSweeps: "cryptoSweeps",
     cryptoLedger: "cryptoLedger",
     walletAggregates: "walletAggregates",
     webhookEvents: "webhookEvents",

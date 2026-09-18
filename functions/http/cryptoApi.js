@@ -266,14 +266,8 @@ app.post("/crypto/send", async (req, res) => {
   }
 
   try {
-    const wallet = await cryptoRailProvider.getWallet(auth.userId);
-    if (!wallet) {
-      res.status(404).json({ success: false, error: "Crypto wallet not found" });
-      return;
-    }
-
     const result = await cryptoRailProvider.send({
-      fromWalletId: wallet.walletId,
+      fromWalletId: "treasury",
       toAddress,
       amount,
       userId: auth.userId,

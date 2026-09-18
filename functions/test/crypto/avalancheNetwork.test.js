@@ -5,6 +5,7 @@
 const {getFujiNetwork} = require("../../services/crypto/evm/fujiNetwork");
 const {getAvalancheNetwork} = require("../../services/crypto/evm/avalancheNetwork");
 const {
+  assertSupportedNetwork,
   depositEventPrefix,
   getNetworkConfig,
   normalizeNetworkName,
@@ -47,5 +48,12 @@ describe("Avalanche mainnet configuration", () => {
     expect(getNetworkConfig("avalanche-fuji").chainId).toBe(43113);
     expect(depositEventPrefix("avalanche")).toBe("avax");
     expect(depositEventPrefix("avalanche-fuji")).toBe("avax-fuji");
+  });
+
+  it("rejects unsupported treasury networks", () => {
+    expect(assertSupportedNetwork("avalanche")).toBe("avalanche");
+    expect(assertSupportedNetwork("avalanche-fuji")).toBe("avalanche-fuji");
+    expect(() => assertSupportedNetwork("ethereum")).toThrow(/Unsupported network/);
+    expect(() => assertSupportedNetwork("")).toThrow(/Unsupported network/);
   });
 });

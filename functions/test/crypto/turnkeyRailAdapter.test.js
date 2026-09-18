@@ -109,13 +109,45 @@ describe("turnkeyRailAdapter", () => {
       idempotencyKey: "key1",
     });
     expect(reservationService.reserveFunds).toHaveBeenCalledWith("user_1", 5, "key1");
-    expect(evmRpcService.broadcastTransaction).toHaveBeenCalled();
+    expect(evmRpcService.getTransactionCount).toHaveBeenCalledWith(
+        "0x952bBC4952A98a49E112d06DBaAe0FAA37eF080A",
+        "avalanche",
+    );
+    expect(evmRpcService.broadcastTransaction).toHaveBeenCalledWith("0xsigned", "avalanche");
     expect(result.success).toBe(true);
     expect(result.status).toBe("pending");
     expect(result.txHash).toBe("0xdeadbeef");
     expect(result.circleTransactionId).toBe("0xdeadbeef");
     expect(result.reservationId).toBe("res_key1");
     expect(sendIdempotencyService.storeSendResult).toHaveBeenCalled();
+    expect(mockAdd).toHaveBeenCalledWith(expect.objectContaining({
+      fromAddress: "0x952bBC4952A98a49E112d06DBaAe0FAA37eF080A",
+      fromTreasury: true,
+      network: "avalanche",
+    }));
+  });
+
+  it("sends Fuji USDC from the customer address, not treasury", async () => {
+    turnkeyWalletService.getWallet.mockImplementation(async (_userId, opts = {}) => {
+      if (opts.network === "avalanche") return null;
+      return {...WALLET, network: "avalanche-fuji"};
+    });
+    await adapter.send({
+      fromWalletId: "tk-1",
+      toAddress: "0x952bBC4952A98a49E112d06DBaAe0FAA37eF080A",
+      amount: 5,
+      userId: "user_1",
+      idempotencyKey: "key-fuji",
+    });
+    expect(evmRpcService.getTransactionCount).toHaveBeenCalledWith(
+        WALLET.address,
+        "avalanche-fuji",
+    );
+    expect(mockAdd).toHaveBeenCalledWith(expect.objectContaining({
+      fromAddress: WALLET.address,
+      fromTreasury: false,
+      network: "avalanche-fuji",
+    }));
   });
 
   it("returns the cached result for a duplicate idempotency key", async () => {

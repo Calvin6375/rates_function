@@ -91,6 +91,16 @@ jest.mock("../../services/ledger/reservationService", () => ({
   releaseReservation: jest.fn(async () => undefined),
 }));
 
+jest.mock("../../services/crypto/treasurySweepService", () => ({
+  enqueueSweepAfterCredit: jest.fn(async () => ({enqueued: true, sweepId: "sw_1"})),
+  enqueueOutstandingSweeps: jest.fn(async () => ({enqueued: 0})),
+  processPendingSweeps: jest.fn(async () => ({processed: 0, swept: 0, failed: 0})),
+  runSweepCycle: jest.fn(async () => ({
+    outstanding: {enqueued: 0},
+    sweeps: {processed: 0, swept: 0, failed: 0},
+  })),
+}));
+
 jest.mock("../../services/crypto/evm/evmRpcService", () => {
   const actual = jest.requireActual("../../services/crypto/evm/evmRpcService");
   return {
@@ -104,6 +114,7 @@ jest.mock("../../services/crypto/evm/evmRpcService", () => {
 const evmRpcService = require("../../services/crypto/evm/evmRpcService");
 const ledgerService = require("../../services/ledger/ledgerService");
 const reservationService = require("../../services/ledger/reservationService");
+const treasurySweepService = require("../../services/crypto/treasurySweepService");
 const chainMonitorService = require("../../services/crypto/chainMonitorService");
 
 function transferLog({to = USER_ADDR, amount = "3", txHash = "0xdep1", index = 0} = {}) {
@@ -146,6 +157,7 @@ describe("chainMonitorService deposits", () => {
           source: "turnkey",
         }),
     );
+    expect(treasurySweepService.enqueueSweepAfterCredit).not.toHaveBeenCalled();
   });
 
   it("does not credit a deposit before the confirmation requirement", async () => {
@@ -319,6 +331,16 @@ describe("chainMonitorService production Avalanche deposits", () => {
         expect.any(Number),
         undefined,
         "avalanche",
+    );
+    expect(treasurySweepService.enqueueSweepAfterCredit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "deposit",
+          userId: "user_prod",
+          fromAddress: PROD_ADDR,
+          amount: 3,
+          network: "avalanche",
+          depositReferenceId: "0xprod1_0",
+        }),
     );
   });
 

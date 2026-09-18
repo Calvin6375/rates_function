@@ -11,7 +11,12 @@ const ledgerService = require("../ledger/ledgerService");
 const reservationService = require("../ledger/reservationService");
 const evmRpcService = require("./evm/evmRpcService");
 const {normalizeAddress} = require("./evm/fujiNetwork");
-const {depositEventPrefix, getNetworkConfig, normalizeNetworkName} = require("./evm/networkConfig");
+const {
+  depositEventPrefix,
+  getNetworkConfig,
+  isMainnetNetwork,
+  normalizeNetworkName,
+} = require("./evm/networkConfig");
 const {fromUsdcUnits} = require("./evm/usdcUnits");
 const config = require("../../config");
 
@@ -191,6 +196,25 @@ async function creditDeposit(transfer, wallet, opts = {}) {
     }
 
     await markChainEventProcessed(eventId, {type: "deposit", userId: wallet.userId});
+    if (isMainnetNetwork(networkName)) {
+      try {
+        const treasurySweepService = require("./treasurySweepService");
+        await treasurySweepService.enqueueSweepAfterCredit({
+          type: "deposit",
+          userId: wallet.userId,
+          fromAddress: transfer.to,
+          amount,
+          network: networkName,
+          depositReferenceId: referenceId,
+          depositTxHash: transfer.txHash,
+        });
+      } catch (sweepErr) {
+        console.error("Enqueue treasury sweep failed", {
+          referenceId,
+          error: sweepErr.message,
+        });
+      }
+    }
     console.log("USDC deposit credited", {network: networkName,
       userId: wallet.userId,
       txHash: transfer.txHash,
@@ -268,7 +292,7 @@ async function finalizeOutboundSend(doc) {
   const txHash = tx.txHash || tx.circleTransactionId;
   if (!txHash) return {action: "skipped"};
 
-  const status = await evmRpcService.getTransactionStatus(txHash);
+  const status = await evmRpcService.getTransactionStatus(txHash, tx.network);
   if (status.status === "pending") {
     const createdMs = tx.createdAt?.toMillis?.() || 0;
     const timeoutMs = Number(config.cryptoRail.txTimeoutMs) || 30 * 60 * 1000;
