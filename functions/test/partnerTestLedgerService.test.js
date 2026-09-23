@@ -6,6 +6,7 @@ const {
   resolveScenario,
   statusFromScenario,
   quoteSend,
+  collectionKesFields,
 } = require("../services/partnerTestLedgerService");
 
 describe("partnerTestLedgerService", () => {
@@ -34,5 +35,13 @@ describe("partnerTestLedgerService", () => {
 
   it("rejects non-positive send amounts", () => {
     expect(() => quoteSend({amount: 0})).toThrow(/Invalid amount/);
+  });
+
+  it("converts a 5 USD test collection to KES instead of labeling 5 as KES", () => {
+    const snap = collectionKesFields(5, "USD", 5);
+    expect(snap.fxRate).toBe(129.5);
+    expect(snap.kesEquivalent).toBe(647.5);
+    expect(snap.kesSettled).toBe(647.5);
+    expect(snap.kesEquivalent).not.toBe(5);
   });
 });

@@ -150,6 +150,36 @@ describe("collection webhook pricing", () => {
     expect(mockUpdatePartnerWalletBalance).toHaveBeenCalledWith("p1", "KES", 975);
   });
 
+  it("credits USD face amount and records the KES equivalent", async () => {
+    mockPricing({});
+    await processB2bPaymentWebhook(
+        {
+          paymentId: "pay_usd",
+          amount: 5,
+          currency: "USD",
+          completedAt: null,
+          account: null,
+          fxRate: 130,
+          chargeAmountKes: 650,
+        },
+        {verifiedEvent: {status: "success"}},
+        {partnerId: "p1", linkId: "link_usd", amount: 5, currency: "USD", rail: "paystack"},
+    );
+    expect(mockUpdatePartnerWalletBalance).toHaveBeenCalledWith("p1", "USD", 5);
+    expect(mockCreateTransactionRecord).toHaveBeenCalledWith(
+        expect.objectContaining({
+          amount: 5,
+          currency: "USD",
+          metadata: expect.objectContaining({
+            fxRate: 130,
+            kesEquivalent: 650,
+            kesSettled: 650,
+            amountKes: 650,
+          }),
+        }),
+    );
+  });
+
   it("clamps platform fee so credit is never negative", async () => {
     mockPricing({
       checkout: {enabled: true, feePercent: 0, flatFeeKes: 50},

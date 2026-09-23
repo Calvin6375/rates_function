@@ -77,4 +77,39 @@ describe("serializePortalTransaction", () => {
     });
     expect(row.partnerName).toBe("Tru Pay");
   });
+
+  it("converts a USD payment with the locked rate and does not treat 5 as KES", () => {
+    const row = serializePortalTransaction({
+      id: "txr_usd",
+      type: "b2b_payment",
+      partnerId: "partner_1",
+      amount: 5,
+      currency: "USD",
+      status: "completed",
+      metadata: {
+        fxRate: 130,
+        platformFee: 0,
+        netCredit: 5,
+        amountKes: 650,
+      },
+    });
+    expect(row.amount).toBe(5);
+    expect(row.currency).toBe("USD");
+    expect(row.fxRate).toBe(130);
+    expect(row.kesEquivalent).toBe(650);
+    expect(row.kesSettled).toBe(650);
+  });
+
+  it("derives KES equivalent from fxRate when charge amount was not stored", () => {
+    const row = serializePortalTransaction({
+      id: "txr_usd_rate",
+      type: "b2b_payment",
+      amount: 5,
+      currency: "USD",
+      status: "completed",
+      metadata: {fxRate: 130, netCredit: 4.5},
+    });
+    expect(row.kesEquivalent).toBe(650);
+    expect(row.kesSettled).toBe(585);
+  });
 });

@@ -147,6 +147,8 @@ describe("completeFundingOrder B2B self-topup", () => {
           linkId: "pl_1",
           requestedAmount: 25,
           requestedCurrency: "USD",
+          fxRate: 130,
+          chargeAmount: 3250,
         },
       },
       verifiedEvent: {
@@ -165,6 +167,8 @@ describe("completeFundingOrder B2B self-topup", () => {
           paymentId: "fund_pl_1",
           amount: 25,
           currency: "USD",
+          fxRate: 130,
+          chargeAmountKes: 3250,
         }),
         expect.objectContaining({ source: "paystack" }),
         expect.objectContaining({ partnerId: "partner_1", linkId: "pl_1" }),

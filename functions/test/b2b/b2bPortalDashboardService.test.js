@@ -147,4 +147,42 @@ describe("b2bPortalDashboardService", () => {
     expect(row.truePayFee).toBe(60.75);
     expect(row.kesSettled).toBe(89.25);
   });
+
+  test("a 5 USD collection is not added to KES totals as 5", () => {
+    const rows = [
+      {
+        id: "txr_kes",
+        type: "b2b_payment",
+        amount: 60,
+        currency: "KES",
+        status: "completed",
+        metadata: {platformFee: 0, netCredit: 60},
+      },
+      {
+        id: "txr_usd",
+        type: "b2b_payment",
+        amount: 5,
+        currency: "USD",
+        status: "completed",
+        metadata: {fxRate: 130, platformFee: 0, netCredit: 5, amountKes: 650},
+      },
+    ];
+    expect(sumCollectedPayments(rows)).toEqual({amount: 710, currency: "KES"});
+    expect(sumKesCompleted(rows)).toBe(710);
+  });
+
+  test("USD face amount without a rate is excluded from the KES total", () => {
+    const rows = [
+      {
+        id: "txr_usd_bare",
+        type: "b2b_payment",
+        amount: 5,
+        currency: "USD",
+        status: "completed",
+        metadata: {},
+      },
+    ];
+    expect(sumCollectedPayments(rows)).toEqual({amount: 0, currency: "KES"});
+    expect(sumKesCompleted(rows)).toBe(0);
+  });
 });

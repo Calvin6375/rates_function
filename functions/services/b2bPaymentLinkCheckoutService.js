@@ -233,12 +233,17 @@ async function createPendingPaymentLinkTransaction(params) {
     invoiceId,
     rail,
     fundingOrderId = null,
+    fxRate = null,
+    chargeAmountKes = null,
   } = params;
+  const linkCurrency = String(link.currency || "KES").toUpperCase();
+  const numericFx = Number(fxRate);
+  const numericCharge = Number(chargeAmountKes);
   const {transactionId} = await transactionService.createTransactionRecord({
     type: transactionService.TRANSACTION_TYPES.b2b_payment,
     partnerId,
     amount: Number(link.amount),
-    currency: String(link.currency || "KES").toUpperCase(),
+    currency: linkCurrency,
     status: transactionService.STATUSES.pending,
     metadata: {
       reference: link.bookingReference || null,
@@ -252,6 +257,10 @@ async function createPendingPaymentLinkTransaction(params) {
       rail,
       source: rail,
       fundingOrderId,
+      fxRate: Number.isFinite(numericFx) && numericFx > 0 ? numericFx : (linkCurrency === "KES" ? 1 : null),
+      chargeAmount: Number.isFinite(numericCharge) && numericCharge > 0 ? numericCharge : null,
+      amountKes: Number.isFinite(numericCharge) && numericCharge > 0 ? numericCharge : null,
+      kesEquivalent: Number.isFinite(numericCharge) && numericCharge > 0 ? numericCharge : null,
     },
     logLegacy: false,
   });
@@ -348,6 +357,14 @@ async function startPaystackCheckout(linkId, partnerId, link, identity, payer) {
     apiRef,
     extraMapping: {
       fundingOrderId: fundingOrder.id,
+      fxRate: fx.fxRate,
+      chargeAmountKes: fx.amountKes,
+      metadata: {
+        fxRate: fx.fxRate,
+        chargeAmountKes: fx.amountKes,
+        requestedAmount: Number(link.amount),
+        requestedCurrency: String(link.currency || "KES").toUpperCase(),
+      },
     },
   });
 
@@ -361,6 +378,8 @@ async function startPaystackCheckout(linkId, partnerId, link, identity, payer) {
     invoiceId,
     rail: FUNDING_PROVIDERS.paystack,
     fundingOrderId: fundingOrder.id,
+    fxRate: fx.fxRate,
+    chargeAmountKes: fx.amountKes,
   });
 
   await fundingOrderService.updateFundingOrder(fundingOrder.id, {

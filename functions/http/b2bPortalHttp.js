@@ -369,7 +369,9 @@ async function fetchPortalTransactions(req, scope) {
     }
   }
 
-  const { transactions, nextPageCursor } = await transactionService.listTransactionRecords(listOpts);
+  const listed = await transactionService.listTransactionRecords(listOpts);
+  const transactions = await transactionService.enrichCollectionKesSnapshots(listed.transactions);
+  const nextPageCursor = listed.nextPageCursor;
   const partnerNames = await partnerService.getPartnerNamesByIds(
       transactions.map((row) => row.partnerId),
   );

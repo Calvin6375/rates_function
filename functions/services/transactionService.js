@@ -233,6 +233,10 @@ function firstFiniteNumber(...values) {
   return null;
 }
 
+function roundMoney(n) {
+  return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+}
+
 function serializePortalTransaction(row) {
   const metadata = row.metadata && typeof row.metadata === "object" ? { ...row.metadata } : {};
   const bookingReference =
@@ -266,14 +270,24 @@ function serializePortalTransaction(row) {
       row.platformFee,
       row.truePayFee,
   );
-  const netCredit = firstFiniteNumber(metadata.netCredit, row.netCredit, row.kesSettled);
-  const fxRate = firstFiniteNumber(metadata.fxRate, row.fxRate);
-  const kesEquivalent = currency === "KES" ?
+  const netCredit = firstFiniteNumber(metadata.netCredit, row.netCredit);
+  let fxRate = firstFiniteNumber(metadata.fxRate, row.fxRate);
+  let kesEquivalent = currency === "KES" ?
     amount :
-    firstFiniteNumber(metadata.amountKes, metadata.kesEquivalent);
-  const kesSettled = currency === "KES" ?
-    (netCredit != null ? netCredit : (amount != null && platformFee != null ? amount - platformFee : null)) :
-    firstFiniteNumber(metadata.netCreditKes, metadata.kesSettled);
+    firstFiniteNumber(metadata.amountKes, metadata.kesEquivalent, row.kesEquivalent);
+  // Foreign face amounts are not shillings. Convert with the locked Paystack rate.
+  if (kesEquivalent == null && currency && currency !== "KES" && fxRate != null && amount != null) {
+    kesEquivalent = roundMoney(amount * fxRate);
+  }
+  if (fxRate == null && currency === "KES") {
+    fxRate = 1;
+  }
+  let kesSettled = currency === "KES" ?
+    (netCredit != null ? netCredit : (amount != null && platformFee != null ? roundMoney(amount - platformFee) : null)) :
+    firstFiniteNumber(metadata.netCreditKes, metadata.kesSettled, row.kesSettled);
+  if (kesSettled == null && currency && currency !== "KES" && fxRate != null && netCredit != null) {
+    kesSettled = roundMoney(netCredit * fxRate);
+  }
 
   return {
     transactionId: row.id,
@@ -567,12 +581,31 @@ async function completeB2bPaymentLinkOrder(params) {
       fundingOrder.transactionRecordId || meta.transactionRecordId || null;
   }
 
-  const creditAmount = Number.isFinite(Number(meta.requestedAmount)) && Number(meta.requestedAmount) > 0 ?
-    Number(meta.requestedAmount) :
-    Number(mapping.amount || fundingOrder.amount);
-  const creditCurrency = String(
-      meta.requestedCurrency || mapping.currency || fundingOrder.currency || "KES",
-  ).toUpperCase();
+  // Credit the link currency (USD 5), never the Paystack KES charge interpreted as 5 KES.
+  const requestedAmount = Number(meta.requestedAmount);
+  const requestedCurrency = meta.requestedCurrency ?
+    String(meta.requestedCurrency).toUpperCase() :
+    "";
+  const mappingAmount = Number(mapping.amount);
+  const mappingCurrency = mapping.currency ? String(mapping.currency).toUpperCase() : "";
+  let creditAmount;
+  let creditCurrency;
+  if (Number.isFinite(requestedAmount) && requestedAmount > 0 && requestedCurrency) {
+    creditAmount = requestedAmount;
+    creditCurrency = requestedCurrency;
+  } else if (Number.isFinite(mappingAmount) && mappingAmount > 0 && mappingCurrency) {
+    creditAmount = mappingAmount;
+    creditCurrency = mappingCurrency;
+  } else {
+    creditAmount = Number(fundingOrder.amount) || 0;
+    creditCurrency = String(fundingOrder.currency || "KES").toUpperCase();
+  }
+  const fxRate = firstFiniteNumber(meta.fxRate, mapping.fxRate);
+  const chargeAmountKes = firstFiniteNumber(
+      meta.chargeAmount,
+      meta.amountKes,
+      mapping.chargeAmountKes,
+  );
 
   await fundingOrderService.updateFundingOrder(fundingOrder.id, {
     status: FUNDING_STATUSES.processing,
@@ -587,6 +620,8 @@ async function completeB2bPaymentLinkOrder(params) {
           currency: creditCurrency,
           completedAt: new Date().toISOString(),
           account: null,
+          fxRate,
+          chargeAmountKes,
         },
         {
           source: "paystack",
@@ -749,6 +784,81 @@ async function completeFundingOrder(params) {
   }
 }
 
+/**
+ * Fill fxRate / KES equivalent on collection rows that only stored the foreign
+ * face amount. Does not rewrite wallets. One rate lookup per missing currency.
+ *
+ * @param {Array<Object>} rows
+ * @returns {Promise<Array<Object>>}
+ */
+async function enrichCollectionKesSnapshots(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return rows || [];
+  }
+  const needed = new Set();
+  for (const row of rows) {
+    const currency = String(row?.currency || "").toUpperCase();
+    if (!currency || currency === "KES") {
+      continue;
+    }
+    const meta = row.metadata && typeof row.metadata === "object" ? row.metadata : {};
+    const hasKes = firstFiniteNumber(meta.amountKes, meta.kesEquivalent, row.kesEquivalent) != null;
+    const hasRate = firstFiniteNumber(meta.fxRate, row.fxRate) != null;
+    if (!hasKes && !hasRate) {
+      needed.add(currency);
+    }
+  }
+
+  /** @type {Record<string, number|null>} */
+  const rates = {};
+  if (needed.size) {
+    const {resolveKesPerUnit} = require("./funding/c2bFundingFxService");
+    await Promise.all([...needed].map(async (currency) => {
+      try {
+        const rate = Number(await resolveKesPerUnit(currency));
+        rates[currency] = Number.isFinite(rate) && rate > 0 ? rate : null;
+      } catch (err) {
+        console.warn("enrichCollectionKesSnapshots:", currency, err.message);
+        rates[currency] = null;
+      }
+    }));
+  }
+
+  return rows.map((row) => {
+    const currency = String(row?.currency || "").toUpperCase();
+    if (!currency || currency === "KES") {
+      return row;
+    }
+    const meta = row.metadata && typeof row.metadata === "object" ? {...row.metadata} : {};
+    const existingRate = firstFiniteNumber(meta.fxRate, row.fxRate);
+    const rate = existingRate != null ? existingRate : rates[currency];
+    if (rate == null) {
+      return row;
+    }
+    if (meta.fxRate == null) {
+      meta.fxRate = rate;
+    }
+    const amount = Number(row.amount);
+    if (firstFiniteNumber(meta.amountKes, meta.kesEquivalent) == null && Number.isFinite(amount)) {
+      const kes = roundMoney(amount * rate);
+      meta.amountKes = kes;
+      meta.kesEquivalent = kes;
+    }
+    let net = firstFiniteNumber(meta.netCredit, row.netCredit);
+    if (net == null && Number.isFinite(amount)) {
+      const fee = firstFiniteNumber(meta.platformFee, meta.feeAmount, row.platformFee);
+      net = fee != null ? roundMoney(amount - fee) : amount;
+    }
+    if (firstFiniteNumber(meta.netCreditKes, meta.kesSettled) == null && net != null) {
+      const settled = roundMoney(net * rate);
+      meta.netCredit = net;
+      meta.netCreditKes = settled;
+      meta.kesSettled = settled;
+    }
+    return {...row, metadata: meta};
+  });
+}
+
 module.exports = {
   TRANSACTION_TYPES,
   STATUSES,
@@ -758,6 +868,7 @@ module.exports = {
   getTransactionRecord,
   listTransactionRecords,
   serializePortalTransaction,
+  enrichCollectionKesSnapshots,
   resolveChannelTypes,
   generateTransactionRecordId,
   completeFundingOrder,

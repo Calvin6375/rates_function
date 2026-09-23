@@ -215,24 +215,35 @@ function isCompletedRow(row) {
 }
 
 /**
- * Gross amount the payer paid (before TruePay fee).
+ * Gross collection in KES. A USD face amount is not shillings — use the
+ * stored/derived KES equivalent, or skip the row when no rate exists.
+ *
+ * @param {Object} row
+ * @returns {number}
+ */
+function grossKesForRow(row) {
+  const serialized = transactionService.serializePortalTransaction(row);
+  if (String(serialized.currency || "").toUpperCase() === "KES") {
+    return Number(serialized.amount) || 0;
+  }
+  return serialized.kesEquivalent != null ? Number(serialized.kesEquivalent) || 0 : 0;
+}
+
+/**
+ * Gross amount the payer paid, expressed in KES (before TruePay fee).
  *
  * @param {Array<Object>} rows
  * @returns {{ amount: number, currency: string }}
  */
 function sumCollectedPayments(rows) {
   let amount = 0;
-  let currency = "KES";
   for (const row of rows) {
     if (!isDashboardCollectionRow(row) || !isCompletedRow(row)) {
       continue;
     }
-    amount += Number(row.amount) || 0;
-    if (row.currency) {
-      currency = String(row.currency).toUpperCase();
-    }
+    amount += grossKesForRow(row);
   }
-  return { amount: round2(amount), currency };
+  return { amount: round2(amount), currency: "KES" };
 }
 
 /**
@@ -287,7 +298,7 @@ function sumTruePayFee(rows) {
       continue;
     }
     const serialized = transactionService.serializePortalTransaction(row);
-    if (serialized.truePayFee != null) {
+    if (String(serialized.currency || "").toUpperCase() === "KES" && serialized.truePayFee != null) {
       total += Number(serialized.truePayFee) || 0;
       continue;
     }
@@ -321,7 +332,7 @@ function bucketSalesByDay(rows, from, to) {
     }
     const day = new Date(ms).toISOString().slice(0, 10);
     const prev = buckets.get(day) || { amount: 0, count: 0 };
-    prev.amount += Number(row.amount) || 0;
+    prev.amount += grossKesForRow(row);
     prev.count += 1;
     buckets.set(day, prev);
   }
@@ -512,10 +523,11 @@ async function getPartnerDashboard(params) {
   const prevBounds = periodBounds(period.previousFrom, period.previousTo);
   const types = resolveDashboardTypes(channel, platformScope);
 
-  const allRows = await loadDashboardTransactions({
+  const loadedRows = await loadDashboardTransactions({
     partnerId: platformScope && !partnerId ? null : partnerId,
     types,
   });
+  const allRows = await transactionService.enrichCollectionKesSnapshots(loadedRows);
 
   const currentRows = filterRowsByPeriod(allRows, fromMs, toMs);
   const previousRows = filterRowsByPeriod(

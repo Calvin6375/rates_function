@@ -136,6 +136,80 @@ function collectionFee(amount) {
 }
 
 /**
+ * KES view of a test collection. USD 5 is not 5 KES.
+ *
+ * @param {number} amount
+ * @param {string} currency
+ * @param {number} net
+ * @returns {{ fxRate: number|null, kesEquivalent: number|null, kesSettled: number|null, amountKes: number|null, netCreditKes: number|null }}
+ */
+function collectionKesFields(amount, currency, net) {
+  const cur = String(currency || "KES").toUpperCase();
+  const gross = Number(amount);
+  const netAmount = Number(net);
+  if (cur === "KES") {
+    return {
+      fxRate: 1,
+      kesEquivalent: gross,
+      kesSettled: netAmount,
+      amountKes: gross,
+      netCreditKes: netAmount,
+    };
+  }
+  const fxRate = SEND_RATES[`${cur}-KES`] != null ? SEND_RATES[`${cur}-KES`] : null;
+  if (!fxRate) {
+    return {
+      fxRate: null,
+      kesEquivalent: null,
+      kesSettled: null,
+      amountKes: null,
+      netCreditKes: null,
+    };
+  }
+  const kesEquivalent = Math.round(gross * fxRate * 100) / 100;
+  const kesSettled = Math.round(netAmount * fxRate * 100) / 100;
+  return {
+    fxRate,
+    kesEquivalent,
+    kesSettled,
+    amountKes: kesEquivalent,
+    netCreditKes: kesSettled,
+  };
+}
+
+/**
+ * @param {Object} tx
+ * @returns {Object}
+ */
+function withCollectionKes(tx) {
+  if (!tx || tx.type !== "b2b_payment") {
+    return tx;
+  }
+  const net = tx.netCredit != null ? Number(tx.netCredit) : Number(tx.net != null ? tx.net : tx.amount);
+  const snap = collectionKesFields(tx.amount, tx.currency, net);
+  const fee = tx.fee != null ? tx.fee : tx.platformFee;
+  return {
+    ...tx,
+    fxRate: tx.fxRate != null ? tx.fxRate : snap.fxRate,
+    kesEquivalent: tx.kesEquivalent != null ? tx.kesEquivalent : snap.kesEquivalent,
+    kesSettled: tx.kesSettled != null ? tx.kesSettled : snap.kesSettled,
+    platformFee: fee != null ? fee : null,
+    truePayFee: tx.truePayFee != null ? tx.truePayFee : (fee != null ? fee : null),
+    netCredit: tx.netCredit != null ? tx.netCredit : net,
+    metadata: {
+      ...(tx.metadata && typeof tx.metadata === "object" ? tx.metadata : {}),
+      fxRate: tx.fxRate != null ? tx.fxRate : snap.fxRate,
+      amountKes: snap.amountKes,
+      kesEquivalent: tx.kesEquivalent != null ? tx.kesEquivalent : snap.kesEquivalent,
+      kesSettled: tx.kesSettled != null ? tx.kesSettled : snap.kesSettled,
+      netCreditKes: snap.netCreditKes,
+      platformFee: fee != null ? fee : null,
+      netCredit: tx.netCredit != null ? tx.netCredit : net,
+    },
+  };
+}
+
+/**
  * @returns {string}
  */
 function newId(prefix) {
@@ -314,6 +388,7 @@ async function recordCollection(uid, input = {}) {
   const status = statusFromScenario(scenario);
   const fee = collectionFee(amount);
   const net = Math.round((amount - fee) * 100) / 100;
+  const kes = collectionKesFields(amount, currency, net);
   const partnerId = input.partnerId || config.b2bSandbox.partnerId;
   const now = new Date().toISOString();
   const transactionId = newId("sbx_tx");
@@ -327,7 +402,13 @@ async function recordCollection(uid, input = {}) {
     amount,
     fee,
     net,
+    platformFee: fee,
+    truePayFee: fee,
+    netCredit: net,
     currency,
+    fxRate: kes.fxRate,
+    kesEquivalent: kes.kesEquivalent,
+    kesSettled: status === "completed" ? kes.kesSettled : null,
     status,
     scenario,
     payerName: input.payerName ? String(input.payerName) : null,
@@ -339,6 +420,13 @@ async function recordCollection(uid, input = {}) {
       bookingReference: input.bookingReference || null,
       payerName: input.payerName || null,
       source: input.source || "portal",
+      fxRate: kes.fxRate,
+      amountKes: kes.amountKes,
+      kesEquivalent: kes.kesEquivalent,
+      kesSettled: status === "completed" ? kes.kesSettled : null,
+      netCredit: net,
+      netCreditKes: status === "completed" ? kes.netCreditKes : null,
+      platformFee: fee,
     },
   });
 
@@ -349,6 +437,7 @@ async function recordCollection(uid, input = {}) {
     const data = snap.exists ? snap.data() : {};
     let balances = {...SEED_BALANCES, ...(data.balances || {})};
     if (movesWallet) {
+      // Credit the link currency (USD), not the face number as KES.
       balances = applyBalance(balances, currency, net);
     }
     newBalance = balances[currency];
@@ -450,7 +539,7 @@ async function listTransactions(uid, limit = 50) {
   const snap = await ledgerRef(uid).get();
   const txs = Array.isArray(snap.data()?.transactions) ? snap.data().transactions : [];
   return {
-    transactions: txs.slice(0, Math.min(limit, MAX_ROWS)),
+    transactions: txs.slice(0, Math.min(limit, MAX_ROWS)).map(withCollectionKes),
     sandbox: true,
     environment: ENV_TEST,
   };
@@ -883,11 +972,14 @@ async function listSettlements(uid) {
 async function getDashboard(uid) {
   const {transactions} = await listTransactions(uid, MAX_ROWS);
   const completed = transactions.filter((t) => t.status === "completed");
-  const collections = completed.filter((t) => t.type === "b2b_payment");
-  const collected = collections.reduce((s, t) => s + Number(t.amount || 0), 0);
-  const kesSettled = completed
-      .filter((t) => t.type === "settlement" && t.currency === "KES")
-      .reduce((s, t) => s + Number(t.amount || 0), 0);
+  const collections = completed.filter((t) => t.type === "b2b_payment").map(withCollectionKes);
+  const collected = collections.reduce((sum, tx) => {
+    if (String(tx.currency || "").toUpperCase() === "KES") {
+      return sum + (Number(tx.amount) || 0);
+    }
+    return sum + (Number(tx.kesEquivalent) || 0);
+  }, 0);
+  const kesSettled = collections.reduce((sum, tx) => sum + (Number(tx.kesSettled) || 0), 0);
   const {payments} = await listSends(uid);
   return {
     scope: "partner",
@@ -896,7 +988,10 @@ async function getDashboard(uid) {
     sandbox: true,
     environment: ENV_TEST,
     summary: {
-      totalPaymentsCollected: Math.round(collected * 100) / 100,
+      totalPaymentsCollected: {
+        amount: Math.round(collected * 100) / 100,
+        currency: "KES",
+      },
       kesSettled: {amount: Math.round(kesSettled * 100) / 100, currency: "KES"},
       transactionCount: transactions.length,
       completedPaymentCount: collections.length,
@@ -969,6 +1064,7 @@ module.exports = {
   WALLET_CODES,
   resolveScenario,
   statusFromScenario,
+  collectionKesFields,
   ensureLedger,
   getEnvironmentSession,
   setEnvironment,

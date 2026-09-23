@@ -145,6 +145,55 @@ async function recordPaymentOnLink(linkId, updates) {
  * @param {Object} mapping
  * @returns {Promise<{ success: boolean, duplicate?: boolean, partnerId?: string, error?: string }>}
  */
+/**
+ * KES figures for a collection. Foreign face amounts stay in their currency;
+ * KES columns use the Paystack charge (or fxRate), never the raw face number.
+ *
+ * @param {Object} params
+ * @returns {{ fxRate: number|null, kesEquivalent: number|null, kesSettled: number|null, amountKes: number|null, netCreditKes: number|null }}
+ */
+function kesSnapshotForCredit(params) {
+  const creditAmount = Number(params.creditAmount);
+  const netCredit = Number(params.netCredit);
+  const currency = String(params.creditCurrency || "KES").toUpperCase();
+  const roundMoney = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+
+  if (currency === "KES") {
+    const gross = roundMoney(creditAmount);
+    const net = roundMoney(netCredit);
+    return {
+      fxRate: 1,
+      kesEquivalent: gross,
+      kesSettled: net,
+      amountKes: gross,
+      netCreditKes: net,
+    };
+  }
+
+  const charged = Number(params.chargeAmountKes);
+  const rate = Number(params.fxRate);
+  let kesEquivalent = null;
+  if (Number.isFinite(charged) && charged > 0) {
+    kesEquivalent = roundMoney(charged);
+  } else if (Number.isFinite(rate) && rate > 0 && Number.isFinite(creditAmount)) {
+    kesEquivalent = roundMoney(creditAmount * rate);
+  }
+  let resolvedRate = Number.isFinite(rate) && rate > 0 ? rate : null;
+  if (!resolvedRate && kesEquivalent != null && creditAmount > 0) {
+    resolvedRate = kesEquivalent / creditAmount;
+  }
+  const kesSettled = kesEquivalent != null && creditAmount > 0 && Number.isFinite(netCredit) ?
+    roundMoney(kesEquivalent * (netCredit / creditAmount)) :
+    null;
+  return {
+    fxRate: resolvedRate,
+    kesEquivalent,
+    kesSettled,
+    amountKes: kesEquivalent,
+    netCreditKes: kesSettled,
+  };
+}
+
 async function processB2bPaymentWebhook(paymentData, payload, mapping) {
   const { paymentId, amount, currency, completedAt, account } = paymentData;
   const partnerId = mapping.partnerId;
@@ -197,6 +246,13 @@ async function processB2bPaymentWebhook(paymentData, payload, mapping) {
     console.warn("processB2bPaymentWebhook pricing:", pricingErr.message);
   }
   const netCredit = Math.max(0, creditAmount - platformFee);
+  const kesSnap = kesSnapshotForCredit({
+    creditAmount,
+    creditCurrency,
+    netCredit,
+    fxRate: paymentData.fxRate,
+    chargeAmountKes: paymentData.chargeAmountKes,
+  });
 
   await paymentRecordRef.set({
     ...payload,
@@ -239,6 +295,12 @@ async function processB2bPaymentWebhook(paymentData, payload, mapping) {
             flatFeeKes,
             feeSource,
             pricingProductKey,
+            fxRate: kesSnap.fxRate,
+            amountKes: kesSnap.amountKes,
+            kesEquivalent: kesSnap.kesEquivalent,
+            netCreditKes: kesSnap.netCreditKes,
+            kesSettled: kesSnap.kesSettled,
+            chargeAmountKes: paymentData.chargeAmountKes ?? kesSnap.amountKes,
             fundingOrderId: mapping.fundingOrderId || payload.fundingOrderId || null,
           };
           let transactionId = mapping.transactionRecordId || null;
