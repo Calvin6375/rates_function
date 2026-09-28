@@ -77,6 +77,19 @@ POST /safari-card/payouts
 
 Optional: `recipient.userId` (Firebase uid) instead of / in addition to phone.
 
+A scanned profile QR decodes to that same customer id. Generate the signed-in user's code with `GET /safari-card/profile-qr` (Firebase Bearer). `data.qrPayload` / `data.qrCode` encode `…/b2bPortal/u/{customerId}`. `truepay://user/{customerId}` is accepted too.
+
+After a scan, resolve the name before showing the form:
+
+```
+POST /safari-card/users/validate
+{ "qrPayload": "<scanned string>" }
+```
+
+or `{ "customerId": "<decoded id>" }`.
+
+Response `data.fullName` is the profile name. Put it in the Full name field and keep that field read-only (`data.nameEditable` is `false`). Then post `recipient.userId` = `data.customerId` on `POST /safari-card/payouts`. Passing the raw QR string as `recipient.userId` or `recipient.qrPayload` is also decoded to the same id.
+
 ### `TRUEPAY_MERCHANT` (profile QR / merchant ID)
 
 Dashboard **`GET /b2bPortal/portal/profile-qr`** returns `payUrl` / `qrCode` (`…/b2bPortal/p/{merchantId}`). Product links use `…/l/{linkId}?partner=` — do **not** treat those as merchant pay.

@@ -14,6 +14,7 @@ Backend reference: [`SAFARI_CARD_PAYOUTS.md`](./SAFARI_CARD_PAYOUTS.md).
 | Pay Till Number | `POST /safari-card/payouts` (`MPESA_B2B` + `TillNumber`) |
 | Pay PayBill | `POST /safari-card/payouts` (`MPESA_B2B` + `PayBill`) |
 | Send to bank | `POST /safari-card/payouts` (`BANK`) |
+| My SafariTap QR (receive) | `GET /safari-card/profile-qr` |
 | Verify recipient name | `POST /safari-card/payouts/validate-beneficiary` |
 | Pay TruePay merchant (profile QR / merchant ID) | `POST /safari-card/payouts` (`TRUEPAY_MERCHANT`) |
 | Resolve scanned QR | `POST /safari-card/merchants/resolve` |
