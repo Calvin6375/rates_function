@@ -6,6 +6,7 @@
 const QRCode = require("qrcode");
 const partnerService = require("./partnerService");
 const {paymentLinkBaseUrl} = require("./paymentLinkService");
+const {extractUserId} = require("./safariTapUserQrService");
 
 const PROFILE_PATH_PREFIX = "/p/";
 const PRODUCT_PATH_PREFIX = "/l/";
@@ -110,6 +111,17 @@ function classifyScannedQr(raw) {
     return {kind: "unknown", merchantId: null, partnerId: null, linkId: null};
   }
 
+  const safariTapUserId = extractUserId(text);
+  if (safariTapUserId) {
+    return {
+      kind: "safaritap_user",
+      merchantId: null,
+      partnerId: null,
+      linkId: null,
+      userId: safariTapUserId,
+    };
+  }
+
   const product = extractProductLink(text);
   if (product) {
     return {
@@ -205,6 +217,16 @@ async function resolveScannedQr(raw) {
       merchantId: classified.partnerId,
       checkoutUrl: String(raw || "").trim(),
       message: "This is a product payment link, not a merchant profile QR.",
+    };
+  }
+  if (classified.kind === "safaritap_user" && classified.userId) {
+    return {
+      kind: "safaritap_user",
+      customerId: classified.userId,
+      userId: classified.userId,
+      qrPayload: String(raw || "").trim(),
+      message:
+        "SafariTap user QR. Send with type SAFARITAP_WALLET and recipient.userId set to customerId.",
     };
   }
   if (classified.kind !== "profile" || !classified.merchantId) {

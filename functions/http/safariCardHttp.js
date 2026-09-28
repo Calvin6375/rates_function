@@ -253,8 +253,51 @@ app.use((req, _res, next) => {
 });
 
 /**
+ * GET /safari-card/profile-qr — SafariTap user profile QR.
+ * qrPayload encodes this user's customer id. The payer app decodes it and
+ * sends recipient.userId on POST /safari-card/payouts (type SAFARITAP_WALLET).
+ */
+app.get("/safari-card/profile-qr", requireAuth, async (req, res) => {
+  try {
+    const safariTapUserQrService = require("../services/safariTapUserQrService");
+    const data = await safariTapUserQrService.getProfileQr(req.userId);
+    res.status(200).json({success: true, data});
+  } catch (err) {
+    const mapped = mapErrorResponse(err);
+    res.status(mapped.status).json(mapped.body);
+  }
+});
+
+/**
+ * POST /safari-card/users/validate — after a SafariTap profile QR scan.
+ * Body: { customerId } or { userId } or { qrPayload }.
+ * Returns the profile full name. The Send Money name field must show fullName
+ * and stay read-only (nameEditable is always false).
+ */
+app.post("/safari-card/users/validate", requireAuth, async (req, res) => {
+  try {
+    const safariTapUserQrService = require("../services/safariTapUserQrService");
+    const body = req.body || {};
+    const raw = body.customerId ||
+      body.userId ||
+      body.qrPayload ||
+      body.payload ||
+      body.recipient?.customerId ||
+      body.recipient?.userId ||
+      body.recipient?.qrPayload ||
+      "";
+    const data = await safariTapUserQrService.validateCustomer(raw, req.userId);
+    res.status(200).json({success: true, data});
+  } catch (err) {
+    const mapped = mapErrorResponse(err);
+    res.status(mapped.status).json(mapped.body);
+  }
+});
+
+/**
  * POST /safari-card/merchants/resolve — classify scanned QR / typed merchant ID.
  * Profile QR → merchant name for Pay TruePay merchant. Product QR → kind=product.
+ * SafariTap user QR → kind=safaritap_user and customerId for SAFARITAP_WALLET.
  */
 app.post("/safari-card/merchants/resolve", requireAuth, async (req, res) => {
   try {

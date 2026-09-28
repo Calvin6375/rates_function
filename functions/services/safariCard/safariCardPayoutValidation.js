@@ -9,6 +9,7 @@ const {
   payoutError,
 } = require("../../utils/safariCardPayoutTypes");
 const {classifyScannedQr} = require("../partnerProfileQrService");
+const {extractUserId} = require("../safariTapUserQrService");
 
 /**
  * @param {Object} body
@@ -30,6 +31,12 @@ function extractMerchantIdFromBody(body) {
           "This QR is a product payment link. Use the hosted checkout, not merchant pay.",
       );
     }
+    if (classified.kind === "safaritap_user") {
+      throw payoutError(
+          ERROR_CODES.INVALID_RECIPIENT,
+          "This QR is a SafariTap user. Send with type SAFARITAP_WALLET and recipient.userId.",
+      );
+    }
     return classified.merchantId || direct;
   }
   const payload = String(
@@ -48,7 +55,44 @@ function extractMerchantIdFromBody(body) {
         "This QR is a product payment link. Use the hosted checkout, not merchant pay.",
     );
   }
+  if (classified.kind === "safaritap_user") {
+    throw payoutError(
+        ERROR_CODES.INVALID_RECIPIENT,
+        "This QR is a SafariTap user. Send with type SAFARITAP_WALLET and recipient.userId.",
+    );
+  }
   return classified.merchantId || "";
+}
+
+/**
+ * Customer id for a SafariTap-to-SafariTap send.
+ * Accepts a bare user id or a scanned profile QR (https /u/{id} or truepay://user/{id}).
+ *
+ * @param {Object} body
+ * @returns {string}
+ */
+function extractSafariTapUserIdFromBody(body) {
+  const direct = String(
+      body?.recipient?.userId ||
+      body?.recipient?.customerId ||
+      body?.recipientUserId ||
+      body?.customerId ||
+      "",
+  ).trim();
+  const fromDirect = extractUserId(direct);
+  if (fromDirect) {
+    return fromDirect;
+  }
+  if (direct && !direct.includes("://") && !direct.includes("/")) {
+    return direct;
+  }
+  const payload = String(
+      body?.recipient?.qrPayload ||
+      body?.qrPayload ||
+      body?.payload ||
+      "",
+  ).trim();
+  return extractUserId(payload) || "";
 }
 
 const SUPPORTED_CURRENCY = "KES";
@@ -204,16 +248,14 @@ function validateCreatePayoutRequest(body) {
   }
 
   if (type === PAYOUT_TYPES.SAFARITAP_WALLET) {
-    const recipientUserId = String(
-        body?.recipient?.userId || body?.recipientUserId || "",
-    ).trim();
+    const recipientUserId = extractSafariTapUserIdFromBody(body);
     const phone = normalizeKenyanPhoneNumber(
         body?.recipient?.phoneNumber || body?.phoneNumber,
     );
     if (!recipientUserId && !phone) {
       throw payoutError(
           ERROR_CODES.INVALID_RECIPIENT,
-          "SafariTap wallet recipient requires phoneNumber or userId",
+          "SafariTap wallet recipient requires phoneNumber, userId, or a profile QR",
       );
     }
     if (phone) {
@@ -312,16 +354,14 @@ function validateBeneficiaryRequest(body) {
   }
 
   if (type === PAYOUT_TYPES.SAFARITAP_WALLET) {
-    const recipientUserId = String(
-        body?.recipient?.userId || body?.recipientUserId || "",
-    ).trim();
+    const recipientUserId = extractSafariTapUserIdFromBody(body);
     const phone = normalizeKenyanPhoneNumber(
         body?.recipient?.phoneNumber || body?.phoneNumber,
     );
     if (!recipientUserId && !phone) {
       throw payoutError(
           ERROR_CODES.INVALID_RECIPIENT,
-          "SafariTap wallet recipient requires phoneNumber or userId",
+          "SafariTap wallet recipient requires phoneNumber, userId, or a profile QR",
       );
     }
     return {
@@ -361,5 +401,6 @@ module.exports = {
   normalizeKenyanPhoneNumber,
   validateCreatePayoutRequest,
   validateBeneficiaryRequest,
+  extractSafariTapUserIdFromBody,
   SUPPORTED_CURRENCY,
 };

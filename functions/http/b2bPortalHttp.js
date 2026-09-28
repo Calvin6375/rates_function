@@ -66,6 +66,7 @@ const partnerAdminProvisioningService = require("../services/partnerAdminProvisi
 const portalMeStatus = require("../services/portalMeStatus");
 const partnerTestLedgerService = require("../services/partnerTestLedgerService");
 const partnerProfileQrService = require("../services/partnerProfileQrService");
+const safariTapUserQrService = require("../services/safariTapUserQrService");
 const { correlationFromRequest } = require("../utils/paymentContext");
 
 const {
@@ -2922,6 +2923,25 @@ app.get("/l/:linkId/success", (req, res) => {
  * Public merchant profile landing (generic camera / SafariTap parse).
  * Path `/p/:merchantId` is the profile QR payload — not `/l/:linkId` product links.
  */
+/**
+ * Public SafariTap user landing. Path `/u/:userId` is the profile QR payload.
+ * The customer id in the path is what SAFARITAP_WALLET sends as recipient.userId.
+ */
+app.get("/u/:userId", async (req, res) => {
+  try {
+    const customer = await safariTapUserQrService.loadCustomer(req.params.userId);
+    res.set("Content-Type", "text/html; charset=utf-8");
+    res.set("Cache-Control", "no-store");
+    res.send(safariTapUserQrService.renderProfileQrLandingHtml(customer));
+  } catch (err) {
+    const status = err.statusCode || 404;
+    res.status(status).send(renderErrorHtml(
+        "SafariTap user not found",
+        err.message || "This SafariTap profile is not available.",
+    ));
+  }
+});
+
 app.get("/p/:merchantId", async (req, res) => {
   try {
     const merchant = await partnerProfileQrService.resolvePublicMerchant(req.params.merchantId);
