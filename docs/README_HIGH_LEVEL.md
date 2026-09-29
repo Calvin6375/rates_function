@@ -24,12 +24,12 @@ Firebase project ID in this repo: **`truepay-72060`**. Default region: **`us-cen
 ### 2. Consumer payment processing
 
 - **Paystack** — Tourist wallet top-ups via hosted card checkout (`createPayment` callable and `POST /funding/orders`); see [§3 Tourist Payments](#3-tourist-payments-paystack-funding)
-- **Grid (sandbox)** — `createPayment` with `currency: USD` uses Lightspark Grid when `FUNDING_USD_PROVIDER=grid`. KES stays on Paystack. See [`grid-sandbox-c2b.md`](./grid-sandbox-c2b.md).
+- **Crossmint (sandbox)** — `createPayment` with `currency: USD` uses Crossmint Onramp when `FUNDING_USD_PROVIDER=crossmint`. KES stays on Paystack. See [`crossmint-sandbox-c2b.md`](./crossmint-sandbox-c2b.md).
 - **IntaSend** — mobile money checkout, webhooks, direct top-ups, B2B payment links
 - **TransFi** — additional top-up webhook path
 - **Circle** — USDC deposits and on-chain sends via developer-controlled wallets
 - Callables: `createPayment`, `createDirectTopup`, `createDirectPayout`, `createSwapOrder`, `createSendMoneyOrder`, `handlePaymentWebhook`, `requestPasswordReset`
-- Webhooks: `handlePaystackWebhook`, `handleTopUpWebhook`, `handleTransFiTopUpWebhook`, `handleCircleWebhook`, `handleDarajaCallback`
+- Webhooks: `handlePaystackWebhook`, `handleCrossmintWebhook`, `handleTopUpWebhook`, `handleTransFiTopUpWebhook`, `handleCircleWebhook`, `handleDarajaCallback`
 - Idempotent processing; HMAC / challenge verification on webhooks
 
 ### 3. Tourist Payments (Paystack funding)

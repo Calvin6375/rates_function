@@ -158,7 +158,7 @@ describe("c2bFundingBridgeService transak", () => {
     );
   });
 
-  it("routes USD createC2bTopupCheckout to Paystack when Grid is disabled", async () => {
+  it("routes USD createC2bTopupCheckout to Paystack when Crossmint is disabled", async () => {
     process.env.FUNDING_USD_PROVIDER = "paystack";
     config.funding.defaultProvider = "transak";
     convertToKesForPaystack.mockResolvedValue({

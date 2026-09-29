@@ -28,10 +28,10 @@ const transakCheckoutSecrets = [
   transakSecretKey,
   transakTreasuryWallet,
 ];
-const gridClientId = defineSecret(config.secrets.gridClientId);
-const gridClientSecret = defineSecret(config.secrets.gridClientSecret);
-const gridCheckoutSecrets = [gridClientId, gridClientSecret];
-const fundingCheckoutSecrets = [...paystackSecrets, ...transakCheckoutSecrets, ...gridCheckoutSecrets];
+const crossmintServerApiKey = defineSecret(config.secrets.crossmintServerApiKey);
+const crossmintCollectionWallet = defineSecret(config.secrets.crossmintCollectionWallet);
+const crossmintCheckoutSecrets = [crossmintServerApiKey, crossmintCollectionWallet];
+const fundingCheckoutSecrets = [...paystackSecrets, ...transakCheckoutSecrets, ...crossmintCheckoutSecrets];
 
 const REDACTED_HEADER_KEYS = new Set([
   "authorization",
@@ -193,7 +193,7 @@ exports.createPayment = onCall(
           msg.includes("below Paystack") ||
           msg.includes("Paystack split") ||
           msg.includes("not configured") ||
-          msg.startsWith("Grid ")
+          msg.startsWith("Crossmint ")
         ) {
           throw new HttpsError("failed-precondition", msg);
         }
@@ -345,7 +345,7 @@ exports.handlePaymentWebhook = onCall(
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
-      secrets: [paystackSecretKey, transakApiKey, transakSecretKey],
+      secrets: [paystackSecretKey, transakApiKey, transakSecretKey, crossmintServerApiKey],
     },
     async (request) => {
       const auth = request.auth;

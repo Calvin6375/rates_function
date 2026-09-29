@@ -1229,8 +1229,8 @@ const paystackSplitCode = defineSecret(config.secrets.paystackSplitCode);
 const transakApiKey = defineSecret(config.secrets.transakApiKey);
 const transakSecretKey = defineSecret(config.secrets.transakSecretKey);
 const transakTreasuryWallet = defineSecret(config.secrets.transakTreasuryWallet);
-const gridClientId = defineSecret(config.secrets.gridClientId);
-const gridClientSecret = defineSecret(config.secrets.gridClientSecret);
+const crossmintServerApiKey = defineSecret(config.secrets.crossmintServerApiKey);
+const crossmintCollectionWallet = defineSecret(config.secrets.crossmintCollectionWallet);
 
 // Export as Firebase Function
 exports.api = onRequest(
@@ -1245,8 +1245,8 @@ exports.api = onRequest(
       transakApiKey,
       transakSecretKey,
       transakTreasuryWallet,
-      gridClientId,
-      gridClientSecret,
+      crossmintServerApiKey,
+      crossmintCollectionWallet,
       ...C2B_ENCRYPTION_SECRETS,
     ],
   },

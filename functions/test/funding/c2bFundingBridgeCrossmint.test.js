@@ -1,5 +1,5 @@
 /**
- * @fileoverview USD createPayment routes to Grid. KES stays on Paystack.
+ * @fileoverview USD createPayment routes to Crossmint. KES stays on Paystack.
  */
 
 jest.mock("../../services/funding/fundingOrderService");
@@ -36,112 +36,102 @@ const fundingIdempotencyService = require("../../services/funding/fundingIdempot
 const { convertToKesForPaystack } = require("../../services/funding/c2bFundingFxService");
 const c2bFundingBridge = require("../../services/funding/c2bFundingBridgeService");
 
-const instructions = {
-  instructionsNotes: "Include the reference code",
-  accountOrWalletInfo: {
-    accountType: "USD_ACCOUNT",
-    accountNumber: "9876543210",
-    routingNumber: "021000021",
-    bankName: "JP Morgan Chase",
-  },
-};
-
-describe("c2bFundingBridgeService grid", () => {
+describe("c2bFundingBridgeService crossmint", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     delete process.env.FUNDING_USD_PROVIDER;
     fundingIdempotencyService.lookupIdempotencyKey.mockResolvedValue(null);
     fundingIdempotencyService.claimIdempotencyKey.mockResolvedValue({ duplicate: false });
-    fundingOrderService.generateFundingOrderId.mockReturnValue("fund_grid_1");
+    fundingOrderService.generateFundingOrderId.mockReturnValue("fund_cm_1");
   });
 
   afterEach(() => {
     delete process.env.FUNDING_USD_PROVIDER;
   });
 
-  it("creates a USD funding order on Grid and returns funding instructions", async () => {
+  it("creates a USD funding order on Crossmint and returns checkout secrets once", async () => {
     fundingOrderService.createFundingOrder.mockResolvedValue({
-      id: "fund_grid_1",
+      id: "fund_cm_1",
       userId: "user_1",
-      provider: "grid",
-      amount: 100,
+      provider: "crossmint",
+      amount: 10,
       currency: "USD",
       status: "pending",
-      providerReference: "fund_grid_1",
-      correlationId: "corr_grid",
+      providerReference: "fund_cm_1",
+      correlationId: "corr_cm",
       metadata: {
         product: "tourist",
-        requestedAmount: 100,
+        requestedAmount: 10,
         requestedCurrency: "USD",
       },
     });
     fundingRailService.initializePayment.mockResolvedValue({
-      checkoutUrl: null,
-      providerReference: "fund_grid_1",
-      providerTransactionId: null,
+      checkoutUrl: "https://staging.crossmint.com/sdk/2024-03-05/embedded-checkout?orderId=cm1",
+      providerReference: "cm_order_1",
+      providerTransactionId: "cm_order_1",
       raw: {
-        customerId: "Customer:c1",
-        internalAccountId: "InternalAccount:a1",
-        fundingInstructions: instructions,
-        fundingPaymentInstructions: [instructions],
+        orderId: "cm_order_1",
+        clientSecret: "cs_secret",
+        collectionWallet: "0xCollectionWallet",
+        tokenLocator: "base-sepolia:0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+        chain: "base-sepolia",
       },
     });
     fundingOrderService.updateFundingOrder.mockImplementation(async (_id, patch) => ({
-      id: "fund_grid_1",
+      id: "fund_cm_1",
       userId: "user_1",
-      provider: "grid",
-      amount: 100,
+      provider: "crossmint",
+      amount: 10,
       currency: "USD",
       status: "pending",
-      providerReference: "fund_grid_1",
-      checkoutUrl: null,
-      providerCustomerId: patch.providerCustomerId,
-      providerAccountId: patch.providerAccountId,
-      correlationId: "corr_grid",
+      providerReference: patch.providerReference,
+      checkoutUrl: patch.checkoutUrl,
+      correlationId: "corr_cm",
       metadata: patch.metadata,
     }));
 
     const response = await c2bFundingBridge.createC2bTopupCheckout({
       userId: "user_1",
-      amount: 100,
+      amount: 10,
       currency: "USD",
       email: "ruben@gmail.com",
-      firstName: "Ruben",
-      lastName: "Mwachiramba",
     });
 
     expect(convertToKesForPaystack).not.toHaveBeenCalled();
     expect(fundingOrderService.createFundingOrder).toHaveBeenCalledWith(
         expect.objectContaining({
-          provider: "grid",
-          amount: 100,
+          provider: "crossmint",
+          amount: 10,
           currency: "USD",
         }),
     );
     expect(fundingRailService.initializePayment).toHaveBeenCalledWith(
         expect.objectContaining({
-          provider: "grid",
-          amount: 100,
+          provider: "crossmint",
+          amount: 10,
           currency: "USD",
-          fundingOrderId: "fund_grid_1",
-          firstName: "Ruben",
-          lastName: "Mwachiramba",
+          fundingOrderId: "fund_cm_1",
+          email: "tourist@example.com",
+        }),
+    );
+    expect(fundingOrderService.updateFundingOrder).toHaveBeenCalledWith(
+        "fund_cm_1",
+        expect.objectContaining({
+          providerReference: "cm_order_1",
+          checkoutUrl: null,
+          metadata: expect.not.objectContaining({ clientSecret: expect.anything() }),
         }),
     );
     expect(response).toMatchObject({
       success: true,
-      provider: "grid",
-      orderId: "fund_grid_1",
-      currency: "USD",
-      amount: 100,
-      status: "pending",
-      checkoutUrl: null,
-      fundingInstructions: instructions,
+      provider: "crossmint",
+      orderId: "fund_cm_1",
+      checkout: { orderId: "cm_order_1", clientSecret: "cs_secret" },
     });
-    expect(response.checkoutUrl).toBeNull();
+    expect(response.checkoutUrl).toContain("embedded-checkout");
   });
 
-  it("keeps KES on Paystack when the USD provider is Grid", async () => {
+  it("keeps KES on Paystack when the USD provider is Crossmint", async () => {
     convertToKesForPaystack.mockResolvedValue({
       requestedAmount: 200,
       requestedCurrency: "KES",
@@ -197,28 +187,37 @@ describe("c2bFundingBridgeService grid", () => {
     expect(response.checkoutUrl).toBe("https://checkout.paystack.com/kes");
   });
 
-  it("marks the funding order failed when Grid initialization fails", async () => {
+  it("marks the funding order failed when Crossmint initialization fails", async () => {
     fundingOrderService.createFundingOrder.mockResolvedValue({
-      id: "fund_grid_1",
+      id: "fund_cm_1",
       userId: "user_1",
-      provider: "grid",
-      amount: 100,
+      provider: "crossmint",
+      amount: 10,
       currency: "USD",
       status: "pending",
-      providerReference: "fund_grid_1",
-      metadata: { requestedAmount: 100, requestedCurrency: "USD" },
+      providerReference: "fund_cm_1",
+      metadata: { requestedAmount: 10, requestedCurrency: "USD" },
     });
-    fundingRailService.initializePayment.mockRejectedValue(new Error("Grid API timeout"));
+    fundingRailService.initializePayment.mockRejectedValue(new Error("Crossmint 400: Invalid arguments"));
 
     await expect(c2bFundingBridge.createC2bTopupCheckout({
       userId: "user_1",
-      amount: 100,
+      amount: 10,
       currency: "USD",
-    })).rejects.toThrow("Grid API timeout");
+    })).rejects.toThrow("Crossmint 400");
 
     expect(fundingOrderService.updateFundingOrder).toHaveBeenCalledWith(
-        "fund_grid_1",
-        expect.objectContaining({ status: "failed", failureReason: "Grid API timeout" }),
+        "fund_cm_1",
+        expect.objectContaining({ status: "failed" }),
     );
+  });
+
+  it("rejects grid as FUNDING_USD_PROVIDER", async () => {
+    process.env.FUNDING_USD_PROVIDER = "grid";
+    await expect(c2bFundingBridge.createC2bTopupCheckout({
+      userId: "user_1",
+      amount: 10,
+      currency: "USD",
+    })).rejects.toThrow("Unsupported FUNDING_USD_PROVIDER: grid");
   });
 });

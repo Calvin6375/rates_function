@@ -11,12 +11,13 @@ const { createLogger } = require("../utils/paymentOpsLogger");
 const paystackSecretKey = defineSecret(config.secrets.paystackSecretKey);
 const transakApiKey = defineSecret(config.secrets.transakApiKey);
 const transakSecretKey = defineSecret(config.secrets.transakSecretKey);
+const crossmintServerApiKey = defineSecret(config.secrets.crossmintServerApiKey);
 const logger = createLogger({ service: "reconcileFundingOrders" });
 
 exports.reconcileFundingOrders = onSchedule(
     {
       schedule: "*/15 * * * *",
-      secrets: [paystackSecretKey, transakApiKey, transakSecretKey],
+      secrets: [paystackSecretKey, transakApiKey, transakSecretKey, crossmintServerApiKey],
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,

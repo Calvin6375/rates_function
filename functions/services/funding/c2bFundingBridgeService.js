@@ -35,7 +35,7 @@ function resolveFundingProvider(explicitProvider = null) {
 }
 
 /**
- * C2B currency routing. USD uses FUNDING_USD_PROVIDER (default `grid`).
+ * C2B currency routing. USD uses FUNDING_USD_PROVIDER (default `crossmint`).
  * Every other currency stays on Paystack. Client `provider` is ignored.
  *
  * @param {string} [currency]
@@ -47,9 +47,9 @@ function resolveC2bFundingProvider(currency) {
     return FUNDING_PROVIDERS.paystack;
   }
   const configured = String(
-      process.env.FUNDING_USD_PROVIDER || config.funding.usdProvider || FUNDING_PROVIDERS.grid,
+      process.env.FUNDING_USD_PROVIDER || config.funding.usdProvider || FUNDING_PROVIDERS.crossmint,
   ).toLowerCase();
-  if (configured !== FUNDING_PROVIDERS.grid && configured !== FUNDING_PROVIDERS.paystack) {
+  if (configured !== FUNDING_PROVIDERS.crossmint && configured !== FUNDING_PROVIDERS.paystack) {
     throw new Error(`Unsupported FUNDING_USD_PROVIDER: ${configured}`);
   }
   return configured;
@@ -57,7 +57,7 @@ function resolveC2bFundingProvider(currency) {
 
 /**
  * Create a checkout for C2B tourist wallet top-up.
- * USD routes to Grid when FUNDING_USD_PROVIDER=grid. KES stays on Paystack.
+ * USD routes to Crossmint when FUNDING_USD_PROVIDER=crossmint. KES stays on Paystack.
  * Response matches the legacy `createPayment` callable shape for Flutter compatibility.
  * Transak remains available via REST `POST /funding/orders` with provider=transak.
  *
@@ -74,30 +74,26 @@ function resolveC2bFundingProvider(currency) {
  */
 async function createC2bTopupCheckout(params) {
   const provider = resolveC2bFundingProvider(params.currency || FUNDING_CURRENCY);
-  if (provider === FUNDING_PROVIDERS.grid) {
-    return createC2bGridTopupCheckout(params);
+  if (provider === FUNDING_PROVIDERS.crossmint) {
+    return createC2bCrossmintTopupCheckout(params);
   }
   return createC2bPaystackTopupCheckout(params);
 }
 
 /**
- * USD funding via Lightspark Grid. The funding order is written before any Grid call.
- * Grid returns bank funding instructions. There is no hosted checkout URL.
+ * USD funding via Crossmint Onramp. The funding order is written before any Crossmint call.
+ * Checkout uses orderId + clientSecret. There is no hosted checkout URL.
  *
  * @param {Object} params
  * @returns {Promise<Object>}
  */
-async function createC2bGridTopupCheckout(params) {
+async function createC2bCrossmintTopupCheckout(params) {
   const {
     userId,
     amount,
     currency = FUNDING_CURRENCY,
     email = null,
     tokenEmail = null,
-    fullName = null,
-    firstName = null,
-    lastName = null,
-    clientIp = null,
     idempotencyKey = null,
     correlationId = null,
     metadata = {},
@@ -106,15 +102,15 @@ async function createC2bGridTopupCheckout(params) {
   const chargeCurrency = String(currency || FUNDING_CURRENCY).toUpperCase();
   const chargeAmount = Number(amount);
   if (chargeCurrency !== FUNDING_CURRENCY) {
-    throw new Error("Grid funding supports USD only");
+    throw new Error("Crossmint funding supports USD only");
   }
 
   const resolvedEmail = await resolveFundingCustomerEmail(userId, {
     clientEmail: email,
     tokenEmail,
   });
-  const gridEmail = resolvedEmail.usedFallback ? null : resolvedEmail.email;
-  const provider = FUNDING_PROVIDERS.grid;
+  const receiptEmail = resolvedEmail.usedFallback ? null : resolvedEmail.email;
+  const provider = FUNDING_PROVIDERS.crossmint;
 
   const ctx = createPaymentContext({
     correlationId,
@@ -151,21 +147,17 @@ async function createC2bGridTopupCheckout(params) {
       source: "c2b_createPayment",
       requestedAmount: chargeAmount,
       requestedCurrency: chargeCurrency,
-      environment: process.env.GRID_ENVIRONMENT || config.grid.environment || "sandbox",
+      environment: "staging",
     },
   });
 
-  const updated = await initializeProviderCheckout({
+  const { order: updated, session } = await initializeProviderCheckout({
     provider,
     order,
     ctx,
     amount: chargeAmount,
     currency: chargeCurrency,
-    email: gridEmail,
-    fullName,
-    firstName,
-    lastName,
-    clientIp,
+    email: receiptEmail,
     callbackUrl: null,
     metadata: order.metadata,
   });
@@ -191,13 +183,17 @@ async function createC2bGridTopupCheckout(params) {
     providerReference: updated.providerReference,
     provider,
     userId,
-    gridCustomerId: updated.providerCustomerId || updated.metadata?.providerCustomerId || null,
-    gridInternalAccountId: updated.providerAccountId || updated.metadata?.providerAccountId || null,
+    crossmintOrderId: updated.providerReference,
     status: updated.status,
   });
 
   return mapFundingOrderToCreatePaymentResponse(updated, {
     correlationId: ctx.correlationId,
+    checkout: session?.raw?.orderId && session?.raw?.clientSecret ? {
+      orderId: session.raw.orderId,
+      clientSecret: session.raw.clientSecret,
+    } : null,
+    checkoutUrl: session?.checkoutUrl || null,
   });
 }
 
@@ -288,7 +284,7 @@ async function createC2bPaystackTopupCheckout(params) {
     },
   });
 
-  const updated = await initializeProviderCheckout({
+  const { order: updated } = await initializeProviderCheckout({
     provider,
     order,
     ctx,
@@ -392,7 +388,7 @@ async function createC2bTransakTopupCheckout(params) {
     },
   });
 
-  const updated = await initializeProviderCheckout({
+  const { order: updated } = await initializeProviderCheckout({
     provider,
     order,
     ctx,
@@ -556,20 +552,19 @@ async function initializeProviderCheckout(params) {
     };
   }
 
-  if (provider === FUNDING_PROVIDERS.grid && session.raw) {
+  if (provider === FUNDING_PROVIDERS.crossmint && session.raw) {
     patch.checkoutUrl = null;
-    patch.providerCustomerId = session.raw.customerId || null;
-    patch.providerAccountId = session.raw.internalAccountId || null;
     patch.metadata = {
       ...metadata,
-      providerCustomerId: session.raw.customerId || null,
-      providerAccountId: session.raw.internalAccountId || null,
-      fundingInstructions: session.raw.fundingInstructions || null,
-      fundingPaymentInstructions: session.raw.fundingPaymentInstructions || null,
+      collectionWallet: session.raw.collectionWallet || null,
+      tokenLocator: session.raw.tokenLocator || null,
+      chain: session.raw.chain || null,
+      crossmintOrderId: session.raw.orderId || null,
     };
   }
 
-  return fundingOrderService.updateFundingOrder(order.id, patch);
+  const updated = await fundingOrderService.updateFundingOrder(order.id, patch);
+  return { order: updated, session };
 }
 
 /**
@@ -725,8 +720,10 @@ function mapFundingOrderToCreatePaymentResponse(order, extra = {}) {
   const requestedAmount = order.metadata?.requestedAmount ?? order.amount;
   const requestedCurrency = order.metadata?.requestedCurrency ?? order.currency;
   const provider = order.provider || config.funding.defaultProvider || FUNDING_PROVIDERS.paystack;
-  const isGrid = provider === FUNDING_PROVIDERS.grid;
-  const checkoutUrl = isGrid ? (order.checkoutUrl || null) : (order.checkoutUrl || "");
+  const isCrossmint = provider === FUNDING_PROVIDERS.crossmint;
+  const checkoutUrl = isCrossmint ?
+    (extra.checkoutUrl || order.checkoutUrl || null) :
+    (order.checkoutUrl || "");
   const providerAmount = order.amount;
   const providerCurrency = order.currency;
   const feeAmount = Number(order.metadata?.feeAmount ?? order.metadata?.platformFee ?? 0) || 0;
@@ -757,9 +754,8 @@ function mapFundingOrderToCreatePaymentResponse(order, extra = {}) {
     correlationId: extra.correlationId || order.correlationId || null,
     provider,
     createdAt: order.createdAt || new Date().toISOString(),
-    ...(isGrid ? {
-      fundingInstructions: order.metadata?.fundingInstructions || null,
-      fundingPaymentInstructions: order.metadata?.fundingPaymentInstructions || null,
+    ...(isCrossmint ? {
+      checkout: extra.checkout || null,
     } : {}),
   };
 }
@@ -767,7 +763,7 @@ function mapFundingOrderToCreatePaymentResponse(order, extra = {}) {
 module.exports = {
   createC2bTopupCheckout,
   createC2bPaystackTopupCheckout,
-  createC2bGridTopupCheckout,
+  createC2bCrossmintTopupCheckout,
   createC2bTransakTopupCheckout,
   quoteLocalTopupPaystack,
   mapFundingOrderToCreatePaymentResponse,

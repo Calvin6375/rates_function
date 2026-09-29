@@ -7,14 +7,14 @@ const config = require("../../config");
 const { registerFundingProviders } = require("./fundingProviderInterface");
 const paystackRail = require("./paystackRail");
 const transakRail = require("./transakRail");
-const gridProvider = require("./providers/gridProvider");
+const crossmintProvider = require("./providers/crossmintProvider");
 const { FUNDING_PROVIDERS } = require("../../utils/fundingTypes");
 
 /** @type {Record<string, Object>} */
 const PROVIDERS = registerFundingProviders({
   [FUNDING_PROVIDERS.paystack]: paystackRail,
   [FUNDING_PROVIDERS.transak]: transakRail,
-  [FUNDING_PROVIDERS.grid]: gridProvider,
+  [FUNDING_PROVIDERS.crossmint]: crossmintProvider,
 });
 
 /**

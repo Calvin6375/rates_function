@@ -196,12 +196,12 @@ function mountFundingRoutes(app) {
       chargeCurrency = FUNDING_CURRENCY;
       chargeMeta.treasuryWallet = process.env.TRANSAK_TREASURY_WALLET || config.transak?.treasuryWallet || null;
       chargeMeta.cryptoCurrency = process.env.TRANSAK_DEFAULT_CRYPTO || config.transak?.defaultCrypto || "USDT";
-    } else if (provider === FUNDING_PROVIDERS.grid) {
+    } else if (provider === FUNDING_PROVIDERS.crossmint) {
       if (inputCurrency !== FUNDING_CURRENCY) {
-        res.status(400).json({ success: false, error: "Grid funding supports USD only" });
+        res.status(400).json({ success: false, error: "Crossmint funding supports USD only" });
         return;
       }
-      chargeMeta.environment = process.env.GRID_ENVIRONMENT || config.grid.environment || "sandbox";
+      chargeMeta.environment = "staging";
     }
 
     try {
@@ -289,7 +289,7 @@ function mountFundingRoutes(app) {
         await opsMetrics.increment("funding.checkout.initialized", 1);
       } catch (initErr) {
         await opsMetrics.increment("funding.checkout.failed", 1);
-        if (provider === FUNDING_PROVIDERS.grid) {
+        if (provider === FUNDING_PROVIDERS.crossmint) {
           await fundingOrderService.updateFundingOrder(order.id, {
             status: FUNDING_STATUSES.failed,
             failureReason: initErr.message,
@@ -303,16 +303,14 @@ function mountFundingRoutes(app) {
         providerTransactionId: session.providerTransactionId || null,
         checkoutUrl: session.checkoutUrl,
       };
-      if (provider === FUNDING_PROVIDERS.grid && session.raw) {
+        if (provider === FUNDING_PROVIDERS.crossmint && session.raw) {
         patch.checkoutUrl = null;
-        patch.providerCustomerId = session.raw.customerId || null;
-        patch.providerAccountId = session.raw.internalAccountId || null;
         patch.metadata = {
           ...order.metadata,
-          providerCustomerId: session.raw.customerId || null,
-          providerAccountId: session.raw.internalAccountId || null,
-          fundingInstructions: session.raw.fundingInstructions || null,
-          fundingPaymentInstructions: session.raw.fundingPaymentInstructions || null,
+          collectionWallet: session.raw.collectionWallet || null,
+          tokenLocator: session.raw.tokenLocator || null,
+          chain: session.raw.chain || null,
+          crossmintOrderId: session.raw.orderId || null,
         };
       }
       if (provider === FUNDING_PROVIDERS.transak && session.raw) {
@@ -352,10 +350,13 @@ function mountFundingRoutes(app) {
         success: true,
         data: {
           fundingOrder: updated,
-          checkoutUrl: provider === FUNDING_PROVIDERS.grid ? null : session.checkoutUrl,
-          fundingInstructions: provider === FUNDING_PROVIDERS.grid ?
-            (session.raw?.fundingInstructions || null) :
-            undefined,
+          checkoutUrl: provider === FUNDING_PROVIDERS.crossmint ?
+            (session.checkoutUrl || null) :
+            session.checkoutUrl,
+          checkout: provider === FUNDING_PROVIDERS.crossmint && session.raw?.orderId && session.raw?.clientSecret ? {
+            orderId: session.raw.orderId,
+            clientSecret: session.raw.clientSecret,
+          } : undefined,
           correlationId: ctx.correlationId,
         },
       });
