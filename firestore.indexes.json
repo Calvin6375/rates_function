@@ -221,6 +221,15 @@
       ]
     },
     {
+      "collectionGroup": "fundingOrders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "userId", "order": "ASCENDING"},
+        {"fieldPath": "provider", "order": "ASCENDING"},
+        {"fieldPath": "status", "order": "ASCENDING"}
+      ]
+    },
+    {
       "collectionGroup": "cryptoWallets",
       "queryScope": "COLLECTION",
       "fields": [

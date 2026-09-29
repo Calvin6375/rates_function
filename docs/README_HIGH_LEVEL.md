@@ -24,6 +24,7 @@ Firebase project ID in this repo: **`truepay-72060`**. Default region: **`us-cen
 ### 2. Consumer payment processing
 
 - **Paystack** — Tourist wallet top-ups via hosted card checkout (`createPayment` callable and `POST /funding/orders`); see [§3 Tourist Payments](#3-tourist-payments-paystack-funding)
+- **Grid (sandbox)** — `createPayment` with `currency: USD` uses Lightspark Grid when `FUNDING_USD_PROVIDER=grid`. KES stays on Paystack. See [`grid-sandbox-c2b.md`](./grid-sandbox-c2b.md).
 - **IntaSend** — mobile money checkout, webhooks, direct top-ups, B2B payment links
 - **TransFi** — additional top-up webhook path
 - **Circle** — USDC deposits and on-chain sends via developer-controlled wallets
@@ -110,8 +111,8 @@ Exports live in `functions/index.js`. Business logic sits in **`services/`**; HT
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                     Firebase Cloud Functions (v2)                              │
-│  Scheduled · Callable · HTTP · Webhooks · Firestore / Auth triggers           │
+│                     Firebase Cloud Functions (v2)                               │
+│  Scheduled · Callable · HTTP · Webhooks · Firestore / Auth triggers             │
 └─────────────────────────────────────────────────────────────────────────────────┘
 
    CONSUMER APP                 B2B INTEGRATIONS              B2B PORTAL
@@ -131,13 +132,13 @@ Exports live in `functions/index.js`. Business logic sits in **`services/`**; HT
         └─────────────────────────────┼─────────────────────────────┘
                                       ▼
  ┌──────────────────────────────────────────────────────────────────────────────┐
- │ services/ · libs/                                                             │
- │ walletService · transactionService · partnerService · paymentLinkService ·    │
- │ b2bOnboardingService · b2bPortalSandboxService · paymentRailService ·         │
+ │ services/ · libs/                                                            │
+ │ walletService · transactionService · partnerService · paymentLinkService ·   │
+ │ b2bOnboardingService · b2bPortalSandboxService · paymentRailService ·        │
  │ funding/* (fundingRailService, paystackProvider, c2bFundingBridgeService) ·  │
- │ settlement/* (merchantSettlementService, darajaRail) ·                        │
- │ circle/* (circleService, circleRailAdapter, circleWebhookService) ·           │
- │ ledger/* (ledgerService, reservationService) · sync/rtdbSyncService · …       │
+ │ settlement/* (merchantSettlementService, darajaRail) ·                       │
+ │ circle/* (circleService, circleRailAdapter, circleWebhookService) ·          │
+ │ ledger/* (ledgerService, reservationService) · sync/rtdbSyncService · …      │
  └──────────────────────────────────────────────────────────────────────────────┘
                                       │
          ┌────────────────────────────┼────────────────────────────┐
@@ -149,7 +150,7 @@ Exports live in `functions/index.js`. Business logic sits in **`services/`**; HT
  │ wallets       │           │ rates         │           │ IntaSend      │
  │ onboarding    │           │               │           │ TransFi       │
  │ paymentLinks  │           │               │           │ Circle        │
- │ fundingOrders │           │               │           │ Daraja (M-Pesa)│
+ │ fundingOrders │           │               │           │ Daraja(M-Pesa)│
  │ merchantPay.  │           │               │           │               │
  │ settlementJobs│           │               │           │               │
  │ cryptoLedger  │           │               │           │               │

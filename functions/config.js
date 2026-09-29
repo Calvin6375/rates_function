@@ -67,6 +67,10 @@ const config = {
      */
     firebaseWebApiKey: "WEB_API_KEY",
     c2bPayloadEncryptionKey: "C2B_PAYLOAD_ENCRYPTION_KEY",
+    gridClientId: "GRID_CLIENT_ID",
+    gridClientSecret: "GRID_CLIENT_SECRET",
+    /** PEM public key from the Grid dashboard webhook settings. */
+    gridWebhookPublicKey: "GRID_WEBHOOK_PUBLIC_KEY",
   },
 
   /**
@@ -209,6 +213,8 @@ const config = {
     webhookReceipts: "webhookReceipts",
     /** Funding order idempotency keys (TTL) */
     fundingIdempotencyKeys: "fundingIdempotencyKeys",
+    /** Grid customer id → TruePay user. Doc id is the Grid customer id. */
+    gridCustomerLinks: "gridCustomerLinks",
     /** Daily ops metrics rollups */
     opsMetricsDaily: "opsMetricsDaily",
     /** Admin payment audit trail */
@@ -356,9 +362,28 @@ const config = {
     stubMode: getEnv("DARAJA_STUB_MODE", "auto"),
   },
 
+  /**
+   * Lightspark Grid. Sandbox and production share the base URL; the API token
+   * selects the environment. GRID_ENVIRONMENT is TruePay's own gate.
+   */
+  grid: {
+    clientId: getEnv("GRID_CLIENT_ID", null),
+    clientSecret: getEnv("GRID_CLIENT_SECRET", null),
+    environment: getEnv("GRID_ENVIRONMENT", "sandbox"),
+    baseUrl: getEnv("GRID_API_BASE_URL", "https://api.lightspark.com/grid/2025-10-13"),
+    webhookPublicKey: getEnv("GRID_WEBHOOK_PUBLIC_KEY", null),
+    timeoutMs: Number(getEnv("GRID_API_TIMEOUT_MS", "20000")),
+  },
+
   funding: {
     /** Default provider for Tourist Payments */
     defaultProvider: getEnv("FUNDING_DEFAULT_PROVIDER", "paystack"),
+    /**
+     * C2B provider when currency is USD.
+     * `grid` (default) uses Lightspark Grid. Set `paystack` to restore the
+     * previous USD → KES Paystack checkout.
+     */
+    usdProvider: getEnv("FUNDING_USD_PROVIDER", "grid"),
     /** USD only — TruePay owns FX at settlement */
     currency: "USD",
     /** C2B Local Topup / createPayment maximum wallet credit, in KES */

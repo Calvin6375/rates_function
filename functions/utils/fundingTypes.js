@@ -3,7 +3,7 @@
  * Tourist Payments funds in USD only; FX to KES happens at settlement.
  */
 
-/** @typedef {"paystack"|"intasend"|"transfi"|"circle"|"transak"|"bridge"|"stripe"} FundingProviderId */
+/** @typedef {"paystack"|"intasend"|"transfi"|"circle"|"transak"|"bridge"|"stripe"|"grid"} FundingProviderId */
 
 /** @typedef {"pending"|"processing"|"completed"|"failed"} FundingOrderStatus */
 
@@ -35,6 +35,7 @@ const FUNDING_PROVIDERS = Object.freeze({
   transak: "transak",
   bridge: "bridge",
   stripe: "stripe",
+  grid: "grid",
 });
 
 const FUNDING_STATUSES = Object.freeze({

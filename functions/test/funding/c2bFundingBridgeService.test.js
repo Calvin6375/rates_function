@@ -39,8 +39,13 @@ const productPricingService = require("../../services/pricing/productPricingServ
 const c2bFundingBridge = require("../../services/funding/c2bFundingBridgeService");
 
 describe("c2bFundingBridgeService", () => {
+  afterEach(() => {
+    delete process.env.FUNDING_USD_PROVIDER;
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
+    process.env.FUNDING_USD_PROVIDER = "paystack";
     fundingIdempotencyService.lookupIdempotencyKey.mockResolvedValue(null);
     fundingIdempotencyService.claimIdempotencyKey.mockResolvedValue({ duplicate: false });
     fundingOrderService.generateFundingOrderId.mockReturnValue("fund_test_123");

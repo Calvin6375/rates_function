@@ -152,6 +152,7 @@ async function processFundingEvent(params) {
   const verified = await fundingRailService.verifyPayment(provider, event.providerReference, {
     correlationId,
     fundingOrderId: fundingOrder.id,
+    providerTransactionId: event.providerTransactionId || fundingOrder.providerTransactionId || null,
   });
   await opsMetrics.recordTiming("funding.verification", Date.now() - verifyStarted);
 

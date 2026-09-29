@@ -18,6 +18,7 @@
 | [`auth.md`](./auth.md) | Authentication |
 | [`FRONTEND_AUTH_HANDOFF.md`](./FRONTEND_AUTH_HANDOFF.md) | Claims, routing, token refresh |
 | [`PAYSTACK_TOURIST.md`](./PAYSTACK_TOURIST.md) | Paystack wallet top-up |
+| [`grid-sandbox-c2b.md`](./grid-sandbox-c2b.md) | Grid sandbox USD funding (`createPayment`) |
 | [`TRANSACTIONS_API.md`](./TRANSACTIONS_API.md) | Transaction history API |
 | [`circle_c2b.md`](./circle_c2b.md) | Crypto (Circle) Flutter guide |
 | [`CIRCLE.md`](./CIRCLE.md) | Crypto backend |

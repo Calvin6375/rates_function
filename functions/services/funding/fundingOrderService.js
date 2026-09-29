@@ -154,6 +154,24 @@ async function findByProviderReference(provider, providerReference) {
 }
 
 /**
+ * Open and recent funding orders for one user and provider.
+ * Includes completed rows so callers can filter; capped for the webhook match.
+ *
+ * @param {string} userId
+ * @param {string} provider
+ * @returns {Promise<Array<Object>>}
+ */
+async function listFundingOrdersForUserProvider(userId, provider) {
+  const snap = await collection(COL)
+      .where("userId", "==", String(userId))
+      .where("provider", "==", String(provider).toLowerCase())
+      .where("status", "in", ["pending", "processing"])
+      .limit(20)
+      .get();
+  return snap.docs.map((doc) => serializeFundingOrder(doc.id, doc.data()));
+}
+
+/**
  * @param {string} id
  * @param {Object} data
  * @returns {Object}
@@ -168,6 +186,8 @@ function serializeFundingOrder(id, data) {
     status: data.status,
     providerReference: data.providerReference || null,
     providerTransactionId: data.providerTransactionId || null,
+    providerCustomerId: data.providerCustomerId || data.metadata?.providerCustomerId || null,
+    providerAccountId: data.providerAccountId || data.metadata?.providerAccountId || null,
     transactionRecordId: data.transactionRecordId || null,
     checkoutUrl: data.checkoutUrl || null,
     failureReason: data.failureReason || null,
@@ -188,5 +208,6 @@ module.exports = {
   getFundingOrderForUser,
   getFundingOrderForPartner,
   findByProviderReference,
+  listFundingOrdersForUserProvider,
   serializeFundingOrder,
 };

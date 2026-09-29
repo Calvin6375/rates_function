@@ -24,6 +24,7 @@ const {
   C2B_PAYSTACK_CURRENCY,
   FUNDING_CURRENCY,
   FUNDING_PROVIDERS,
+  FUNDING_STATUSES,
   TIMELINE_EVENT_TYPES,
 } = require("../utils/fundingTypes");
 
@@ -143,7 +144,8 @@ function mountFundingRoutes(app) {
     const body = req.body || {};
     const amount = Number(body.amount);
     const inputCurrency = String(body.currency || "USD").toUpperCase();
-    const provider = String(body.provider || config.funding.defaultProvider).toLowerCase();
+    const explicitProvider = body.provider ? String(body.provider).toLowerCase() : "";
+    const provider = explicitProvider || c2bFundingBridge.resolveC2bFundingProvider(inputCurrency);
     const email = (await resolveFundingCustomerEmail(userId, {
       clientEmail: body.email,
       tokenEmail: auth.decodedToken?.email,
@@ -194,6 +196,12 @@ function mountFundingRoutes(app) {
       chargeCurrency = FUNDING_CURRENCY;
       chargeMeta.treasuryWallet = process.env.TRANSAK_TREASURY_WALLET || config.transak?.treasuryWallet || null;
       chargeMeta.cryptoCurrency = process.env.TRANSAK_DEFAULT_CRYPTO || config.transak?.defaultCrypto || "USDT";
+    } else if (provider === FUNDING_PROVIDERS.grid) {
+      if (inputCurrency !== FUNDING_CURRENCY) {
+        res.status(400).json({ success: false, error: "Grid funding supports USD only" });
+        return;
+      }
+      chargeMeta.environment = process.env.GRID_ENVIRONMENT || config.grid.environment || "sandbox";
     }
 
     try {
@@ -266,6 +274,10 @@ function mountFundingRoutes(app) {
           amount: chargeAmount,
           currency: chargeCurrency,
           email,
+          fullName: body.fullName || body.name || null,
+          firstName: body.firstName || null,
+          lastName: body.lastName || null,
+          clientIp: req.headers?.["x-forwarded-for"] || req.ip || null,
           callbackUrl: resolvePaystackCallbackUrl(callbackUrl),
           providerReference: order.providerReference,
           fundingOrderId: order.id,
@@ -277,6 +289,12 @@ function mountFundingRoutes(app) {
         await opsMetrics.increment("funding.checkout.initialized", 1);
       } catch (initErr) {
         await opsMetrics.increment("funding.checkout.failed", 1);
+        if (provider === FUNDING_PROVIDERS.grid) {
+          await fundingOrderService.updateFundingOrder(order.id, {
+            status: FUNDING_STATUSES.failed,
+            failureReason: initErr.message,
+          }).catch(() => null);
+        }
         throw initErr;
       }
 
@@ -285,6 +303,18 @@ function mountFundingRoutes(app) {
         providerTransactionId: session.providerTransactionId || null,
         checkoutUrl: session.checkoutUrl,
       };
+      if (provider === FUNDING_PROVIDERS.grid && session.raw) {
+        patch.checkoutUrl = null;
+        patch.providerCustomerId = session.raw.customerId || null;
+        patch.providerAccountId = session.raw.internalAccountId || null;
+        patch.metadata = {
+          ...order.metadata,
+          providerCustomerId: session.raw.customerId || null,
+          providerAccountId: session.raw.internalAccountId || null,
+          fundingInstructions: session.raw.fundingInstructions || null,
+          fundingPaymentInstructions: session.raw.fundingPaymentInstructions || null,
+        };
+      }
       if (provider === FUNDING_PROVIDERS.transak && session.raw) {
         patch.metadata = {
           ...order.metadata,
@@ -322,7 +352,10 @@ function mountFundingRoutes(app) {
         success: true,
         data: {
           fundingOrder: updated,
-          checkoutUrl: session.checkoutUrl,
+          checkoutUrl: provider === FUNDING_PROVIDERS.grid ? null : session.checkoutUrl,
+          fundingInstructions: provider === FUNDING_PROVIDERS.grid ?
+            (session.raw?.fundingInstructions || null) :
+            undefined,
           correlationId: ctx.correlationId,
         },
       });

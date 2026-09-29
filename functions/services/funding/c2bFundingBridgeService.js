@@ -27,7 +27,6 @@ const logger = createLogger({ service: "c2bFundingBridge" });
 
 /**
  * Resolve provider for non-C2B callers (e.g. response mapping).
- * C2B `createPayment` always uses Paystack — see createC2bTopupCheckout.
  * @param {string|null} [explicitProvider]
  * @returns {string}
  */
@@ -36,9 +35,30 @@ function resolveFundingProvider(explicitProvider = null) {
 }
 
 /**
- * Create a checkout for C2B tourist wallet top-up via Paystack.
+ * C2B currency routing. USD uses FUNDING_USD_PROVIDER (default `grid`).
+ * Every other currency stays on Paystack. Client `provider` is ignored.
+ *
+ * @param {string} [currency]
+ * @returns {string}
+ */
+function resolveC2bFundingProvider(currency) {
+  const cur = String(currency || FUNDING_CURRENCY).toUpperCase();
+  if (cur !== FUNDING_CURRENCY) {
+    return FUNDING_PROVIDERS.paystack;
+  }
+  const configured = String(
+      process.env.FUNDING_USD_PROVIDER || config.funding.usdProvider || FUNDING_PROVIDERS.grid,
+  ).toLowerCase();
+  if (configured !== FUNDING_PROVIDERS.grid && configured !== FUNDING_PROVIDERS.paystack) {
+    throw new Error(`Unsupported FUNDING_USD_PROVIDER: ${configured}`);
+  }
+  return configured;
+}
+
+/**
+ * Create a checkout for C2B tourist wallet top-up.
+ * USD routes to Grid when FUNDING_USD_PROVIDER=grid. KES stays on Paystack.
  * Response matches the legacy `createPayment` callable shape for Flutter compatibility.
- * Always routes to Paystack (ignores FUNDING_DEFAULT_PROVIDER and client `provider`).
  * Transak remains available via REST `POST /funding/orders` with provider=transak.
  *
  * @param {Object} params
@@ -53,7 +73,132 @@ function resolveFundingProvider(explicitProvider = null) {
  * @returns {Promise<Object>}
  */
 async function createC2bTopupCheckout(params) {
+  const provider = resolveC2bFundingProvider(params.currency || FUNDING_CURRENCY);
+  if (provider === FUNDING_PROVIDERS.grid) {
+    return createC2bGridTopupCheckout(params);
+  }
   return createC2bPaystackTopupCheckout(params);
+}
+
+/**
+ * USD funding via Lightspark Grid. The funding order is written before any Grid call.
+ * Grid returns bank funding instructions. There is no hosted checkout URL.
+ *
+ * @param {Object} params
+ * @returns {Promise<Object>}
+ */
+async function createC2bGridTopupCheckout(params) {
+  const {
+    userId,
+    amount,
+    currency = FUNDING_CURRENCY,
+    email = null,
+    tokenEmail = null,
+    fullName = null,
+    firstName = null,
+    lastName = null,
+    clientIp = null,
+    idempotencyKey = null,
+    correlationId = null,
+    metadata = {},
+  } = params;
+
+  const chargeCurrency = String(currency || FUNDING_CURRENCY).toUpperCase();
+  const chargeAmount = Number(amount);
+  if (chargeCurrency !== FUNDING_CURRENCY) {
+    throw new Error("Grid funding supports USD only");
+  }
+
+  const resolvedEmail = await resolveFundingCustomerEmail(userId, {
+    clientEmail: email,
+    tokenEmail,
+  });
+  const gridEmail = resolvedEmail.usedFallback ? null : resolvedEmail.email;
+  const provider = FUNDING_PROVIDERS.grid;
+
+  const ctx = createPaymentContext({
+    correlationId,
+    userId,
+    provider,
+    source: "createPayment",
+  });
+
+  const duplicate = await resolveIdempotentOrder(userId, idempotencyKey);
+  if (duplicate) {
+    return mapFundingOrderToCreatePaymentResponse(duplicate, { duplicate: true });
+  }
+
+  const orderId = fundingOrderService.generateFundingOrderId();
+  const claimed = await claimIdempotency(userId, idempotencyKey, orderId);
+  if (claimed) {
+    return mapFundingOrderToCreatePaymentResponse(claimed, { duplicate: true });
+  }
+
+  const order = await fundingOrderService.createFundingOrder({
+    id: orderId,
+    userId,
+    provider,
+    amount: chargeAmount,
+    currency: chargeCurrency,
+    correlationId: ctx.correlationId,
+    fundingRequestId: idempotencyKey,
+    metadata: {
+      ...metadata,
+      product: "tourist",
+      correlationId: ctx.correlationId,
+      userId,
+      provider,
+      source: "c2b_createPayment",
+      requestedAmount: chargeAmount,
+      requestedCurrency: chargeCurrency,
+      environment: process.env.GRID_ENVIRONMENT || config.grid.environment || "sandbox",
+    },
+  });
+
+  const updated = await initializeProviderCheckout({
+    provider,
+    order,
+    ctx,
+    amount: chargeAmount,
+    currency: chargeCurrency,
+    email: gridEmail,
+    fullName,
+    firstName,
+    lastName,
+    clientIp,
+    callbackUrl: null,
+    metadata: order.metadata,
+  });
+
+  await recordCheckoutTimeline({
+    orderId: order.id,
+    correlationId: ctx.correlationId,
+    provider,
+    status: updated.status,
+    amount: chargeAmount,
+    currency: chargeCurrency,
+    metadata: {
+      requestedAmount: chargeAmount,
+      requestedCurrency: chargeCurrency,
+      source: "createPayment",
+    },
+    checkoutUrl: null,
+  });
+
+  logger.info("c2b.checkout.created", {
+    correlationId: ctx.correlationId,
+    fundingOrderId: order.id,
+    providerReference: updated.providerReference,
+    provider,
+    userId,
+    gridCustomerId: updated.providerCustomerId || updated.metadata?.providerCustomerId || null,
+    gridInternalAccountId: updated.providerAccountId || updated.metadata?.providerAccountId || null,
+    status: updated.status,
+  });
+
+  return mapFundingOrderToCreatePaymentResponse(updated, {
+    correlationId: ctx.correlationId,
+  });
 }
 
 /**
@@ -338,6 +483,10 @@ async function initializeProviderCheckout(params) {
     amount,
     currency,
     email,
+    fullName = null,
+    firstName = null,
+    lastName = null,
+    clientIp = null,
     callbackUrl,
     transakAccessToken = null,
     metadata,
@@ -350,6 +499,10 @@ async function initializeProviderCheckout(params) {
       amount,
       currency,
       email,
+      fullName,
+      firstName,
+      lastName,
+      clientIp,
       callbackUrl,
       providerReference: order.providerReference,
       fundingOrderId: order.id,
@@ -400,6 +553,19 @@ async function initializeProviderCheckout(params) {
       quoteId: session.raw.quote?.quoteId || metadata.quoteId || null,
       cryptoAmount: session.raw.cryptoAmount || session.raw.quote?.cryptoAmount || null,
       treasuryWallet: session.raw.treasuryWallet || metadata.treasuryWallet || null,
+    };
+  }
+
+  if (provider === FUNDING_PROVIDERS.grid && session.raw) {
+    patch.checkoutUrl = null;
+    patch.providerCustomerId = session.raw.customerId || null;
+    patch.providerAccountId = session.raw.internalAccountId || null;
+    patch.metadata = {
+      ...metadata,
+      providerCustomerId: session.raw.customerId || null,
+      providerAccountId: session.raw.internalAccountId || null,
+      fundingInstructions: session.raw.fundingInstructions || null,
+      fundingPaymentInstructions: session.raw.fundingPaymentInstructions || null,
     };
   }
 
@@ -558,8 +724,9 @@ function mapFundingOrderToCreatePaymentResponse(order, extra = {}) {
   const reference = order.providerReference || order.id;
   const requestedAmount = order.metadata?.requestedAmount ?? order.amount;
   const requestedCurrency = order.metadata?.requestedCurrency ?? order.currency;
-  const checkoutUrl = order.checkoutUrl || "";
   const provider = order.provider || config.funding.defaultProvider || FUNDING_PROVIDERS.paystack;
+  const isGrid = provider === FUNDING_PROVIDERS.grid;
+  const checkoutUrl = isGrid ? (order.checkoutUrl || null) : (order.checkoutUrl || "");
   const providerAmount = order.amount;
   const providerCurrency = order.currency;
   const feeAmount = Number(order.metadata?.feeAmount ?? order.metadata?.platformFee ?? 0) || 0;
@@ -590,14 +757,20 @@ function mapFundingOrderToCreatePaymentResponse(order, extra = {}) {
     correlationId: extra.correlationId || order.correlationId || null,
     provider,
     createdAt: order.createdAt || new Date().toISOString(),
+    ...(isGrid ? {
+      fundingInstructions: order.metadata?.fundingInstructions || null,
+      fundingPaymentInstructions: order.metadata?.fundingPaymentInstructions || null,
+    } : {}),
   };
 }
 
 module.exports = {
   createC2bTopupCheckout,
   createC2bPaystackTopupCheckout,
+  createC2bGridTopupCheckout,
   createC2bTransakTopupCheckout,
   quoteLocalTopupPaystack,
   mapFundingOrderToCreatePaymentResponse,
   resolveFundingProvider,
+  resolveC2bFundingProvider,
 };

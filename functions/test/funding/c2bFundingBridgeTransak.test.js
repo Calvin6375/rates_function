@@ -111,6 +111,7 @@ describe("c2bFundingBridgeService transak", () => {
   afterEach(() => {
     config.funding.defaultProvider = "paystack";
     delete process.env.TRANSAK_TREASURY_WALLET;
+    delete process.env.FUNDING_USD_PROVIDER;
     config.transak.treasuryWallet = null;
   });
 
@@ -157,7 +158,8 @@ describe("c2bFundingBridgeService transak", () => {
     );
   });
 
-  it("routes createC2bTopupCheckout to Paystack even when defaultProvider is transak", async () => {
+  it("routes USD createC2bTopupCheckout to Paystack when Grid is disabled", async () => {
+    process.env.FUNDING_USD_PROVIDER = "paystack";
     config.funding.defaultProvider = "transak";
     convertToKesForPaystack.mockResolvedValue({
       requestedAmount: 25,

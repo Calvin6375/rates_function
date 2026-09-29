@@ -28,7 +28,10 @@ const transakCheckoutSecrets = [
   transakSecretKey,
   transakTreasuryWallet,
 ];
-const fundingCheckoutSecrets = [...paystackSecrets, ...transakCheckoutSecrets];
+const gridClientId = defineSecret(config.secrets.gridClientId);
+const gridClientSecret = defineSecret(config.secrets.gridClientSecret);
+const gridCheckoutSecrets = [gridClientId, gridClientSecret];
+const fundingCheckoutSecrets = [...paystackSecrets, ...transakCheckoutSecrets, ...gridCheckoutSecrets];
 
 const REDACTED_HEADER_KEYS = new Set([
   "authorization",
@@ -138,6 +141,10 @@ exports.createPayment = onCall(
           currency,
           email: data.email || null,
           tokenEmail: auth.token?.email || null,
+          fullName: data.fullName || data.name || null,
+          firstName: data.firstName || null,
+          lastName: data.lastName || null,
+          clientIp: request.rawRequest?.headers?.["x-forwarded-for"] || request.rawRequest?.ip || null,
           callbackUrl,
           metadata,
           idempotencyKey,
@@ -185,7 +192,8 @@ exports.createPayment = onCall(
           msg.includes("Amount must") ||
           msg.includes("below Paystack") ||
           msg.includes("Paystack split") ||
-          msg.includes("not configured")
+          msg.includes("not configured") ||
+          msg.startsWith("Grid ")
         ) {
           throw new HttpsError("failed-precondition", msg);
         }
