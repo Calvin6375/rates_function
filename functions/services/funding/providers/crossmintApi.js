@@ -1,9 +1,10 @@
 /**
- * @fileoverview Crossmint Onramp HTTP client (staging).
+ * @fileoverview Crossmint Onramp HTTP client (staging or production).
  * API calls only. No wallet, ledger, or funding-order logic.
  *
  * Docs: POST/GET /2022-06-09/orders, PUT /2025-06-09/users/{locator}/linked-wallets/{address}
  * Staging: https://staging.crossmint.com/api
+ * Production: https://www.crossmint.com/api
  */
 
 const axios = require("axios");
@@ -12,8 +13,27 @@ const { createLogger } = require("../../../utils/paymentOpsLogger");
 
 const logger = createLogger({ service: "crossmintApi", provider: "crossmint" });
 
-const DEFAULT_STAGING_BASE = "https://staging.crossmint.com/api";
-const STAGING_LOCATOR_PREFIXES = ["solana:", "base-sepolia:", "polygon-amoy:", "stellar:"];
+const STAGING = {
+  environment: "staging",
+  host: "https://staging.crossmint.com",
+  baseUrl: "https://staging.crossmint.com/api",
+  chain: "base-sepolia",
+  tokenLocator: "base-sepolia:0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+  locatorPrefixes: ["solana:", "base-sepolia:", "polygon-amoy:", "stellar:"],
+  serverKeyPrefix: "sk_staging_",
+  clientKeyPrefix: "ck_staging_",
+};
+
+const PRODUCTION = {
+  environment: "production",
+  host: "https://www.crossmint.com",
+  baseUrl: "https://www.crossmint.com/api",
+  chain: "base",
+  tokenLocator: "base:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+  locatorPrefixes: ["ethereum:", "polygon:", "solana:", "stellar:"],
+  serverKeyPrefix: "sk_production_",
+  clientKeyPrefix: "ck_production_",
+};
 
 class CrossmintApiError extends Error {
   /**
@@ -30,49 +50,179 @@ class CrossmintApiError extends Error {
 }
 
 /**
+ * @returns {"staging"|"production"}
+ */
+function environment() {
+  const raw = String(
+      process.env.CROSSMINT_ENVIRONMENT || config.crossmint?.environment || "staging",
+  ).toLowerCase();
+  return raw === "production" ? "production" : "staging";
+}
+
+/**
+ * @returns {typeof STAGING}
+ */
+function profile() {
+  return environment() === "production" ? PRODUCTION : STAGING;
+}
+
+/**
+ * @param {string} stagingKey
+ * @param {string} prodKey
+ * @param {*} stagingFallback
+ * @param {*} prodFallback
+ * @returns {*|null}
+ */
+function pick(stagingKey, prodKey, stagingFallback, prodFallback) {
+  if (environment() === "production") {
+    const value = process.env[prodKey];
+    if (value) return value;
+    return prodFallback === undefined ? null : prodFallback;
+  }
+  const value = process.env[stagingKey];
+  if (value) return value;
+  return stagingFallback === undefined ? null : stagingFallback;
+}
+
+/**
+ * @param {string} raw
+ * @param {string} expectedHost
+ * @returns {string}
+ */
+function normalizeBaseUrl(raw, expectedHost) {
+  const trimmed = String(raw || "").replace(/\/$/, "");
+  if (!trimmed.startsWith(expectedHost)) {
+    throw new CrossmintApiError(
+        `Crossmint ${environment()} requires ${expectedHost}`,
+    );
+  }
+  return trimmed.endsWith("/api") ? trimmed : `${trimmed}/api`;
+}
+
+/**
+ * @returns {string}
+ */
+function apiBaseUrl() {
+  const envProfile = profile();
+  const override = pick(
+      "CROSSMINT_BASE_URL",
+      "CROSSMINT_BASE_URL_PROD",
+      config.crossmint?.baseUrl,
+      config.crossmint?.baseUrlProd,
+  );
+  return normalizeBaseUrl(override || envProfile.baseUrl, envProfile.host);
+}
+
+/**
+ * @deprecated Use apiBaseUrl()
  * @returns {string}
  */
 function stagingBaseUrl() {
-  const raw = String(process.env.CROSSMINT_BASE_URL || config.crossmint?.baseUrl || DEFAULT_STAGING_BASE)
-      .replace(/\/$/, "");
-  if (!raw.startsWith("https://staging.crossmint.com")) {
-    throw new CrossmintApiError("Crossmint sandbox requires https://staging.crossmint.com");
+  return apiBaseUrl();
+}
+
+/**
+ * @param {string|null} key
+ * @param {"server"|"client"} kind
+ */
+function assertKeyPrefix(key, kind) {
+  if (!key) return;
+  const expected = kind === "client" ? profile().clientKeyPrefix : profile().serverKeyPrefix;
+  if (!String(key).startsWith(expected)) {
+    throw new CrossmintApiError(
+        `Crossmint ${environment()} requires a ${expected}* ${kind} key`,
+    );
   }
-  return raw.endsWith("/api") ? raw : `${raw}/api`;
 }
 
 /**
  * @returns {string}
  */
 function requireServerApiKey() {
-  const key = process.env.CROSSMINT_SERVER_API_KEY || config.crossmint?.serverApiKey || null;
+  const envProfile = profile();
+  const key = pick(
+      "CROSSMINT_SERVER_API_KEY",
+      "CROSSMINT_SERVER_API_KEY_PROD",
+      config.crossmint?.serverApiKey,
+      config.crossmint?.serverApiKeyProd,
+  );
   if (!key) {
-    throw new CrossmintApiError("Crossmint is not configured (CROSSMINT_SERVER_API_KEY)");
+    const name = envProfile.environment === "production" ?
+      "CROSSMINT_SERVER_API_KEY_PROD" :
+      "CROSSMINT_SERVER_API_KEY";
+    throw new CrossmintApiError(`Crossmint is not configured (${name})`);
   }
+  assertKeyPrefix(key, "server");
   return key;
 }
 
 /**
  * @returns {string}
  */
+function webhookSecret() {
+  return pick(
+      "CROSSMINT_WEBHOOK_SECRET",
+      "CROSSMINT_WEBHOOK_SECRET_PROD",
+      config.crossmint?.webhookSecret,
+      config.crossmint?.webhookSecretProd,
+  ) || "";
+}
+
+/**
+ * @returns {string}
+ */
 function collectionWallet() {
-  const address = process.env.CROSSMINT_COLLECTION_WALLET || config.crossmint?.collectionWallet || null;
+  const envProfile = profile();
+  const address = pick(
+      "CROSSMINT_COLLECTION_WALLET",
+      "CROSSMINT_COLLECTION_WALLET_PROD",
+      config.crossmint?.collectionWallet,
+      config.crossmint?.collectionWalletProd,
+  );
   if (!address) {
-    throw new CrossmintApiError("Crossmint is not configured (CROSSMINT_COLLECTION_WALLET)");
+    const name = envProfile.environment === "production" ?
+      "CROSSMINT_COLLECTION_WALLET_PROD" :
+      "CROSSMINT_COLLECTION_WALLET";
+    throw new CrossmintApiError(`Crossmint is not configured (${name})`);
   }
   return String(address);
+}
+
+/**
+ * Production `base:` must not match `base-sepolia:`.
+ * @param {string} value
+ * @param {string[]} prefixes
+ * @returns {boolean}
+ */
+function locatorMatches(value, prefixes) {
+  if (value.startsWith("base-sepolia:")) {
+    return prefixes.includes("base-sepolia:");
+  }
+  if (value.startsWith("base:")) {
+    return prefixes.includes("base:");
+  }
+  return prefixes.some((prefix) => value.startsWith(prefix));
 }
 
 /**
  * @returns {string}
  */
 function tokenLocator() {
-  const locator = process.env.CROSSMINT_TOKEN_LOCATOR ||
-    config.crossmint?.tokenLocator ||
-    "base-sepolia:0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+  const envProfile = profile();
+  const locator = pick(
+      "CROSSMINT_TOKEN_LOCATOR",
+      "CROSSMINT_TOKEN_LOCATOR_PROD",
+      config.crossmint?.tokenLocator,
+      config.crossmint?.tokenLocatorProd,
+  ) || envProfile.tokenLocator;
   const value = String(locator);
-  if (!STAGING_LOCATOR_PREFIXES.some((prefix) => value.startsWith(prefix))) {
-    throw new CrossmintApiError("Crossmint sandbox tokenLocator must be a documented staging locator");
+  const prefixes = envProfile.environment === "production" ?
+    [...envProfile.locatorPrefixes, "base:"] :
+    envProfile.locatorPrefixes;
+  if (!locatorMatches(value, prefixes)) {
+    throw new CrossmintApiError(
+        `Crossmint ${environment()} tokenLocator is not valid for this environment`,
+    );
   }
   return value;
 }
@@ -81,16 +231,34 @@ function tokenLocator() {
  * @returns {string}
  */
 function chain() {
-  return String(process.env.CROSSMINT_CHAIN || config.crossmint?.chain || "base-sepolia");
+  const envProfile = profile();
+  return String(pick(
+      "CROSSMINT_CHAIN",
+      "CROSSMINT_CHAIN_PROD",
+      config.crossmint?.chain,
+      config.crossmint?.chainProd,
+  ) || envProfile.chain);
 }
 
 /**
  * @returns {string}
  */
 function userLocator() {
-  const locator = process.env.CROSSMINT_USER_LOCATOR || config.crossmint?.userLocator || null;
+  const envProfile = profile();
+  let locator = pick(
+      "CROSSMINT_USER_LOCATOR",
+      "CROSSMINT_USER_LOCATOR_PROD",
+      config.crossmint?.userLocator,
+      config.crossmint?.userLocatorProd,
+  );
+  if (!locator && environment() === "production") {
+    locator = process.env.CROSSMINT_USER_LOCATOR || config.crossmint?.userLocator || null;
+  }
   if (!locator) {
-    throw new CrossmintApiError("Crossmint is not configured (CROSSMINT_USER_LOCATOR)");
+    const name = envProfile.environment === "production" ?
+      "CROSSMINT_USER_LOCATOR_PROD" :
+      "CROSSMINT_USER_LOCATOR";
+    throw new CrossmintApiError(`Crossmint is not configured (${name})`);
   }
   return String(locator);
 }
@@ -103,8 +271,14 @@ function userLocator() {
  * @returns {string|null}
  */
 function buildEmbeddedCheckoutUrl(params) {
-  const clientApiKey = process.env.CROSSMINT_CLIENT_API_KEY || config.crossmint?.clientApiKey || null;
+  const clientApiKey = pick(
+      "CROSSMINT_CLIENT_API_KEY",
+      "CROSSMINT_CLIENT_API_KEY_PROD",
+      config.crossmint?.clientApiKey,
+      config.crossmint?.clientApiKeyProd,
+  );
   if (!clientApiKey || !params.orderId || !params.clientSecret) return null;
+  assertKeyPrefix(clientApiKey, "client");
   const query = new URLSearchParams({
     orderId: String(params.orderId),
     clientSecret: String(params.clientSecret),
@@ -122,7 +296,7 @@ function buildEmbeddedCheckoutUrl(params) {
       },
     }),
   });
-  return `https://staging.crossmint.com/sdk/2024-03-05/embedded-checkout?${query.toString()}`;
+  return `${profile().host}/sdk/2024-03-05/embedded-checkout?${query.toString()}`;
 }
 
 /**
@@ -158,7 +332,7 @@ async function request(method, path, options = {}) {
   try {
     const response = await axios({
       method,
-      url: `${stagingBaseUrl()}${path}`,
+      url: `${apiBaseUrl()}${path}`,
       data: options.body === undefined ? undefined : options.body,
       headers: {
         "Content-Type": "application/json",
@@ -203,7 +377,7 @@ function getOrder(orderId, ctx = {}) {
 
 /**
  * Link TruePay collection wallet to the Crossmint user. `proof` is omitted
- * for sandbox amounts under the documented $1,000 ownership threshold.
+ * for amounts under the documented $1,000 ownership threshold.
  *
  * @param {{ userLocator: string, address: string, chain: string }} params
  * @returns {Promise<Object>}
@@ -219,7 +393,10 @@ function linkWallet(params, ctx = {}) {
 
 module.exports = {
   CrossmintApiError,
+  environment,
+  apiBaseUrl,
   stagingBaseUrl,
+  webhookSecret,
   collectionWallet,
   tokenLocator,
   chain,

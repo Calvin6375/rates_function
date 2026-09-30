@@ -24,7 +24,7 @@ Firebase project ID in this repo: **`truepay-72060`**. Default region: **`us-cen
 ### 2. Consumer payment processing
 
 - **Paystack** — Tourist wallet top-ups via hosted card checkout (`createPayment` callable and `POST /funding/orders`); see [§3 Tourist Payments](#3-tourist-payments-paystack-funding)
-- **Crossmint (sandbox)** — `createPayment` with `currency: USD` uses Crossmint Onramp when `FUNDING_USD_PROVIDER=crossmint`. KES stays on Paystack. See [`crossmint-sandbox-c2b.md`](./crossmint-sandbox-c2b.md).
+- **Crossmint** — `createPayment` with `currency: USD` uses Crossmint Onramp when `FUNDING_USD_PROVIDER=crossmint`. Staging by default; production uses `CROSSMINT_*_PROD` when `CROSSMINT_ENVIRONMENT=production`. KES stays on Paystack. See [`crossmint-sandbox-c2b.md`](./crossmint-sandbox-c2b.md).
 - **IntaSend** — mobile money checkout, webhooks, direct top-ups, B2B payment links
 - **TransFi** — additional top-up webhook path
 - **Circle** — USDC deposits and on-chain sends via developer-controlled wallets

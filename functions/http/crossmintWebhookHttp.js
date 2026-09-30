@@ -17,6 +17,10 @@ const logger = createLogger({ service: "crossmintWebhook", provider: FUNDING_PRO
 
 const crossmintServerApiKey = defineSecret(config.secrets.crossmintServerApiKey);
 const crossmintWebhookSecret = defineSecret(config.secrets.crossmintWebhookSecret);
+const crossmintServerApiKeyProd = defineSecret(config.secrets.crossmintServerApiKeyProd);
+const crossmintWebhookSecretProd = defineSecret(config.secrets.crossmintWebhookSecretProd);
+const crossmintCollectionWallet = defineSecret(config.secrets.crossmintCollectionWallet);
+const crossmintCollectionWalletProd = defineSecret(config.secrets.crossmintCollectionWalletProd);
 
 const app = express();
 app.use(express.raw({ type: "application/json" }));
@@ -124,7 +128,14 @@ app.post("/", handleCrossmintWebhook);
 
 exports.handleCrossmintWebhook = onRequest(
     {
-      secrets: [crossmintServerApiKey, crossmintWebhookSecret],
+      secrets: [
+        crossmintServerApiKey,
+        crossmintWebhookSecret,
+        crossmintServerApiKeyProd,
+        crossmintWebhookSecretProd,
+        crossmintCollectionWallet,
+        crossmintCollectionWalletProd,
+      ],
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,

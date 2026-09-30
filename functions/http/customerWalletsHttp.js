@@ -1231,6 +1231,8 @@ const transakSecretKey = defineSecret(config.secrets.transakSecretKey);
 const transakTreasuryWallet = defineSecret(config.secrets.transakTreasuryWallet);
 const crossmintServerApiKey = defineSecret(config.secrets.crossmintServerApiKey);
 const crossmintCollectionWallet = defineSecret(config.secrets.crossmintCollectionWallet);
+const crossmintServerApiKeyProd = defineSecret(config.secrets.crossmintServerApiKeyProd);
+const crossmintCollectionWalletProd = defineSecret(config.secrets.crossmintCollectionWalletProd);
 
 // Export as Firebase Function
 exports.api = onRequest(
@@ -1247,6 +1249,8 @@ exports.api = onRequest(
       transakTreasuryWallet,
       crossmintServerApiKey,
       crossmintCollectionWallet,
+      crossmintServerApiKeyProd,
+      crossmintCollectionWalletProd,
       ...C2B_ENCRYPTION_SECRETS,
     ],
   },

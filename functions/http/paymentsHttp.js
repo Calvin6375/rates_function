@@ -30,7 +30,14 @@ const transakCheckoutSecrets = [
 ];
 const crossmintServerApiKey = defineSecret(config.secrets.crossmintServerApiKey);
 const crossmintCollectionWallet = defineSecret(config.secrets.crossmintCollectionWallet);
-const crossmintCheckoutSecrets = [crossmintServerApiKey, crossmintCollectionWallet];
+const crossmintServerApiKeyProd = defineSecret(config.secrets.crossmintServerApiKeyProd);
+const crossmintCollectionWalletProd = defineSecret(config.secrets.crossmintCollectionWalletProd);
+const crossmintCheckoutSecrets = [
+  crossmintServerApiKey,
+  crossmintCollectionWallet,
+  crossmintServerApiKeyProd,
+  crossmintCollectionWalletProd,
+];
 const fundingCheckoutSecrets = [...paystackSecrets, ...transakCheckoutSecrets, ...crossmintCheckoutSecrets];
 
 const REDACTED_HEADER_KEYS = new Set([
@@ -345,7 +352,15 @@ exports.handlePaymentWebhook = onCall(
       region: config.region,
       cpu: config.resources.cpu,
       memory: config.resources.memory,
-      secrets: [paystackSecretKey, transakApiKey, transakSecretKey, crossmintServerApiKey],
+      secrets: [
+        paystackSecretKey,
+        transakApiKey,
+        transakSecretKey,
+        crossmintServerApiKey,
+        crossmintServerApiKeyProd,
+        crossmintCollectionWallet,
+        crossmintCollectionWalletProd,
+      ],
     },
     async (request) => {
       const auth = request.auth;

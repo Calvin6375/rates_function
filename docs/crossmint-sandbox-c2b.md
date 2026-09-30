@@ -4,18 +4,57 @@ Crossmint Onramp is the USD card funding rail on the existing `createPayment` pa
 
 ## Configuration
 
+Staging names stay as they are. Production uses **new** `_PROD` secrets and env vars. Do not overwrite staging values.
+
 | Name | Where | Role |
 |---|---|---|
-| `CROSSMINT_SERVER_API_KEY` | Secret Manager | `sk_staging_…` with `orders.create` and `orders.read`. Never sent to Flutter. |
-| `CROSSMINT_WEBHOOK_SECRET` | Secret Manager | Svix `whsec_…` from the Crossmint staging console. |
-| `CROSSMINT_COLLECTION_WALLET` | Secret Manager | TruePay Base Sepolia address that receives USDC. |
-| `CROSSMINT_USER_LOCATOR` | Function env | Crossmint user locator used to link the collection wallet, e.g. `email:ops@truepay.africa`. |
-| `CROSSMINT_CLIENT_API_KEY` | Function env | `ck_staging_…` used only to build the documented WebView checkout URL. |
+| `CROSSMINT_ENVIRONMENT` | Function env | `staging` (default) or `production`. |
+| `CROSSMINT_SERVER_API_KEY` | Secret Manager | Staging `sk_staging_…` (`orders.create`, `orders.read`). |
+| `CROSSMINT_WEBHOOK_SECRET` | Secret Manager | Staging Svix `whsec_…`. |
+| `CROSSMINT_COLLECTION_WALLET` | Secret Manager | Staging Base Sepolia collection address. |
+| `CROSSMINT_USER_LOCATOR` | Function env | Staging locator, e.g. `email:ops@truepay.africa`. |
+| `CROSSMINT_CLIENT_API_KEY` | Function env | Staging `ck_staging_…` for the WebView URL. |
 | `CROSSMINT_TOKEN_LOCATOR` | Optional env | Default `base-sepolia:0x036CbD53842c5426634e7929541eC2318f3dCF7e`. |
-| `CROSSMINT_CHAIN` | Optional env | Default `base-sepolia`. Must match the locator prefix. |
+| `CROSSMINT_CHAIN` | Optional env | Default `base-sepolia`. |
+| `CROSSMINT_SERVER_API_KEY_PROD` | Secret Manager | Production `sk_production_…`. |
+| `CROSSMINT_WEBHOOK_SECRET_PROD` | Secret Manager | Production Svix `whsec_…`. |
+| `CROSSMINT_COLLECTION_WALLET_PROD` | Secret Manager | Production Base collection address. |
+| `CROSSMINT_CLIENT_API_KEY_PROD` | Function env | Production `ck_production_…`. |
+| `CROSSMINT_USER_LOCATOR_PROD` | Function env | Optional; falls back to `CROSSMINT_USER_LOCATOR`. |
+| `CROSSMINT_TOKEN_LOCATOR_PROD` | Optional env | Default `base:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`. |
+| `CROSSMINT_CHAIN_PROD` | Optional env | Default `base`. |
 | `FUNDING_USD_PROVIDER` | Function env | `crossmint` (default) or `paystack`. |
 
-Staging API base is always `https://staging.crossmint.com/api`.
+Staging API: `https://staging.crossmint.com/api`. Production API: `https://www.crossmint.com/api`. Checkout hosts match the key prefix (`staging.crossmint.com` vs `www.crossmint.com`).
+
+Create production secrets **before** the next function deploy (Firebase binds both sets):
+
+```bash
+PROJECT=truepay-72060
+
+gcloud secrets create CROSSMINT_SERVER_API_KEY_PROD --project="$PROJECT" --replication-policy=automatic
+gcloud secrets create CROSSMINT_WEBHOOK_SECRET_PROD --project="$PROJECT" --replication-policy=automatic
+gcloud secrets create CROSSMINT_COLLECTION_WALLET_PROD --project="$PROJECT" --replication-policy=automatic
+
+printf '%s' 'sk_production_REPLACE' | gcloud secrets versions add CROSSMINT_SERVER_API_KEY_PROD \
+  --project="$PROJECT" --data-file=-
+printf '%s' 'whsec_REPLACE' | gcloud secrets versions add CROSSMINT_WEBHOOK_SECRET_PROD \
+  --project="$PROJECT" --data-file=-
+printf '%s' '0xYOUR_BASE_MAINNET_WALLET' | gcloud secrets versions add CROSSMINT_COLLECTION_WALLET_PROD \
+  --project="$PROJECT" --data-file=-
+```
+
+Grant the functions runtime access (same members as the staging Crossmint secrets), then set env on `createpayment` and `api`:
+
+```bash
+gcloud run services update createpayment --project="$PROJECT" --region=us-central1 \
+  --update-env-vars="CROSSMINT_ENVIRONMENT=production,CROSSMINT_CLIENT_API_KEY_PROD=ck_production_REPLACE,CROSSMINT_USER_LOCATOR_PROD=email:ops@truepay.africa"
+
+gcloud run services update api --project="$PROJECT" --region=us-central1 \
+  --update-env-vars="CROSSMINT_ENVIRONMENT=production,CROSSMINT_CLIENT_API_KEY_PROD=ck_production_REPLACE,CROSSMINT_USER_LOCATOR_PROD=email:ops@truepay.africa"
+```
+
+Also set `CROSSMINT_ENVIRONMENT=production` on `handlecrossmintwebhook`, `handlepaymentwebhook`, and `reconcilefundingorders`. Register a **new** webhook in the Crossmint production console on the same URL. Leave staging keys in place.
 
 Webhook URL:
 
@@ -52,7 +91,7 @@ Ledger credit happens only after `orders.delivery.completed` **and** GET Order s
 
 SafariTap (`pretium`) is on Dart `^3.1.4`. The official `crossmint_flutter` package requires Dart `^3.11.4`, so this path uses Crossmint’s documented WebView checkout URL:
 
-`https://staging.crossmint.com/sdk/2024-03-05/embedded-checkout`
+`https://staging.crossmint.com/sdk/2024-03-05/embedded-checkout` in staging, or `https://www.crossmint.com/sdk/2024-03-05/embedded-checkout` in production.
 
 Do not credit the wallet because the WebView closed. Call `handlePaymentWebhook` / wait for the webhook.
 

@@ -1,10 +1,8 @@
 /**
- * @fileoverview Crossmint Onramp adapter. Staging only.
- * Credits happen in fundingWebhookService after GET Order verification.
+ * @fileoverview Crossmint Onramp adapter. Credits after GET Order verification.
  */
 
 const crypto = require("crypto");
-const config = require("../../../config");
 const { FUNDING_PROVIDERS, FUNDING_CURRENCY } = require("../../../utils/fundingTypes");
 const { FALLBACK_PAYSTACK_EMAIL } = require("../../../utils/paystackEmail");
 const { createLogger } = require("../../../utils/paymentOpsLogger");
@@ -277,7 +275,7 @@ function normalizeWebhook(payload) {
  * @returns {boolean}
  */
 function verifyWebhookSignature(req, rawBody) {
-  const secret = process.env.CROSSMINT_WEBHOOK_SECRET || config.crossmint?.webhookSecret || "";
+  const secret = crossmintApi.webhookSecret();
   if (!secret) return false;
   const svixId = req.get("svix-id");
   const svixTimestamp = req.get("svix-timestamp");

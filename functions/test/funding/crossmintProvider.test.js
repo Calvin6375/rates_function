@@ -17,6 +17,7 @@ jest.mock("../../services/funding/providers/crossmintApi", () => ({
   getOrder: jest.fn(),
   linkWallet: jest.fn(),
   buildEmbeddedCheckoutUrl: jest.fn(() => "https://staging.crossmint.com/sdk/2024-03-05/embedded-checkout?orderId=cm1"),
+  webhookSecret: jest.fn(() => process.env.CROSSMINT_WEBHOOK_SECRET || ""),
 }));
 
 const crypto = require("crypto");

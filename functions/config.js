@@ -56,6 +56,9 @@ const config = {
     crossmintServerApiKey: "CROSSMINT_SERVER_API_KEY",
     crossmintWebhookSecret: "CROSSMINT_WEBHOOK_SECRET",
     crossmintCollectionWallet: "CROSSMINT_COLLECTION_WALLET",
+    crossmintServerApiKeyProd: "CROSSMINT_SERVER_API_KEY_PROD",
+    crossmintWebhookSecretProd: "CROSSMINT_WEBHOOK_SECRET_PROD",
+    crossmintCollectionWalletProd: "CROSSMINT_COLLECTION_WALLET_PROD",
     darajaConsumerKey: "DARAJA_CONSUMER_KEY",
     darajaConsumerSecret: "DARAJA_CONSUMER_SECRET",
     darajaInitiatorPassword: "DARAJA_INITIATOR_PASSWORD",
@@ -360,10 +363,11 @@ const config = {
   },
 
   /**
-   * Crossmint Onramp. Sandbox uses staging only.
-   * Server key never leaves Cloud Functions. Collection wallet receives USDC.
+   * Crossmint Onramp. Staging keys stay on the names without `_PROD`.
+   * Production uses `CROSSMINT_*_PROD` plus `CROSSMINT_ENVIRONMENT=production`.
    */
   crossmint: {
+    environment: getEnv("CROSSMINT_ENVIRONMENT", "staging"),
     serverApiKey: getEnv("CROSSMINT_SERVER_API_KEY", null),
     webhookSecret: getEnv("CROSSMINT_WEBHOOK_SECRET", null),
     collectionWallet: getEnv("CROSSMINT_COLLECTION_WALLET", null),
@@ -375,6 +379,14 @@ const config = {
     chain: getEnv("CROSSMINT_CHAIN", "base-sepolia"),
     clientApiKey: getEnv("CROSSMINT_CLIENT_API_KEY", null),
     baseUrl: getEnv("CROSSMINT_BASE_URL", "https://staging.crossmint.com/api"),
+    serverApiKeyProd: getEnv("CROSSMINT_SERVER_API_KEY_PROD", null),
+    webhookSecretProd: getEnv("CROSSMINT_WEBHOOK_SECRET_PROD", null),
+    collectionWalletProd: getEnv("CROSSMINT_COLLECTION_WALLET_PROD", null),
+    userLocatorProd: getEnv("CROSSMINT_USER_LOCATOR_PROD", null),
+    tokenLocatorProd: getEnv("CROSSMINT_TOKEN_LOCATOR_PROD", null),
+    chainProd: getEnv("CROSSMINT_CHAIN_PROD", null),
+    clientApiKeyProd: getEnv("CROSSMINT_CLIENT_API_KEY_PROD", null),
+    baseUrlProd: getEnv("CROSSMINT_BASE_URL_PROD", null),
     timeoutMs: Number(getEnv("CROSSMINT_API_TIMEOUT_MS", "20000")),
   },
 
@@ -383,8 +395,9 @@ const config = {
     defaultProvider: getEnv("FUNDING_DEFAULT_PROVIDER", "paystack"),
     /**
      * C2B provider when currency is USD.
-     * `crossmint` (default) uses Crossmint Onramp sandbox. Set `paystack` to
-     * restore USD → KES Paystack checkout.
+     * `crossmint` (default) uses Crossmint Onramp. Staging unless
+     * `CROSSMINT_ENVIRONMENT=production`. Set `paystack` to restore USD → KES
+     * Paystack checkout.
      */
     usdProvider: getEnv("FUNDING_USD_PROVIDER", "crossmint"),
     /** USD only — TruePay owns FX at settlement */
