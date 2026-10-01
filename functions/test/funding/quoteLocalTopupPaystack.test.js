@@ -72,12 +72,51 @@ describe("quoteLocalTopupPaystack", () => {
     expect(quote).toMatchObject({
       youDeposit: 50,
       processingFees: 1.25,
+      processingFeesCurrency: "KES",
       youWillPay: 51.25,
+      youWillPayCurrency: "KES",
+      paystackAmount: 51.25,
       pricingApplied: true,
       provider: "paystack",
     });
     expect(quote.lines.find((l) => l.key === "processing_fees").display).toBe("1.25 KES");
     expect(quote.lines.find((l) => l.key === "you_will_pay").display).toBe("51.25 KES");
+  });
+
+  it("returns processing fees in USD when the user deposits USD", async () => {
+    convertToKesForPaystack.mockResolvedValue({
+      requestedAmount: 5,
+      requestedCurrency: "USD",
+      amountKes: 649.1,
+      paystackCurrency: "KES",
+      fxRate: 129.82,
+    });
+    productPricingService.computeLocalTopupPaystackCharge.mockResolvedValue({
+      creditAmountKes: 649.1,
+      feeAmount: 66.89,
+      chargeAmountKes: 715.99,
+      applied: true,
+      feePercent: 1.523,
+      flatFee: 57,
+      pricingProductKey: "local_topup",
+    });
+
+    const quote = await quoteLocalTopupPaystack({amount: 5, currency: "USD"});
+    expect(quote.youDeposit).toBe(5);
+    expect(quote.currency).toBe("USD");
+    expect(quote.processingFeesCurrency).toBe("USD");
+    expect(quote.youWillPayCurrency).toBe("USD");
+    expect(quote.processingFees).toBe(0.52);
+    expect(quote.youWillPay).toBe(5.52);
+    expect(quote.paystackAmount).toBe(715.99);
+    expect(quote.paystackCurrency).toBe("KES");
+    expect(quote.feeAmountKes).toBe(66.89);
+    expect(quote.lines.find((l) => l.key === "processing_fees")).toMatchObject({
+      amount: 0.52,
+      currency: "USD",
+      display: "0.52 USD",
+    });
+    expect(quote.lines.find((l) => l.key === "you_will_pay").display).toBe("5.52 USD");
   });
 
   it("rejects quotes above 50,000 KES with a customer-facing limit", async () => {

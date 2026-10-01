@@ -110,9 +110,10 @@ Response fields for the Review screen:
 | UI row | Field |
 |--------|--------|
 | You deposit | `youDeposit` / `lines[you_deposit]` |
-| Processing fees | `processingFees` (`display`: `"Free"` or `"1.25 KES"`) |
+| Processing fees | `processingFees` / `processingFeesCurrency` (same currency as the deposit) |
 | Payment method fees | `paymentMethodFees` (always 0 / Free for now) |
-| You will pay | `youWillPay` / `paystackAmount` (KES charged on Paystack) |
+| You will pay | `youWillPay` / `youWillPayCurrency` (deposit + fees, same currency) |
+| Paystack charge | `paystackAmount` / `paystackCurrency` (always KES) |
 | Checkout provider | `checkoutProvider` → `"Paystack"` |
 
 Then create checkout with the same `amount` + `currency` via `createPayment` / `POST /funding/orders`.

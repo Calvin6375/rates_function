@@ -7,7 +7,7 @@ const config = require("../../config");
 const fundingOrderService = require("./fundingOrderService");
 const fundingRailService = require("./fundingRailService");
 const fundingIdempotencyService = require("./fundingIdempotencyService");
-const { convertToKesForPaystack, assertC2bTopupWithinMaxKes, getC2bMaxTopupKes, maxAmountForCurrency } = require("./c2bFundingFxService");
+const { convertToKesForPaystack, assertC2bTopupWithinMaxKes, getC2bMaxTopupKes, maxAmountForCurrency, roundMajorUnits } = require("./c2bFundingFxService");
 const { resolvePaystackCallbackUrl } = require("./fundingCallbackService");
 const { recordEvent } = require("../ops/paymentTimelineService");
 const opsMetrics = require("../ops/opsMetricsService");
@@ -606,12 +606,21 @@ async function recordCheckoutTimeline(params) {
 }
 
 /**
- * Map funding order to legacy createPayment response for Flutter C2B app.
- *
- * @param {Object} order
- * @param {Object} [extra]
- * @returns {Object}
+ * Convert a KES fee/charge into the currency the user is depositing.
+ * @param {number} kesAmount
+ * @param {string} depositCurrency
+ * @param {number} fxRate KES per 1 deposit unit
+ * @returns {number}
  */
+function kesToDepositCurrency(kesAmount, depositCurrency, fxRate) {
+  const kes = Number(kesAmount) || 0;
+  const rate = Number(fxRate) || 1;
+  if (String(depositCurrency).toUpperCase() === C2B_PAYSTACK_CURRENCY || rate === 1) {
+    return roundMajorUnits(kes);
+  }
+  return roundMajorUnits(kes / rate);
+}
+
 /**
  * Quote Local Topup (Paystack) breakdown for the Deposit Review screen.
  * Does not create a funding order or open checkout.
@@ -638,9 +647,12 @@ async function quoteLocalTopupPaystack(params) {
 
   const youDeposit = charge.requestedAmount;
   const depositCurrency = charge.requestedCurrency;
-  const processingFees = topupCharge.feeAmount;
+  const fxRate = Number(charge.fxRate) || 1;
+  const processingFeesKes = topupCharge.feeAmount;
+  const youWillPayKes = topupCharge.chargeAmountKes;
+  const processingFees = kesToDepositCurrency(processingFeesKes, depositCurrency, fxRate);
   const paymentMethodFees = 0;
-  const youWillPay = topupCharge.chargeAmountKes;
+  const youWillPay = roundMajorUnits(youDeposit + processingFees);
   const paystackCurrency = C2B_PAYSTACK_CURRENCY;
   const maxTopupKes = getC2bMaxTopupKes();
   const maxTopupAmount = depositCurrency === paystackCurrency ?
@@ -662,18 +674,20 @@ async function quoteLocalTopupPaystack(params) {
     youReceive: youDeposit,
     amount: youDeposit,
     currency: depositCurrency,
-    /** Platform fee (KES) from local_topup when live */
+    /** Platform fee in the currency the user entered */
     processingFees,
-    processingFeesCurrency: paystackCurrency,
+    processingFeesCurrency: depositCurrency,
     paymentMethodFees,
-    paymentMethodFeesCurrency: paystackCurrency,
-    /** Total charged on Paystack (KES) */
+    paymentMethodFeesCurrency: depositCurrency,
+    /** Total the user pays, in the deposit currency */
     youWillPay,
+    youWillPayCurrency: depositCurrency,
     totalToPay: youWillPay,
-    paystackAmount: youWillPay,
+    paystackAmount: youWillPayKes,
     paystackCurrency,
     faceAmountKes: topupCharge.creditAmountKes,
     feeAmount: processingFees,
+    feeAmountKes: processingFeesKes,
     feePercent: topupCharge.feePercent,
     flatFeeKes: topupCharge.flatFee,
     pricingApplied: topupCharge.applied,
@@ -694,27 +708,34 @@ async function quoteLocalTopupPaystack(params) {
         key: "processing_fees",
         label: "Processing fees",
         amount: processingFees,
-        currency: paystackCurrency,
-        display: formatLine(processingFees, paystackCurrency),
+        currency: depositCurrency,
+        display: formatLine(processingFees, depositCurrency),
       },
       {
         key: "payment_method_fees",
         label: "Payment method fees",
         amount: paymentMethodFees,
-        currency: paystackCurrency,
-        display: formatLine(paymentMethodFees, paystackCurrency),
+        currency: depositCurrency,
+        display: formatLine(paymentMethodFees, depositCurrency),
       },
       {
         key: "you_will_pay",
         label: "You will pay",
         amount: youWillPay,
-        currency: paystackCurrency,
-        display: formatLine(youWillPay, paystackCurrency),
+        currency: depositCurrency,
+        display: formatLine(youWillPay, depositCurrency),
       },
     ],
   };
 }
 
+/**
+ * Map funding order to legacy createPayment response for Flutter C2B app.
+ *
+ * @param {Object} order
+ * @param {Object} [extra]
+ * @returns {Object}
+ */
 function mapFundingOrderToCreatePaymentResponse(order, extra = {}) {
   const reference = order.providerReference || order.id;
   const requestedAmount = order.metadata?.requestedAmount ?? order.amount;
