@@ -31,7 +31,7 @@ functions/
 │   └── safariCoinService.js   # **MOCK ONLY** – mint/burn/convert SFRC (TODO: blockchain)
 │
 ├── http/                       # HTTP and callable handlers
-│   ├── webhookApi.js           # IntaSend + TransFi webhooks (handleTopUpWebhook, handleTransFiTopUpWebhook)
+│   ├── webhookApi.js           # IntaSend webhooks (handleTopUpWebhook)
 │   ├── partnerApi.js          # B2B REST under /partner (X-API-KEY)
 │   ├── paymentsHttp.js        # Callables: createPayment, createSwapOrder, createSendMoneyOrder, handlePaymentWebhook
 │   ├── customerWalletsHttp.js # Consumer REST: api (rates, customer-wallets, credit/debit)
@@ -120,7 +120,6 @@ functions/
 ## Webhooks
 
 - **IntaSend:** `handleTopUpWebhook` (exported from `http/webhookApi.js`). Verify signature/challenge → resolve user → credit wallet via `libs/payments.js`.
-- **TransFi:** `handleTransFiTopUpWebhook` (exported from `http/webhookApi.js`). Same flow via `libs/payments.js`.
 
 Existing webhook URLs and behavior are unchanged; only the implementing module was moved to `webhookApi.js`.
 

@@ -54,7 +54,6 @@ exports.getBinanceRates = ratesHttp.getBinanceRates;
 exports.handleTopUpWebhook = webhookApi.handleTopUpWebhook;
 exports.handleIntaSendDisbursementWebhook =
   intasendDisbursementWebhookHttp.handleIntaSendDisbursementWebhook;
-exports.handleTransFiTopUpWebhook = webhookApi.handleTransFiTopUpWebhook;
 exports.handleCircleWebhook = circleWebhookHttp.handleCircleWebhook;
 exports.handlePaystackWebhook = paystackWebhookHttp.handlePaystackWebhook;
 exports.handleTransakWebhook = transakWebhookHttp.handleTransakWebhook;

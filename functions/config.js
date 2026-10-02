@@ -36,7 +36,6 @@ const config = {
     intaSendChallenge: "INTASEND_CHALLENGE",
     intaSendSecretKey: "INTASEND_SECRET_KEY",
     intaSendPublishableKey: "INTASEND_PUBLISHABLE_KEY",
-    transfiWebhookSecret: "TRANSFI_WEBHOOK_SECRET",
     circleApiKey: "CIRCLE_API_KEY",
     circleEntitySecret: "CIRCLE_ENTITY_SECRET",
     turnkeyApiPublicKey: "TURNKEY_API_PUBLIC_KEY",

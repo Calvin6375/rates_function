@@ -1,6 +1,6 @@
 # Circle USDC — Developer-Controlled Wallets
 
-TruePay integrates [Circle Developer-Controlled Wallets](https://developers.circle.com/wallets/dev-controlled) as a **crypto payment rail** alongside existing fiat rails (IntaSend, TransFi). Circle handles wallet creation, on-chain transfers, and webhook notifications — the backend never manages private keys or blockchain nodes.
+TruePay integrates [Circle Developer-Controlled Wallets](https://developers.circle.com/wallets/dev-controlled) as a **crypto payment rail** alongside the existing fiat rail (IntaSend). Circle handles wallet creation, on-chain transfers, and webhook notifications — the backend never manages private keys or blockchain nodes.
 
 USDC balances are tracked separately from fiat wallets. **Firestore is the source of truth** (append-only ledger + aggregate cache + reservations). Realtime Database at `wallet/{userId}/crypto/USDC` is a **read-only projection** for the Flutter app — never used for balance computation.
 
@@ -150,7 +150,7 @@ Extensions to existing services:
 | `triggers/usersTrigger.js` | Auto-provision Circle wallet via adapter on `users/{userId}` create |
 | `utils/firestore.js` | USDC RTDB sync via `rtdbSyncService` (not direct RTDB writes) |
 
-Existing IntaSend and TransFi code is untouched.
+Existing IntaSend code is untouched.
 
 ---
 

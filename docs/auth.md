@@ -15,7 +15,7 @@ Authorization (what a caller may do) is enforced separately via:
 1. **Firebase custom claims** on the ID token (`userType`, `role`, `partnerId`; legacy `admin`, `partnerRole`)
 2. **Firestore `users/{uid}.permissions`** (B2B dashboard UI; not used for API gates today)
 3. **Partner API keys** in `partners/{id}.apiKey` (machine-to-machine)
-4. **Webhook HMAC / provider signatures** (IntaSend, TransFi, Circle)
+4. **Webhook HMAC / provider signatures** (IntaSend, Circle)
 5. **Firestore security rules** (direct client reads/writes to Firestore)
 
 Central module: **`functions/utils/accessControl.js`**
@@ -130,7 +130,6 @@ Set on new B2B dashboard users in `ensureUserDashboardProfile`; never overwritte
 | Source | Auth |
 |--------|------|
 | IntaSend | HMAC / challenge (`INTASEND_SECRET`, `INTASEND_CHALLENGE`) |
-| TransFi | Signature header + `TRANSFI_WEBHOOK_SECRET` |
 | Circle | Signature verification in `circleWebhookService` |
 | Scheduled jobs | No HTTP auth — runs as Cloud Functions service account |
 
@@ -256,7 +255,6 @@ Configured with `firebase functions:secrets:set` or deployment env — **correct
 | Secret / env | Used for |
 |--------------|----------|
 | `INTASEND_SECRET`, `INTASEND_CHALLENGE`, `INTASEND_SECRET_KEY`, `INTASEND_PUBLISHABLE_KEY` | Payments / webhooks |
-| `TRANSFI_WEBHOOK_SECRET` | TransFi webhooks |
 | `CIRCLE_API_KEY`, `CIRCLE_ENTITY_SECRET` | Circle wallet / webhooks |
 | `WEB_API_KEY` | Password reset / change / set-pin (Identity Toolkit). Same value as client web `apiKey`. (Do not name it `FIREBASE_*` — Secret Manager reserved prefix.) |
 | `SMTP_USER`, `SMTP_PASS` | Zoho SMTP for branded verification (`sendEmailVerification`, `POST /portal/send-verification-email`) |

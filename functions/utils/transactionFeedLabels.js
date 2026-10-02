@@ -39,7 +39,6 @@ function providerDisplayName(provider) {
     paystack: "Paystack",
     intasend: "IntaSend",
     transak: "Transak",
-    transfi: "TransFi",
     circle: "Circle",
     turnkey: "Turnkey",
     stripe: "Stripe",
