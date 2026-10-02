@@ -27,8 +27,12 @@ const NOTIFICATION_TYPES = {
   BALANCE_LOW: "balance_low",
   SECURITY_ALERT: "security_alert",
   SYSTEM_ALERT: "system_alert",
-  /** Super-admin composed push to C2B users */
+  /** Super-admin composed operational alert for the Safari Tap System tab */
+  ADMIN_SYSTEM: "system",
+  /** Super-admin composed push to C2B users (legacy; app treats as System) */
   ADMIN_CUSTOM: "admin_custom",
+  /** Marketing message for the Safari Tap Promotions tab */
+  PROMOTION: "promotion",
 };
 
 /**

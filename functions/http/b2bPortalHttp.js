@@ -999,7 +999,8 @@ app.get("/platform/consumer-users/:userId", loadFirebaseUser, requirePlatformAdm
 
 /**
  * POST /platform/notifications
- * Super admin only. Custom in-app + FCM push to C2B users (needs users.fcmToken).
+ * Super admin only. Safari Tap inbox + FCM push (needs users.fcmToken).
+ * Body `type`: "promotion" (Promotions tab) or "system" (System tab).
  */
 app.post("/platform/notifications", loadFirebaseUser, requireSuperAdmin, async (req, res) => {
   try {

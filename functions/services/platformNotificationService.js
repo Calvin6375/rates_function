@@ -16,6 +16,63 @@ const TITLE_MAX = 80;
 const MESSAGE_MAX = 500;
 
 /**
+ * Dashboard composer kind. Safari Tap buckets inbox rows by `type` and
+ * `metadata.category` (`promotion` → Promotions, `system` → System).
+ * @param {unknown} raw
+ * @returns {"promotion"|"system"|"custom"}
+ */
+function resolveInboxKind(raw) {
+  const kind = String(raw || "").trim().toLowerCase();
+  if (
+    kind === "promotion" ||
+    kind === "promo" ||
+    kind === "promotions" ||
+    kind === "marketing"
+  ) {
+    return "promotion";
+  }
+  if (kind === "system" || kind === "announcement") {
+    return "system";
+  }
+  return "custom";
+}
+
+/**
+ * @param {"promotion"|"system"|"custom"} kind
+ * @param {string} actorUid
+ * @returns {{type: string, metadata: Object}}
+ */
+function inboxPayloadForKind(kind, actorUid) {
+  if (kind === "promotion") {
+    return {
+      type: NOTIFICATION_TYPES.PROMOTION,
+      metadata: {
+        category: "promotion",
+        source: "platform_admin_promotion",
+        sentBy: actorUid,
+      },
+    };
+  }
+  if (kind === "system") {
+    return {
+      type: NOTIFICATION_TYPES.ADMIN_SYSTEM,
+      metadata: {
+        category: "system",
+        source: "platform_admin_system",
+        sentBy: actorUid,
+      },
+    };
+  }
+  return {
+    type: NOTIFICATION_TYPES.ADMIN_CUSTOM,
+    metadata: {
+      source: "platform_admin_custom",
+      sentBy: actorUid,
+    },
+  };
+}
+
+/**
  * @param {unknown} raw
  * @returns {string[]}
  */
@@ -70,6 +127,8 @@ async function sendCustomNotification(actorUid, body) {
   const message = String(payload.message || "").trim();
   const actionUrl = payload.actionUrl ? String(payload.actionUrl).trim() : null;
   const audience = String(payload.audience || "").trim().toLowerCase();
+  const kind = resolveInboxKind(payload.type || payload.kind || payload.category);
+  const inbox = inboxPayloadForKind(kind, actorUid);
 
   if (!title || title.length > TITLE_MAX) {
     const err = new Error(`title is required (max ${TITLE_MAX} characters)`);
@@ -113,14 +172,11 @@ async function sendCustomNotification(actorUid, body) {
     try {
       const created = await createNotification({
         userId,
-        type: NOTIFICATION_TYPES.ADMIN_CUSTOM,
+        type: inbox.type,
         title,
         message,
         actionUrl,
-        metadata: {
-          source: "platform_admin_custom",
-          sentBy: actorUid,
-        },
+        metadata: inbox.metadata,
         sendPush: true,
       });
       inboxWritten += 1;
@@ -146,6 +202,7 @@ async function sendCustomNotification(actorUid, body) {
       {},
       {
         title,
+        type: inbox.type,
         audience: audience || "explicit",
         recipientCount: userIds.length,
         pushSent,
@@ -157,6 +214,7 @@ async function sendCustomNotification(actorUid, body) {
   return {
     title,
     message,
+    type: inbox.type,
     audience: audience || "explicit",
     requested: userIds.length,
     inboxWritten,
@@ -168,6 +226,7 @@ async function sendCustomNotification(actorUid, body) {
 
 module.exports = {
   sendCustomNotification,
+  resolveInboxKind,
   MAX_USER_IDS,
   MAX_BROADCAST,
 };

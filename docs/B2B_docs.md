@@ -684,7 +684,8 @@ Does **not** change balances, `channel`, `institution`, or partner roles.
   "userId": "vFEshV4ZdYOrnEGKKAwWRq6K44G2",
   "userIds": ["uid_2", "uid_3"],
   "audience": "c2b",
-  "actionUrl": "/wallet"
+  "actionUrl": "/wallet",
+  "type": "promotion"
 }
 ```
 
@@ -695,9 +696,10 @@ Does **not** change balances, `channel`, `institution`, or partner roles.
 | `userId` | One of | Single recipient |
 | `userIds` | One of | Up to 100 explicit UIDs |
 | `audience` | One of | `"c2b"` (or `"all"`) — up to 300 C2B `users` |
-| `actionUrl` | No | Optional deep link for the app |
+| `actionUrl` | No | Optional in-app link (e.g. `/wallet`) |
+| `type` | No | `"promotion"` writes the Safari Tap **Promotions** inbox (`metadata.category: "promotion"`). `"system"` writes the **System** inbox. Omitted keeps legacy `admin_custom` (System tab). |
 
-Push is sent only when `users/{uid}.fcmToken` is set. Inbox row is always written.
+Push is sent only when `users/{uid}.fcmToken` is set. Inbox row is always written. The Safari Tap app reads `notifications` where `userId` is the signed-in uid and shows `type: "promotion"` on the Promotions tab.
 
 **Response** `200`
 
