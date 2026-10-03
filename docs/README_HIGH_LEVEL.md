@@ -25,10 +25,11 @@ Firebase project ID in this repo: **`truepay-72060`**. Default region: **`us-cen
 
 - **Paystack** — Tourist wallet top-ups via hosted card checkout (`createPayment` callable and `POST /funding/orders`); see [§3 Tourist Payments](#3-tourist-payments-paystack-funding)
 - **Crossmint** — `createPayment` with `currency: USD` uses Crossmint Onramp when `FUNDING_USD_PROVIDER=crossmint`. Staging by default; production uses `CROSSMINT_*_PROD` when `CROSSMINT_ENVIRONMENT=production`. KES stays on Paystack. See [`crossmint-sandbox-c2b.md`](./crossmint-sandbox-c2b.md).
+- **PayLio** — `createPayment` with `currency: USD` uses PayLio hosted checkout when `FUNDING_USD_PROVIDER=paylio`. The customer pays the PayLio fee (`passFeeToCustomer`). The wallet is credited only after PayLio `GET /payment-status` reports `paid` and `forward_status=completed` (Polygon USDC). KES stays on Paystack.
 - **IntaSend** — mobile money checkout, webhooks, direct top-ups, B2B payment links
 - **Circle** — USDC deposits and on-chain sends via developer-controlled wallets
 - Callables: `createPayment`, `createDirectTopup`, `createDirectPayout`, `createSwapOrder`, `createSendMoneyOrder`, `handlePaymentWebhook`, `requestPasswordReset`
-- Webhooks: `handlePaystackWebhook`, `handleCrossmintWebhook`, `handleTopUpWebhook`, `handleCircleWebhook`, `handleDarajaCallback`
+- Webhooks: `handlePaystackWebhook`, `handleCrossmintWebhook`, `handlePaylioWebhook`, `handleTopUpWebhook`, `handleCircleWebhook`, `handleDarajaCallback`
 - Idempotent processing; HMAC / challenge verification on webhooks
 
 ### 3. Tourist Payments (Paystack funding)
@@ -383,7 +384,8 @@ functions/
    - Paystack (Tourist): `PAYSTACK_SECRET_KEY`, `PAYSTACK_SPLIT_CODE` (+ optional: `PAYSTACK_CALLBACK_URL`, `PAYSTACK_WEBHOOK_SECRET`, `PAYSTACK_PUBLIC_KEY`)
    - Daraja (merchant settlement): `DARAJA_CONSUMER_KEY`, `DARAJA_CONSUMER_SECRET`, `DARAJA_INITIATOR_PASSWORD` (+ `DARAJA_RESULT_URL` for live callbacks)
    - Circle: `CIRCLE_API_KEY`, `CIRCLE_ENTITY_SECRET` (+ env: `CIRCLE_WALLET_SET_ID`, `CIRCLE_BLOCKCHAIN`, `CIRCLE_USDC_TOKEN_ID`, `CIRCLE_ENV`)
-   - Optional: `B2B_SANDBOX_PUBLIC_API_KEY`, `FIREBASE_WEB_API_KEY`, `PAYMENT_LINK_BASE_URL`, `MASTER_ADMIN_EMAIL`, `C2B_APP_DEEP_LINK`, `FUNDING_DEFAULT_PROVIDER`
+   - PayLio (USD collection when `FUNDING_USD_PROVIDER=paylio`): `PAYLIO_API_KEY`, `PAYLIO_POLYGON_WALLET` (optional override: `PAYLIO_CALLBACK_BASE_URL`)
+   - Optional: `B2B_SANDBOX_PUBLIC_API_KEY`, `FIREBASE_WEB_API_KEY`, `PAYMENT_LINK_BASE_URL`, `MASTER_ADMIN_EMAIL`, `C2B_APP_DEEP_LINK`, `FUNDING_DEFAULT_PROVIDER`, `FUNDING_USD_PROVIDER`
    - Firestore `config/fees` document
 
 5. **Ops scripts** (from `functions/`)
