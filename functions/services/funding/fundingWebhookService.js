@@ -12,6 +12,7 @@ const opsMetrics = require("../ops/opsMetricsService");
 const paymentNotifications = require("../ops/paymentNotificationService");
 const {
   FUNDING_STATUSES,
+  FUNDING_PROVIDERS,
   WEBHOOK_RECEIPT_STATUSES,
   TIMELINE_EVENT_TYPES,
 } = require("../../utils/fundingTypes");
@@ -251,6 +252,21 @@ async function confirmFundingOrder(userId, fundingOrderId) {
     return { success: true, duplicate: true, fundingOrder: order };
   }
 
+  if (order.provider === FUNDING_PROVIDERS.paylio) {
+    logger.info("funding.confirm.deferred", {
+      fundingOrderId: order.id,
+      provider: order.provider,
+      userId,
+      status: order.status,
+    });
+    return {
+      success: false,
+      pending: true,
+      fundingOrderId: order.id,
+      fundingOrder: order,
+    };
+  }
+
   const verified = await fundingRailService.verifyPayment(order.provider, order.providerReference);
   return processFundingEvent({
     provider: order.provider,
@@ -275,6 +291,20 @@ async function confirmB2bFundingOrder(partnerId, fundingOrderId) {
 
   if (order.status === FUNDING_STATUSES.completed) {
     return { success: true, duplicate: true, fundingOrder: order };
+  }
+
+  if (order.provider === FUNDING_PROVIDERS.paylio) {
+    logger.info("funding.confirm.deferred", {
+      fundingOrderId: order.id,
+      provider: order.provider,
+      status: order.status,
+    });
+    return {
+      success: false,
+      pending: true,
+      fundingOrderId: order.id,
+      fundingOrder: order,
+    };
   }
 
   const verified = await fundingRailService.verifyPayment(order.provider, order.providerReference);

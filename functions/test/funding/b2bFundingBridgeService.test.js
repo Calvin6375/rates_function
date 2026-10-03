@@ -120,13 +120,79 @@ describe("b2bFundingBridgeService", () => {
     );
   });
 
-  it("rejects non-KES currency", async () => {
+  it("rejects a currency that is neither KES nor a PayLio currency", async () => {
     await expect(b2bFundingBridge.createB2bSelfTopupCheckout({
       partnerId: "partner_1",
       actorUid: "uid_1",
       amount: 100,
+      currency: "NGN",
+    })).rejects.toThrow(/KES on Paystack/);
+    expect(fundingRailService.initializePayment).not.toHaveBeenCalled();
+  });
+
+  it("creates a USD PayLio checkout and does not use the Paystack fee", async () => {
+    fundingOrderService.createFundingOrder.mockResolvedValue({
+      id: "fund_b2b_usd",
+      userId: "uid_1",
+      provider: "paylio",
+      amount: 49.99,
       currency: "USD",
-    })).rejects.toThrow(/KES only/);
+      status: "pending",
+      providerReference: "fund_b2b_usd",
+      metadata: {
+        product: "b2b_self_topup",
+        partnerId: "partner_1",
+        requestedAmount: 49.99,
+        requestedCurrency: "USD",
+      },
+    });
+    fundingRailService.initializePayment.mockResolvedValue({
+      checkoutUrl: "https://paylio.org/pay/clx_b2b",
+      providerReference: "ipn_b2b",
+      providerTransactionId: "clx_b2b",
+      raw: {
+        providerFee: 3.19,
+        customerPayAmount: 53.18,
+        passFeeToCustomer: true,
+        feePercent: 5,
+      },
+    });
+    fundingOrderService.updateFundingOrder.mockImplementation(async (_id, patch) => ({
+      id: "fund_b2b_usd",
+      provider: "paylio",
+      amount: patch.amount || 49.99,
+      currency: "USD",
+      status: "pending",
+      providerReference: patch.providerReference,
+      checkoutUrl: patch.checkoutUrl,
+      metadata: patch.metadata,
+    }));
+
+    const response = await b2bFundingBridge.createB2bSelfTopupCheckout({
+      partnerId: "partner_1",
+      actorUid: "uid_1",
+      amount: 49.99,
+      currency: "USD",
+      email: "ops@hotel.com",
+    });
+
+    expect(productPricingService.computeLocalTopupPaystackCharge).not.toHaveBeenCalled();
+    expect(fundingRailService.initializePayment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: "paylio",
+          amount: 49.99,
+          currency: "USD",
+          fundingOrderId: "fund_b2b_usd",
+        }),
+    );
+    expect(response).toMatchObject({
+      provider: "paylio",
+      currency: "USD",
+      amount: 49.99,
+      feeAmount: 3.19,
+      totalToPay: 53.18,
+      checkoutUrl: "https://paylio.org/pay/clx_b2b",
+    });
   });
 
   it("rejects invalid amount", async () => {

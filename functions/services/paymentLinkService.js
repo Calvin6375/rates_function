@@ -9,7 +9,7 @@ const config = require("../config");
 const { collection, serverTimestamp } = require("../libs/firestore");
 const partnerService = require("./partnerService");
 
-const VALID_CURRENCIES = ["USD", "KES", "USDT", "NGN", "GHS"];
+const VALID_CURRENCIES = ["USD", "EUR", "INR", "CAD", "KES", "USDT", "NGN", "GHS"];
 const VALID_STATUSES = ["active", "cancelled", "paid"];
 const MAX_LIST = 100;
 

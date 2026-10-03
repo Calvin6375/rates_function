@@ -15,6 +15,7 @@ const crossmintServerApiKey = defineSecret(config.secrets.crossmintServerApiKey)
 const crossmintServerApiKeyProd = defineSecret(config.secrets.crossmintServerApiKeyProd);
 const crossmintCollectionWallet = defineSecret(config.secrets.crossmintCollectionWallet);
 const crossmintCollectionWalletProd = defineSecret(config.secrets.crossmintCollectionWalletProd);
+const paylioApiKey = defineSecret(config.secrets.paylioApiKey);
 const logger = createLogger({ service: "reconcileFundingOrders" });
 
 exports.reconcileFundingOrders = onSchedule(
@@ -28,6 +29,7 @@ exports.reconcileFundingOrders = onSchedule(
         crossmintServerApiKeyProd,
         crossmintCollectionWallet,
         crossmintCollectionWalletProd,
+        paylioApiKey,
       ],
       region: config.region,
       cpu: config.resources.cpu,

@@ -8,6 +8,7 @@ const { registerFundingProviders } = require("./fundingProviderInterface");
 const paystackRail = require("./paystackRail");
 const transakRail = require("./transakRail");
 const crossmintProvider = require("./providers/crossmintProvider");
+const paylioProvider = require("./providers/paylioProvider");
 const { FUNDING_PROVIDERS } = require("../../utils/fundingTypes");
 
 /** @type {Record<string, Object>} */
@@ -15,6 +16,7 @@ const PROVIDERS = registerFundingProviders({
   [FUNDING_PROVIDERS.paystack]: paystackRail,
   [FUNDING_PROVIDERS.transak]: transakRail,
   [FUNDING_PROVIDERS.crossmint]: crossmintProvider,
+  [FUNDING_PROVIDERS.paylio]: paylioProvider,
 });
 
 /**

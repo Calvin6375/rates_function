@@ -1233,6 +1233,8 @@ const crossmintServerApiKey = defineSecret(config.secrets.crossmintServerApiKey)
 const crossmintCollectionWallet = defineSecret(config.secrets.crossmintCollectionWallet);
 const crossmintServerApiKeyProd = defineSecret(config.secrets.crossmintServerApiKeyProd);
 const crossmintCollectionWalletProd = defineSecret(config.secrets.crossmintCollectionWalletProd);
+const paylioApiKey = defineSecret(config.secrets.paylioApiKey);
+const paylioPolygonWallet = defineSecret(config.secrets.paylioPolygonWallet);
 
 // Export as Firebase Function
 exports.api = onRequest(
@@ -1251,6 +1253,8 @@ exports.api = onRequest(
       crossmintCollectionWallet,
       crossmintServerApiKeyProd,
       crossmintCollectionWalletProd,
+      paylioApiKey,
+      paylioPolygonWallet,
       ...C2B_ENCRYPTION_SECRETS,
     ],
   },

@@ -38,7 +38,15 @@ const crossmintCheckoutSecrets = [
   crossmintServerApiKeyProd,
   crossmintCollectionWalletProd,
 ];
-const fundingCheckoutSecrets = [...paystackSecrets, ...transakCheckoutSecrets, ...crossmintCheckoutSecrets];
+const paylioApiKey = defineSecret(config.secrets.paylioApiKey);
+const paylioPolygonWallet = defineSecret(config.secrets.paylioPolygonWallet);
+const paylioCheckoutSecrets = [paylioApiKey, paylioPolygonWallet];
+const fundingCheckoutSecrets = [
+  ...paystackSecrets,
+  ...transakCheckoutSecrets,
+  ...crossmintCheckoutSecrets,
+  ...paylioCheckoutSecrets,
+];
 
 const REDACTED_HEADER_KEYS = new Set([
   "authorization",

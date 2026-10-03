@@ -48,6 +48,8 @@ const smtpPass = defineSecret(config.secrets.smtpPass);
 const paystackSecretKey = defineSecret(config.secrets.paystackSecretKey);
 const paystackSplitCode = defineSecret(config.secrets.paystackSplitCode);
 const firebaseWebApiKey = defineSecret(config.secrets.firebaseWebApiKey);
+const paylioApiKey = defineSecret(config.secrets.paylioApiKey);
+const paylioPolygonWallet = defineSecret(config.secrets.paylioPolygonWallet);
 const emailService = require("../services/emailService");
 const accountPasswordService = require("../services/accountPasswordService");
 const googleAccountLinkService = require("../services/googleAccountLinkService");
@@ -68,6 +70,7 @@ const partnerTestLedgerService = require("../services/partnerTestLedgerService")
 const partnerProfileQrService = require("../services/partnerProfileQrService");
 const safariTapUserQrService = require("../services/safariTapUserQrService");
 const { correlationFromRequest } = require("../utils/paymentContext");
+const { isPaylioCheckoutCurrency } = require("../utils/fundingTypes");
 
 const {
   parseAccessFromToken,
@@ -2562,10 +2565,16 @@ app.patch("/platform/send/payments/:paymentId", loadFirebaseUser, requireSuperAd
 app.post("/portal/funding/quote", loadFirebaseUser, attachPartnerContext, async (req, res) => {
   try {
     const body = req.body || {};
-    const quote = await c2bFundingBridgeService.quoteLocalTopupPaystack({
-      amount: body.amount,
-      currency: body.currency || "KES",
-    });
+    const currency = String(body.currency || "KES").toUpperCase();
+    const quote = isPaylioCheckoutCurrency(currency) ?
+      b2bFundingBridgeService.quoteB2bInternationalTopup({
+        amount: body.amount,
+        currency,
+      }) :
+      await c2bFundingBridgeService.quoteLocalTopupPaystack({
+        amount: body.amount,
+        currency,
+      });
     res.status(200).json({
       success: true,
       data: {
@@ -2586,8 +2595,8 @@ app.post("/portal/funding/quote", loadFirebaseUser, attachPartnerContext, async 
 });
 
 /**
- * POST /portal/funding/checkout — B2B Add Money (Paystack KES hosted checkout).
- * Credits partner KES wallet after Paystack webhook verify.
+ * POST /portal/funding/checkout — B2B Add Money.
+ * KES uses Paystack. USD, EUR, INR, and CAD use PayLio.
  */
 app.post("/portal/funding/checkout", loadFirebaseUser, attachPartnerContext, async (req, res) => {
   try {
@@ -3269,6 +3278,8 @@ exports.b2bPortal = onRequest(
       smtpPass,
       paystackSecretKey,
       paystackSplitCode,
+      paylioApiKey,
+      paylioPolygonWallet,
       firebaseWebApiKey,
     ],
   },

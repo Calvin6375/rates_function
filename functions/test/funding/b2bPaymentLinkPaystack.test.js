@@ -191,4 +191,55 @@ describe("b2b payment link Paystack checkout", () => {
     expect(mockMappingSet).toHaveBeenCalled();
     expect(mockLinkUpdate).toHaveBeenCalled();
   });
+
+  it("uses PayLio for a USD payment link and leaves KES conversion unused", async () => {
+    paymentLinkService.getPublicPaymentLink.mockResolvedValue({
+      linkId: "pl_1",
+      partnerId: "partner_1",
+      status: "active",
+      amount: 49.99,
+      currency: "USD",
+      bookingReference: "ROOM-1",
+    });
+    fundingOrderService.createFundingOrder.mockResolvedValue({
+      id: "fund_pl_1",
+      providerReference: "fund_pl_1",
+      metadata: {
+        product: "b2b_payment_link",
+        partnerId: "partner_1",
+        linkId: "pl_1",
+        requestedAmount: 49.99,
+        requestedCurrency: "USD",
+      },
+    });
+    fundingRailService.initializePayment.mockResolvedValue({
+      checkoutUrl: "https://paylio.org/pay/clx_link",
+      providerReference: "ipn_link",
+      providerTransactionId: "clx_link",
+      raw: {
+        providerFee: 3.19,
+        customerPayAmount: 53.18,
+        passFeeToCustomer: true,
+      },
+    });
+
+    const result = await checkoutService.startCheckout(
+        "pl_1",
+        "partner_1",
+        { payerName: "Ada Lovelace", email: "ada@example.com" },
+        "paystack",
+    );
+
+    expect(convertToKesForPaystack).not.toHaveBeenCalled();
+    expect(fundingRailService.initializePayment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: "paylio",
+          amount: 49.99,
+          currency: "USD",
+        }),
+    );
+    expect(result.rail).toBe("paylio");
+    expect(result.checkoutUrl).toBe("https://paylio.org/pay/clx_link");
+    expect(result.chargeCurrency).toBe("USD");
+  });
 });

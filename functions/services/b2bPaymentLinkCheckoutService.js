@@ -16,6 +16,7 @@ const {
   B2B_PAYSTACK_CURRENCY,
   FUNDING_PROVIDERS,
   FUNDING_STATUSES,
+  isPaylioCheckoutCurrency,
 } = require("../utils/fundingTypes");
 const transactionService = require("./transactionService");
 
@@ -411,12 +412,165 @@ async function startPaystackCheckout(linkId, partnerId, link, identity, payer) {
   };
 }
 
+/**
+ * International payment-link collection. Credits the link currency after PayLio settlement.
+ * KES and other non-PayLio currencies stay on startPaystackCheckout.
+ *
+ * @param {string} linkId
+ * @param {string} partnerId
+ * @param {Object} link
+ * @param {Object} identity
+ * @param {Object} payer
+ * @returns {Promise<Object>}
+ */
+async function startPaylioCheckout(linkId, partnerId, link, identity, payer) {
+  const chargeCurrency = String(link.currency || "").toUpperCase();
+  const chargeAmount = Number(link.amount);
+  const fundingOrderId = fundingOrderService.generateFundingOrderId();
+  const apiRef = fundingOrderId;
+
+  const fundingOrder = await fundingOrderService.createFundingOrder({
+    id: fundingOrderId,
+    userId: `partner:${partnerId}`,
+    provider: FUNDING_PROVIDERS.paylio,
+    amount: chargeAmount,
+    currency: chargeCurrency,
+    providerReference: fundingOrderId,
+    correlationId: fundingOrderId,
+    metadata: {
+      product: B2B_PAYMENT_LINK_PRODUCT,
+      purpose: B2B_PURPOSE,
+      partnerId: String(partnerId),
+      linkId,
+      source: B2B_PAYMENT_LINK_PRODUCT,
+      requestedAmount: chargeAmount,
+      requestedCurrency: chargeCurrency,
+      payerName: identity.payerName,
+      partnerName: link.partnerName || null,
+      bookingReference: link.bookingReference || null,
+      apiRef,
+    },
+  });
+
+  let session;
+  try {
+    session = await fundingRailService.initializePayment({
+      provider: FUNDING_PROVIDERS.paylio,
+      amount: chargeAmount,
+      currency: chargeCurrency,
+      email: payer.email || null,
+      callbackUrl: null,
+      providerReference: fundingOrder.providerReference,
+      fundingOrderId: fundingOrder.id,
+      userId: `partner:${partnerId}`,
+      correlationId: fundingOrder.id,
+      metadata: fundingOrder.metadata,
+    });
+  } catch (err) {
+    await fundingOrderService.updateFundingOrder(fundingOrder.id, {
+      status: FUNDING_STATUSES.failed,
+      failureReason: err.message,
+    });
+    throw err;
+  }
+
+  const customerPayAmount = Number(session.raw?.customerPayAmount);
+  const checkoutId = session.providerReference || fundingOrder.providerReference;
+  const invoiceId = session.providerTransactionId || checkoutId;
+  const orderPatch = {
+    providerReference: checkoutId,
+    providerTransactionId: session.providerTransactionId || null,
+    checkoutUrl: session.checkoutUrl,
+    metadata: {
+      ...fundingOrder.metadata,
+      providerFee: session.raw?.providerFee ?? null,
+      customerPayAmount: session.raw?.customerPayAmount ?? null,
+      netSettlementAmount: session.raw?.netSettlementAmount ?? null,
+      feePercent: session.raw?.feePercent ?? null,
+      passFeeToCustomer: session.raw?.passFeeToCustomer === true,
+      feeAmount: session.raw?.providerFee ?? null,
+      paymentId: session.raw?.paymentId || null,
+      settlementCoin: session.raw?.settlementCoin || "polygon_usdc",
+    },
+  };
+  if (Number.isFinite(customerPayAmount) && customerPayAmount > 0) {
+    orderPatch.amount = customerPayAmount;
+  }
+  await fundingOrderService.updateFundingOrder(fundingOrder.id, orderPatch);
+
+  const orderId = await persistCheckoutRecords({
+    partnerId,
+    linkId,
+    link,
+    identity,
+    checkoutId,
+    invoiceId,
+    checkoutUrl: session.checkoutUrl,
+    rail: FUNDING_PROVIDERS.paylio,
+    apiRef,
+    extraMapping: {
+      fundingOrderId: fundingOrder.id,
+      metadata: {
+        requestedAmount: chargeAmount,
+        requestedCurrency: chargeCurrency,
+        providerFee: session.raw?.providerFee ?? null,
+        customerPayAmount: session.raw?.customerPayAmount ?? null,
+      },
+    },
+  });
+
+  const transactionRecordId = await createPendingPaymentLinkTransaction({
+    partnerId,
+    link,
+    identity,
+    linkId,
+    orderId,
+    checkoutId,
+    invoiceId,
+    rail: FUNDING_PROVIDERS.paylio,
+    fundingOrderId: fundingOrder.id,
+  });
+
+  await fundingOrderService.updateFundingOrder(fundingOrder.id, {
+    transactionRecordId,
+    metadata: {
+      ...orderPatch.metadata,
+      orderId,
+      checkoutId,
+      invoiceId,
+      checkoutUrl: session.checkoutUrl,
+      transactionRecordId,
+    },
+  });
+
+  return {
+    linkId,
+    partnerId,
+    orderId,
+    fundingOrderId: fundingOrder.id,
+    transactionRecordId,
+    rail: FUNDING_PROVIDERS.paylio,
+    checkoutUrl: session.checkoutUrl,
+    checkoutId,
+    invoiceId,
+    redirectUrl: paymentLinkService.buildHostedSuccessUrl(linkId),
+    payerName: identity.payerName,
+    chargeAmount: Number.isFinite(customerPayAmount) && customerPayAmount > 0 ?
+      customerPayAmount :
+      chargeAmount,
+    chargeCurrency,
+  };
+}
+
 async function startCheckout(linkId, partnerId, payer = {}, rail) {
   const link = await loadActiveLink(linkId, partnerId);
   const selectedRail = String(rail || paymentRailService.defaultRail()).toLowerCase();
   const identity = parsePayerIdentity(payer);
 
   if (selectedRail === paymentRailService.SUPPORTED_RAILS.paystack) {
+    if (isPaylioCheckoutCurrency(link.currency)) {
+      return startPaylioCheckout(linkId, partnerId, link, identity, payer);
+    }
     return startPaystackCheckout(linkId, partnerId, link, identity, payer);
   }
 

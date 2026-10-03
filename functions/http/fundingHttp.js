@@ -202,6 +202,11 @@ function mountFundingRoutes(app) {
         return;
       }
       chargeMeta.environment = "staging";
+    } else if (provider === FUNDING_PROVIDERS.paylio) {
+      if (inputCurrency !== FUNDING_CURRENCY) {
+        res.status(400).json({ success: false, error: "PayLio funding supports USD only" });
+        return;
+      }
     }
 
     try {
@@ -289,7 +294,7 @@ function mountFundingRoutes(app) {
         await opsMetrics.increment("funding.checkout.initialized", 1);
       } catch (initErr) {
         await opsMetrics.increment("funding.checkout.failed", 1);
-        if (provider === FUNDING_PROVIDERS.crossmint) {
+        if (provider === FUNDING_PROVIDERS.crossmint || provider === FUNDING_PROVIDERS.paylio) {
           await fundingOrderService.updateFundingOrder(order.id, {
             status: FUNDING_STATUSES.failed,
             failureReason: initErr.message,
@@ -311,6 +316,23 @@ function mountFundingRoutes(app) {
           tokenLocator: session.raw.tokenLocator || null,
           chain: session.raw.chain || null,
           crossmintOrderId: session.raw.orderId || null,
+        };
+      }
+      if (provider === FUNDING_PROVIDERS.paylio && session.raw) {
+        const customerPayAmount = Number(session.raw.customerPayAmount);
+        if (Number.isFinite(customerPayAmount) && customerPayAmount > 0) {
+          patch.amount = customerPayAmount;
+        }
+        patch.metadata = {
+          ...order.metadata,
+          providerFee: session.raw.providerFee ?? null,
+          customerPayAmount: session.raw.customerPayAmount ?? null,
+          netSettlementAmount: session.raw.netSettlementAmount ?? null,
+          feePercent: session.raw.feePercent ?? null,
+          passFeeToCustomer: session.raw.passFeeToCustomer === true,
+          feeAmount: session.raw.providerFee ?? null,
+          paymentId: session.raw.paymentId || null,
+          settlementCoin: session.raw.settlementCoin || "polygon_usdc",
         };
       }
       if (provider === FUNDING_PROVIDERS.transak && session.raw) {

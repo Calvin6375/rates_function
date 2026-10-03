@@ -42,6 +42,7 @@ function providerDisplayName(provider) {
     circle: "Circle",
     turnkey: "Turnkey",
     stripe: "Stripe",
+    paylio: "PayLio",
     customer_direct_topup: "Direct deposit",
   };
   return map[key] || String(provider);

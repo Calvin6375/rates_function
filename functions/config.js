@@ -58,6 +58,8 @@ const config = {
     crossmintServerApiKeyProd: "CROSSMINT_SERVER_API_KEY_PROD",
     crossmintWebhookSecretProd: "CROSSMINT_WEBHOOK_SECRET_PROD",
     crossmintCollectionWalletProd: "CROSSMINT_COLLECTION_WALLET_PROD",
+    paylioApiKey: "PAYLIO_API_KEY",
+    paylioPolygonWallet: "PAYLIO_POLYGON_WALLET",
     darajaConsumerKey: "DARAJA_CONSUMER_KEY",
     darajaConsumerSecret: "DARAJA_CONSUMER_SECRET",
     darajaInitiatorPassword: "DARAJA_INITIATOR_PASSWORD",
@@ -389,6 +391,19 @@ const config = {
     timeoutMs: Number(getEnv("CROSSMINT_API_TIMEOUT_MS", "20000")),
   },
 
+  /**
+   * PayLio hosted card checkout. Settles as Polygon USDC to PAYLIO_POLYGON_WALLET.
+   * Docs: https://paylio.org/api-docs — one API key, no API secret.
+   */
+  paylio: {
+    apiKey: getEnv("PAYLIO_API_KEY", null),
+    polygonWallet: getEnv("PAYLIO_POLYGON_WALLET", null),
+    baseUrl: getEnv("PAYLIO_API_BASE_URL", "https://paylio.org/api/v1"),
+    /** Public handlePaylioWebhook URL. Derived from project/region when unset. */
+    callbackBaseUrl: getEnv("PAYLIO_CALLBACK_BASE_URL", null),
+    timeoutMs: Number(getEnv("PAYLIO_API_TIMEOUT_MS", "20000")),
+  },
+
   funding: {
     /** Default provider for Tourist Payments */
     defaultProvider: getEnv("FUNDING_DEFAULT_PROVIDER", "paystack"),
@@ -396,7 +411,8 @@ const config = {
      * C2B provider when currency is USD.
      * `crossmint` (default) uses Crossmint Onramp. Staging unless
      * `CROSSMINT_ENVIRONMENT=production`. Set `paystack` to restore USD → KES
-     * Paystack checkout.
+     * Paystack checkout. Set `paylio` for PayLio international USD collection.
+     * KES never uses this setting.
      */
     usdProvider: getEnv("FUNDING_USD_PROVIDER", "crossmint"),
     /** USD only — TruePay owns FX at settlement */

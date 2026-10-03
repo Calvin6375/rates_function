@@ -49,7 +49,12 @@ function resolveC2bFundingProvider(currency) {
   const configured = String(
       process.env.FUNDING_USD_PROVIDER || config.funding.usdProvider || FUNDING_PROVIDERS.crossmint,
   ).toLowerCase();
-  if (configured !== FUNDING_PROVIDERS.crossmint && configured !== FUNDING_PROVIDERS.paystack) {
+  const allowed = new Set([
+    FUNDING_PROVIDERS.crossmint,
+    FUNDING_PROVIDERS.paystack,
+    FUNDING_PROVIDERS.paylio,
+  ]);
+  if (!allowed.has(configured)) {
     throw new Error(`Unsupported FUNDING_USD_PROVIDER: ${configured}`);
   }
   return configured;
@@ -76,6 +81,9 @@ async function createC2bTopupCheckout(params) {
   const provider = resolveC2bFundingProvider(params.currency || FUNDING_CURRENCY);
   if (provider === FUNDING_PROVIDERS.crossmint) {
     return createC2bCrossmintTopupCheckout(params);
+  }
+  if (provider === FUNDING_PROVIDERS.paylio) {
+    return createC2bPaylioTopupCheckout(params);
   }
   return createC2bPaystackTopupCheckout(params);
 }
@@ -194,6 +202,118 @@ async function createC2bCrossmintTopupCheckout(params) {
       clientSecret: session.raw.clientSecret,
     } : null,
     checkoutUrl: session?.checkoutUrl || null,
+  });
+}
+
+/**
+ * USD international collection via PayLio. The funding order is written before the PayLio call.
+ * Customer pays the gross checkout amount (fee passed through). The wallet credits requestedAmount.
+ *
+ * @param {Object} params
+ * @returns {Promise<Object>}
+ */
+async function createC2bPaylioTopupCheckout(params) {
+  const {
+    userId,
+    amount,
+    currency = FUNDING_CURRENCY,
+    email = null,
+    tokenEmail = null,
+    idempotencyKey = null,
+    correlationId = null,
+    metadata = {},
+  } = params;
+
+  const chargeCurrency = String(currency || FUNDING_CURRENCY).toUpperCase();
+  const chargeAmount = Number(amount);
+  if (chargeCurrency !== FUNDING_CURRENCY) {
+    throw new Error("PayLio funding supports USD only");
+  }
+
+  const resolvedEmail = await resolveFundingCustomerEmail(userId, {
+    clientEmail: email,
+    tokenEmail,
+  });
+  const receiptEmail = resolvedEmail.usedFallback ? null : resolvedEmail.email;
+  const provider = FUNDING_PROVIDERS.paylio;
+
+  const ctx = createPaymentContext({
+    correlationId,
+    userId,
+    provider,
+    source: "createPayment",
+  });
+
+  const duplicate = await resolveIdempotentOrder(userId, idempotencyKey);
+  if (duplicate) {
+    return mapFundingOrderToCreatePaymentResponse(duplicate, { duplicate: true });
+  }
+
+  const orderId = fundingOrderService.generateFundingOrderId();
+  const claimed = await claimIdempotency(userId, idempotencyKey, orderId);
+  if (claimed) {
+    return mapFundingOrderToCreatePaymentResponse(claimed, { duplicate: true });
+  }
+
+  const order = await fundingOrderService.createFundingOrder({
+    id: orderId,
+    userId,
+    provider,
+    amount: chargeAmount,
+    currency: chargeCurrency,
+    correlationId: ctx.correlationId,
+    fundingRequestId: idempotencyKey,
+    metadata: {
+      ...metadata,
+      product: "tourist",
+      correlationId: ctx.correlationId,
+      userId,
+      provider,
+      source: "c2b_createPayment",
+      requestedAmount: chargeAmount,
+      requestedCurrency: chargeCurrency,
+    },
+  });
+
+  const { order: updated, session } = await initializeProviderCheckout({
+    provider,
+    order,
+    ctx,
+    amount: chargeAmount,
+    currency: chargeCurrency,
+    email: receiptEmail,
+    callbackUrl: null,
+    metadata: order.metadata,
+  });
+
+  await recordCheckoutTimeline({
+    orderId: order.id,
+    correlationId: ctx.correlationId,
+    provider,
+    status: updated.status,
+    amount: chargeAmount,
+    currency: chargeCurrency,
+    metadata: {
+      requestedAmount: chargeAmount,
+      requestedCurrency: chargeCurrency,
+      providerFee: session?.raw?.providerFee ?? null,
+      customerPayAmount: session?.raw?.customerPayAmount ?? null,
+      source: "createPayment",
+    },
+    checkoutUrl: updated.checkoutUrl,
+  });
+
+  logger.info("c2b.checkout.created", {
+    correlationId: ctx.correlationId,
+    fundingOrderId: order.id,
+    providerReference: updated.providerReference,
+    provider,
+    userId,
+    status: updated.status,
+  });
+
+  return mapFundingOrderToCreatePaymentResponse(updated, {
+    correlationId: ctx.correlationId,
   });
 }
 
@@ -563,6 +683,26 @@ async function initializeProviderCheckout(params) {
     };
   }
 
+  if (provider === FUNDING_PROVIDERS.paylio && session.raw) {
+    const customerPayAmount = Number(session.raw.customerPayAmount);
+    if (Number.isFinite(customerPayAmount) && customerPayAmount > 0) {
+      patch.amount = customerPayAmount;
+    }
+    patch.metadata = {
+      ...metadata,
+      requestedAmount: metadata.requestedAmount,
+      requestedCurrency: metadata.requestedCurrency,
+      providerFee: session.raw.providerFee ?? null,
+      customerPayAmount: session.raw.customerPayAmount ?? null,
+      netSettlementAmount: session.raw.netSettlementAmount ?? null,
+      feePercent: session.raw.feePercent ?? null,
+      passFeeToCustomer: session.raw.passFeeToCustomer === true,
+      feeAmount: session.raw.providerFee ?? null,
+      paymentId: session.raw.paymentId || null,
+      settlementCoin: session.raw.settlementCoin || "polygon_usdc",
+    };
+  }
+
   const updated = await fundingOrderService.updateFundingOrder(order.id, patch);
   return { order: updated, session };
 }
@@ -785,6 +925,7 @@ module.exports = {
   createC2bTopupCheckout,
   createC2bPaystackTopupCheckout,
   createC2bCrossmintTopupCheckout,
+  createC2bPaylioTopupCheckout,
   createC2bTransakTopupCheckout,
   quoteLocalTopupPaystack,
   mapFundingOrderToCreatePaymentResponse,

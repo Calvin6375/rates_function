@@ -3,7 +3,7 @@
  * Tourist Payments funds in USD only; FX to KES happens at settlement.
  */
 
-/** @typedef {"paystack"|"intasend"|"circle"|"transak"|"bridge"|"stripe"|"crossmint"} FundingProviderId */
+/** @typedef {"paystack"|"intasend"|"circle"|"transak"|"bridge"|"stripe"|"crossmint"|"paylio"} FundingProviderId */
 
 /** @typedef {"pending"|"processing"|"completed"|"failed"} FundingOrderStatus */
 
@@ -35,6 +35,7 @@ const FUNDING_PROVIDERS = Object.freeze({
   bridge: "bridge",
   stripe: "stripe",
   crossmint: "crossmint",
+  paylio: "paylio",
 });
 
 const FUNDING_STATUSES = Object.freeze({
@@ -58,6 +59,20 @@ const B2B_PAYMENT_LINK_PRODUCT = "b2b_payment_link";
 
 /** B2B Paystack collection currency (KES-only merchant). */
 const B2B_PAYSTACK_CURRENCY = "KES";
+
+/**
+ * Hosted PayLio checkout currencies from https://paylio.org/api-docs.
+ * KES and other local collections stay on Paystack.
+ */
+const PAYLIO_CHECKOUT_CURRENCIES = Object.freeze(["USD", "EUR", "INR", "CAD"]);
+
+/**
+ * @param {string} currency
+ * @returns {boolean}
+ */
+function isPaylioCheckoutCurrency(currency) {
+  return PAYLIO_CHECKOUT_CURRENCIES.includes(String(currency || "").toUpperCase());
+}
 
 const FIAT_ASSETS = Object.freeze(["USD", "KES", "NGN", "GHS", "GBP", "EUR", "USDT"]);
 
@@ -166,6 +181,8 @@ module.exports = {
   B2B_SELF_TOPUP_PRODUCT,
   B2B_PAYMENT_LINK_PRODUCT,
   B2B_PAYSTACK_CURRENCY,
+  PAYLIO_CHECKOUT_CURRENCIES,
+  isPaylioCheckoutCurrency,
   FIAT_ASSETS,
   MERCHANT_PAYMENT_STATUSES,
   SETTLEMENT_JOB_STATUSES,
