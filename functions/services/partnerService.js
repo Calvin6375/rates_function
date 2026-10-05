@@ -5,6 +5,7 @@
 
 const crypto = require("crypto");
 const { collection, serverTimestamp } = require("../libs/firestore");
+const accessControl = require("../utils/accessControl");
 
 /**
  * Generate a secure API key for a partner
@@ -211,6 +212,43 @@ async function listPartners(limit = 50, startAfter = null) {
 }
 
 /**
+ * Merchant-onboarding statuses. These are not operations roles.
+ *
+ * @param {unknown} status
+ * @returns {boolean}
+ */
+function isOnboardingShellStatus(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  return normalized === "pending_review" || normalized === "pending_kyc";
+}
+
+/**
+ * Partners page. Hides onboarding shells whose owner is TruePay platform staff
+ * (auto-created from their display name or email after verification).
+ * Active merchants stay listed even if that owner was later promoted.
+ *
+ * @param {number} [limit=50]
+ * @param {admin.firestore.DocumentSnapshot} [startAfter]
+ * @returns {Promise<{ partners: Array<Object>, lastDoc: any }>}
+ */
+async function listPartnersForConsole(limit = 50, startAfter = null) {
+  const page = await listPartners(limit, startAfter);
+  const partners = [];
+  for (const partner of page.partners) {
+    const orgAdminUid =
+      typeof partner.orgAdminUid === "string" ? partner.orgAdminUid.trim() : "";
+    if (orgAdminUid && isOnboardingShellStatus(partner.status)) {
+      const staff = await accessControl.isPlatformAdmin(null, orgAdminUid);
+      if (staff) {
+        continue;
+      }
+    }
+    partners.push(partner);
+  }
+  return {partners, lastDoc: page.lastDoc};
+}
+
+/**
  * @param {string[]} partnerIds
  * @returns {Promise<Map<string, string>>}
  */
@@ -241,5 +279,7 @@ module.exports = {
   getPartnerByApiKey,
   updatePartner,
   listPartners,
+  listPartnersForConsole,
+  isOnboardingShellStatus,
   getPartnerNamesByIds,
 };

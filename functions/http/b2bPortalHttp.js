@@ -430,7 +430,7 @@ async function reconcilePendingPaymentLinks(links) {
 app.get("/platform/partners", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
   try {
     const limit = Math.min(parseInt(String(req.query.limit || "50"), 10) || 50, 100);
-    const { partners, lastDoc } = await partnerService.listPartners(limit, null);
+    const { partners, lastDoc } = await partnerService.listPartnersForConsole(limit, null);
     res.status(200).json({
       success: true,
       data: {
@@ -912,7 +912,7 @@ app.put("/platform/partners/:partnerId/org-admin", loadFirebaseUser, requirePlat
     });
   } catch (err) {
     console.error("b2bPortal PUT org-admin:", err.message);
-    const status = err.message.includes("not found") ? 404 : 400;
+    const status = err.statusCode || (err.message.includes("not found") ? 404 : 400);
     res.status(status).json({ success: false, error: err.message });
   }
 });
@@ -952,8 +952,8 @@ app.post("/platform/partners/:partnerId/members", loadFirebaseUser, requirePlatf
     });
   } catch (err) {
     console.error("b2bPortal POST /platform/partners/:id/members:", err.message);
-    const status =
-      err.message && err.message.includes("not found") ? 404 : 400;
+    const status = err.statusCode ||
+      (err.message && err.message.includes("not found") ? 404 : 400);
     res.status(status).json({ success: false, error: err.message });
   }
 });
@@ -1558,7 +1558,12 @@ app.post("/portal/onboarding/register-partner", loadFirebaseUser, async (req, re
     });
   } catch (err) {
     console.error("b2bPortal POST /portal/onboarding/register-partner:", err.message);
-    res.status(400).json({ success: false, error: err.message });
+    const status = err.statusCode || 400;
+    res.status(status >= 400 && status < 600 ? status : 400).json({
+      success: false,
+      error: err.code || err.message,
+      message: err.message,
+    });
   }
 });
 

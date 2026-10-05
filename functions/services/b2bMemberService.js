@@ -13,6 +13,7 @@ const {
   LEGACY_ASSIGNABLE_PARTNER_ROLES,
   normalizePartnerRole,
   isPartnerOwnerRole,
+  isPlatformAdmin,
   setPartnerAccessClaims,
   syncUserDocAccessFields,
   USER_TYPE_PARTNER,
@@ -309,6 +310,15 @@ async function setPartnerOrgAdmin(partnerId, newOrgAdminUid, actorUid, opts = {}
     throw e;
   }
 
+  if (await isPlatformAdmin(null, newOrgAdminUid)) {
+    const err = new Error(
+        "This user is TruePay platform staff. They cannot also own a merchant.",
+    );
+    err.statusCode = 409;
+    err.code = "PLATFORM_ADMIN";
+    throw err;
+  }
+
   const incomingClaims = await getCustomClaims(newOrgAdminUid);
   const incomingRole = normalizePartnerRole(
       incomingClaims.role || incomingClaims.partnerRole,
@@ -439,6 +449,15 @@ async function addMember(partnerId, { email, password, role, displayName }, acto
     if (claims.partnerId && claims.partnerId !== partnerId) {
       throw new Error("User already belongs to another partner");
     }
+  }
+
+  if (await isPlatformAdmin(null, userRecord.uid)) {
+    const err = new Error(
+        "This email is TruePay platform staff. Remove them from Team Members before adding them to a merchant.",
+    );
+    err.statusCode = 409;
+    err.code = "PLATFORM_ADMIN";
+    throw err;
   }
 
   const uid = userRecord.uid;

@@ -10,6 +10,7 @@ const {getCustomClaims} = require("../utils/customClaimsMerge");
 const {
   normalizePartnerRole,
   isPartnerOwnerRole,
+  isPlatformAdmin,
 } = require("../utils/accessControl");
 const {deepMerge} = require("../utils/objectDeepMerge");
 const {notifyGoLiveRequestAdmins} = require("../utils/notifications");
@@ -259,6 +260,15 @@ async function patchOnboarding(uid, partial) {
  *     alreadyRegistered
  */
 async function registerSelfServePartner(uid, input) {
+  if (await isPlatformAdmin(null, uid)) {
+    const err = new Error(
+        "Platform staff cannot register a partner organization.",
+    );
+    err.statusCode = 409;
+    err.code = "PLATFORM_ADMIN";
+    throw err;
+  }
+
   const name = input.name && String(input.name).trim();
   if (!name) {
     throw new Error("name is required (business or partner display name)");
@@ -565,6 +575,12 @@ function derivePartnerName(onboarding, userData, email) {
  */
 async function ensurePartnerOrgOnEmailVerified(uid, opts = {}) {
   if (opts.emailVerified !== true) {
+    return null;
+  }
+
+  // Operations teammates sign into the same portal. Do not mint a
+  // pending_review merchant named after them (email local-part or display name).
+  if (await isPlatformAdmin(null, uid)) {
     return null;
   }
 

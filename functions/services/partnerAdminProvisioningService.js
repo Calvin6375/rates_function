@@ -6,6 +6,7 @@
 const admin = require("../admin");
 const {collection, serverTimestamp} = require("../libs/firestore");
 const {mergeCustomUserClaims, getCustomClaims} = require("../utils/customClaimsMerge");
+const {isPlatformAdmin} = require("../utils/accessControl");
 const partnerService = require("./partnerService");
 const b2bMemberService = require("./b2bMemberService");
 const accountPasswordService = require("./accountPasswordService");
@@ -135,6 +136,14 @@ async function createPartnerWithOrgAdmin(params) {
       existingUser = null;
     }
     if (existingUser) {
+      if (await isPlatformAdmin(null, existingUser.uid)) {
+        const err = new Error(
+            "This email is TruePay platform staff. Use a merchant email, not a Team Members account.",
+        );
+        err.statusCode = 409;
+        err.code = "PLATFORM_ADMIN";
+        throw err;
+      }
       const claims = await getCustomClaims(existingUser.uid);
       if (claims.partnerId) {
         const err = new Error(

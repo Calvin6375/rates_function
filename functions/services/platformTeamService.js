@@ -6,6 +6,8 @@ const admin = require("../admin");
 const {collection} = require("../libs/firestore");
 const accountPasswordService = require("./accountPasswordService");
 const partnerAdminProvisioningService = require("./partnerAdminProvisioningService");
+const partnerService = require("./partnerService");
+const partnerDeletionService = require("./partnerDeletionService");
 const b2bMemberService = require("./b2bMemberService");
 const {getCustomClaims} = require("../utils/customClaimsMerge");
 const {
@@ -50,6 +52,65 @@ function normalizePlatformRole(role) {
  */
 function isAssignablePlatformRole(role) {
   return ASSIGNABLE_PLATFORM_ROLES.includes(normalizePlatformRole(role));
+}
+
+/**
+ * Onboarding shells owned by this user are not real merchants. Delete them
+ * so a platform member does not stay on GET /platform/partners. A live
+ * (active) merchant still requires a new owner before promotion.
+ *
+ * @param {string} uid
+ * @param {Object|null|undefined} claims
+ * @returns {Promise<void>}
+ */
+async function releaseMerchantAccessForPlatformInvite(uid, claims) {
+  /** @type {Set<string>} */
+  const partnerIds = new Set();
+  if (claims && typeof claims.partnerId === "string" && claims.partnerId.trim()) {
+    partnerIds.add(claims.partnerId.trim());
+  }
+  const ownedSnap = await collection("partners").where("orgAdminUid", "==", uid).get();
+  for (const doc of ownedSnap.docs) {
+    partnerIds.add(doc.id);
+  }
+
+  for (const partnerId of partnerIds) {
+    const partner = await partnerService.getPartner(partnerId);
+    if (!partner) {
+      continue;
+    }
+    const ownsOrg = String(partner.orgAdminUid || "") === uid;
+    const shell = partnerService.isOnboardingShellStatus(partner.status);
+    if (ownsOrg && shell) {
+      await partnerDeletionService.deletePartnerAsPlatformAdmin(partnerId);
+      continue;
+    }
+    if (ownsOrg) {
+      const err = new Error(
+          "This email is the partner owner. Assign a new owner on that merchant first.",
+      );
+      err.statusCode = 409;
+      err.code = "PARTNER_OWNER";
+      throw err;
+    }
+    try {
+      await b2bMemberService.removeMember(partnerId, uid);
+    } catch (detachErr) {
+      const message = String(detachErr.message || "");
+      if (message.includes("owner")) {
+        const err = new Error(
+            "This email is the partner owner. Assign a new owner on that merchant first.",
+        );
+        err.statusCode = 409;
+        err.code = "PARTNER_OWNER";
+        throw err;
+      }
+      if (message.includes("Member not found")) {
+        continue;
+      }
+      throw detachErr;
+    }
+  }
 }
 
 /**
@@ -129,20 +190,7 @@ async function invitePlatformAdmin(params) {
       throw err;
     }
     const claims = await getCustomClaims(userRecord.uid);
-    if (claims.partnerId) {
-      try {
-        await b2bMemberService.removeMember(String(claims.partnerId), userRecord.uid);
-      } catch (detachErr) {
-        if (String(detachErr.message || "").includes("owner")) {
-          const err = new Error(
-              "This email is the partner owner. Assign a new owner on that merchant first.",
-          );
-          err.statusCode = 409;
-          err.code = "PARTNER_OWNER";
-          throw err;
-        }
-      }
-    }
+    await releaseMerchantAccessForPlatformInvite(userRecord.uid, claims);
     if (temporaryPassword.length >= MIN_PASSWORD_LENGTH) {
       await admin.auth().updateUser(userRecord.uid, {
         password: temporaryPassword,
@@ -264,4 +312,5 @@ module.exports = {
   invitePlatformAdmin,
   listPlatformAdmins,
   removePlatformAdmin,
+  releaseMerchantAccessForPlatformInvite,
 };
