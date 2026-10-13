@@ -38,7 +38,43 @@ const STATUSES = Object.freeze({
   processing: "processing",
   completed: "completed",
   failed: "failed",
+  cancelled: "cancelled",
 });
+
+/** Open statuses a super admin may cancel without a wallet reversal. */
+const CANCELLABLE_STATUSES = Object.freeze([
+  STATUSES.created,
+  STATUSES.pending,
+  STATUSES.processing,
+]);
+
+/** Partner credits a super admin may cancel after they have settled. */
+const REVERSIBLE_CREDIT_TYPES = Object.freeze([
+  TRANSACTION_TYPES.b2b_payment,
+  TRANSACTION_TYPES.b2b_funding,
+  TRANSACTION_TYPES.b2b_admin_topup,
+]);
+
+/**
+ * Pending rows, and settled partner collections, can be cancelled.
+ * A completed send stays put because the payout already left the platform.
+ *
+ * @param {Object|null|undefined} row
+ * @returns {boolean}
+ */
+function isPortalTransactionCancellable(row) {
+  const status = String(row && row.status || "").toLowerCase();
+  if (!status || status === STATUSES.cancelled) {
+    return false;
+  }
+  if (CANCELLABLE_STATUSES.includes(status)) {
+    return true;
+  }
+  if (status === STATUSES.completed || status === STATUSES.failed) {
+    return REVERSIBLE_CREDIT_TYPES.includes(String(row.type || ""));
+  }
+  return false;
+}
 
 /**
  * Generate a unique transaction record ID
@@ -289,6 +325,7 @@ function serializePortalTransaction(row) {
     kesSettled = roundMoney(netCredit * fxRate);
   }
 
+  const status = row.status ? String(row.status) : null;
   return {
     transactionId: row.id,
     id: row.id,
@@ -299,7 +336,10 @@ function serializePortalTransaction(row) {
     amount,
     amountReceived: amount,
     currency,
-    status: row.status,
+    status,
+    cancellable: isPortalTransactionCancellable(row),
+    cancelReason: row.cancelReason || metadata.cancelReason || null,
+    cancelledByUid: row.cancelledByUid || metadata.cancelledByUid || null,
     createdAt: row.createdAt ?? null,
     updatedAt: row.updatedAt ?? null,
     payerName,
@@ -670,6 +710,10 @@ async function completeFundingOrder(params) {
     return { success: true, duplicate: true, transactionRecordId: fundingOrder.transactionRecordId };
   }
 
+  if (fundingOrder.metadata && fundingOrder.metadata.adminCancelled === true) {
+    return { success: false, error: "Funding order was cancelled" };
+  }
+
   if (isB2bPaymentLinkOrder(fundingOrder)) {
     return completeB2bPaymentLinkOrder(params);
   }
@@ -862,6 +906,9 @@ async function enrichCollectionKesSnapshots(rows) {
 module.exports = {
   TRANSACTION_TYPES,
   STATUSES,
+  CANCELLABLE_STATUSES,
+  REVERSIBLE_CREDIT_TYPES,
+  isPortalTransactionCancellable,
   CHANNEL_TYPES,
   createTransactionRecord,
   updateTransactionStatus,

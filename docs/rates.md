@@ -93,6 +93,91 @@ Resolution order: `admin_exact` → `admin_inverse` → `admin_cross` → `ident
 
 ---
 
+## 2b. Worked flow — dashboard row `AED` / UAE Dirham `35.4500` `36.7800`
+
+“UAE Dirham” is the label next to the code. The stored key is **`AED`**. The engine does not treat a key named `UAE` as an alias of `AED`.
+
+The two figures are **KES per 1 AED**, in API order `buyRate` then `sellRate`. They are not flipped, even though buy is lower than sell.
+
+| Dashboard figure | Field | Meaning |
+|------------------|--------|---------|
+| **35.4500** | `buyRate` | KES TruePay uses when **acquiring** 1 AED |
+| **36.7800** | `sellRate` | KES TruePay uses when **selling** 1 AED |
+
+This is the customer P2P book. It is **not** the B2B Send corridor rate (that stays on `config/b2bSend`, default `USD_AED` = 3.6732 AED per 1 USD and `KES_AED` = 0.02825 AED per 1 KES).
+
+### What the save does
+
+```text
+Super admin saves the AED row
+        │
+        ▼
+PUT /api/config/fees          (admin token)
+{ "rates": { "AED": { "buyRate": 35.45, "sellRate": 36.78 } } }
+        │
+        ▼
+normalizeRatesForStorage
+  • merge into the existing book (other currencies stay)
+  • keep only the canonical key AED  (no USDT/AED or AED/KES mirror is written)
+  • rateVersion = previous + 1
+        │
+        ▼
+Firestore config/customerRates
+  rates.AED = { buyRate: 35.45, sellRate: 36.78 }
+  baseCurrency = KES
+  rateMeaning  = KES_PER_UNIT
+        │
+        ▼
+adminLogs  action updateCustomerRates
+```
+
+Binance is not consulted. A spread this tight (36.78 / 35.45 ≈ 1.04) does not trip the wide-spread warning (that warning starts above 1.25). Quotes already locked keep their old numbers until they expire; the next quote uses the new `rateVersion`.
+
+### Who reads it
+
+```text
+config/customerRates.AED
+        │
+        ├─ GET /api/rates
+        │     book.AED = { buyRate: 35.45, sellRate: 36.78 }
+        │     AED/KES  = same KES-per-AED row
+        │     KES/AED  = inverted: buy 1/36.78, sell 1/35.45
+        │     plus a cross against every other currency already on the book
+        │
+        ├─ GET /api/countries
+        │     currencies includes "AED"   (legacy field name: countries)
+        │
+        ├─ GET /api/customer-rates  and  POST /api/exchange-quotes
+        │     customer sells SEND, receives GET
+        │     rate = KES_send.sell / KES_get.buy
+        │     getAmount = sendAmount × rate
+        │
+        └─ Paystack KES charge  (c2bFundingFxService)
+              uses sellRate only → 36.78 KES per 1 AED
+```
+
+Customer examples (fee default 0, so Get is not reduced by a separate swap fee):
+
+| Customer does | Rate used | Result |
+|---------------|-----------|--------|
+| Sends **1,000 KES**, wants AED | `1 / 35.45` = **0.0282087** AED per 1 KES | **28.21 AED** |
+| Sends **100 AED**, wants KES | `36.78 / 1` = **36.78** KES per 1 AED | **3,678.00 KES** |
+| Sends **1 USD**, wants AED, and the book already has USD `sellRate` 128.15 | `128.15 / 35.45` ≈ **3.6150** AED per 1 USD | **3.61 AED** |
+
+Display string on the quote is `1 {SEND} = {rate} {GET}`. Source on these crosses is `admin_cross`.
+
+### What does not happen
+
+| Surface | After this save |
+|---------|-----------------|
+| `createSwapOrder` | **Rejected** for any pair that includes AED (`PAIR_NOT_SETTLEABLE`). The swap ledger is only USDT, USD, and KES. The quote can still be returned with `settleable: false`. |
+| C2B wallets | Still only KES, USD, USDT, USDC. There is no AED balance. A Paystack top-up whose currency is AED would charge **36.78 KES per 1 AED**, and the credit path does not add an AED wallet. |
+| B2B payment links | AED is not a link currency (`USD`, `EUR`, `INR`, `CAD`, `KES`, `USDT`, `NGN`, `GHS` only), so checkout does not use this row. |
+| B2B Send (USD→AED / KES→AED) | Unchanged. Partner Send reads `config/b2bSend`, not `config/customerRates`. |
+| Existing locked `exchangeQuotes` | Unchanged until they expire. |
+
+---
+
 ## 3. Endpoints
 
 ### Quote (Exchange)

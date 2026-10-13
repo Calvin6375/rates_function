@@ -63,6 +63,7 @@ const b2bPortalDashboardService = require("../services/b2bPortalDashboardService
 const platformReportsService = require("../services/platformReportsService");
 const platformFundsService = require("../services/platformFundsService");
 const partnerWalletAdminService = require("../services/partnerWalletAdminService");
+const platformTransactionCancelService = require("../services/platformTransactionCancelService");
 const b2bWalletBalanceSync = require("../services/b2bWalletBalanceSync");
 const partnerAdminProvisioningService = require("../services/partnerAdminProvisioningService");
 const portalMeStatus = require("../services/portalMeStatus");
@@ -2901,6 +2902,39 @@ app.get("/platform/transactions", loadFirebaseUser, requirePlatformAdmin, async 
   } catch (err) {
     console.error("b2bPortal GET /platform/transactions:", err.message);
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * Super admin: cancel a pending payment, or a settled collection.
+ * Pending collections cannot settle afterwards. Settled collections debit the partner wallet.
+ * Pending sends credit the wallet back. Body: { reason?: string }
+ */
+app.post("/platform/transactions/:transactionId/cancel", loadFirebaseUser, requireSuperAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const data = await platformTransactionCancelService.cancelPlatformTransaction({
+      transactionId: req.params.transactionId,
+      actorUid: req.userId,
+      reason: body.reason || body.failureReason || null,
+    });
+    res.status(200).json({
+      success: true,
+      data,
+      message: data.alreadyCancelled ?
+        "Transaction was already cancelled." :
+        "Transaction cancelled.",
+    });
+  } catch (err) {
+    const status = err.statusCode || 500;
+    if (status >= 500) {
+      console.error("b2bPortal POST /platform/transactions/:id/cancel:", err.message);
+    }
+    res.status(status).json({
+      success: false,
+      error: err.code || "CANCEL_TRANSACTION_FAILED",
+      message: err.message,
+    });
   }
 });
 

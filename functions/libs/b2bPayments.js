@@ -200,6 +200,16 @@ async function processB2bPaymentWebhook(paymentData, payload, mapping) {
   const linkId = mapping.linkId || null;
   const rail = String(mapping.rail || payload.source || "").toLowerCase();
 
+  if (String(mapping.status || "").toLowerCase() === transactionService.STATUSES.cancelled) {
+    return { success: false, error: "Payment was cancelled", cancelled: true };
+  }
+  if (mapping.transactionRecordId) {
+    const linked = await transactionService.getTransactionRecord(mapping.transactionRecordId);
+    if (linked && String(linked.status) === transactionService.STATUSES.cancelled) {
+      return { success: false, error: "Payment was cancelled", cancelled: true };
+    }
+  }
+
   if (!partnerId) {
     return { success: false, error: "B2B mapping missing partnerId" };
   }
@@ -267,6 +277,14 @@ async function processB2bPaymentWebhook(paymentData, payload, mapping) {
     const result = await executeWithIdempotency(
         `processB2bPayment:${paymentId}`,
         async () => {
+          if (mapping.transactionRecordId) {
+            const linked = await transactionService.getTransactionRecord(mapping.transactionRecordId);
+            if (linked && String(linked.status) === transactionService.STATUSES.cancelled) {
+              const err = new Error("Payment was cancelled");
+              err.code = "PAYMENT_CANCELLED";
+              throw err;
+            }
+          }
           await walletService.getOrCreatePartnerWallet(partnerId);
           const { previousBalance, newBalance } = await walletService.updatePartnerWalletBalance(
               partnerId,

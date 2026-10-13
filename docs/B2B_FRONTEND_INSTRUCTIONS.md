@@ -80,6 +80,20 @@ Authorization: Bearer <Firebase ID token>
 }
 ```
 
+Each row includes **`cancellable`**. It is `true` for `created`, `pending`, and `processing` rows, and also for settled collections (`completed` or `failed` `b2b_payment`, `b2b_funding`, and `b2b_admin_topup`). Show Cancel on the Partners table for a super admin whenever `cancellable` is true, including when the status filter is **All** or **Pending**. A completed send is not cancellable.
+
+**Cancel (super admin)**
+
+```http
+POST /b2bPortal/platform/transactions/{transactionId}/cancel
+Authorization: Bearer <Firebase ID token>
+Content-Type: application/json
+
+{ "reason": "Payer abandoned checkout" }
+```
+
+`reason` is optional. Pending payment-link rows are marked `cancelled` and will not credit the partner if Paystack or PayLio later reports success. A **completed** collection is marked `cancelled` and the partner wallet is debited by the net credit (`metadata.netCredit`, or amount minus fee). If that balance is already gone, the API returns **`409`** `INSUFFICIENT_BALANCE` and leaves the payment in place. Pending Send rows credit the partner wallet back. A completed send returns **`409`** `NOT_CANCELLABLE`. Calling cancel again on an already cancelled row returns **`200`** with `alreadyCancelled: true`.
+
 **Fallback:** `GET /portal/transactions` also works for super admins (same shape + `scope`).
 
 C2B for super admin remains on `GET /transactionsApi/admin/transactions` — no change.

@@ -113,6 +113,14 @@ async function processFundingEvent(params) {
     return { success: true, duplicate: true, fundingOrderId: fundingOrder.id };
   }
 
+  if (fundingOrder.metadata && fundingOrder.metadata.adminCancelled === true) {
+    return {
+      success: false,
+      error: "Funding order was cancelled",
+      fundingOrderId: fundingOrder.id,
+    };
+  }
+
   if (event.status === "failed") {
     await fundingOrderService.updateFundingOrder(fundingOrder.id, {
       status: FUNDING_STATUSES.failed,

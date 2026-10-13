@@ -48,6 +48,19 @@ describe("serializePortalTransaction", () => {
     expect(row.kesEquivalent).toBe(100);
     expect(row.fxRate).toBe(1);
     expect(row.channel).toBe("b2b");
+    expect(row.cancellable).toBe(true);
+  });
+
+  it("marks a pending collection row as cancellable", () => {
+    const row = serializePortalTransaction({
+      id: "txr_pending",
+      type: "b2b_payment",
+      amount: 6,
+      currency: "USD",
+      status: "pending",
+    });
+    expect(row.cancellable).toBe(true);
+    expect(row.cancelReason).toBeNull();
   });
 
   it("exposes partnerName for tracking", () => {

@@ -4,6 +4,7 @@
 
 const mockUpdatePartnerWalletBalance = jest.fn();
 const mockCreateTransactionRecord = jest.fn();
+const mockGetTransactionRecord = jest.fn();
 const mockPaymentUpdate = jest.fn();
 
 jest.mock("../../libs/firestore", () => ({
@@ -46,9 +47,9 @@ jest.mock("../../services/walletService", () => ({
 
 jest.mock("../../services/transactionService", () => ({
   TRANSACTION_TYPES: {b2b_payment: "b2b_payment"},
-  STATUSES: {pending: "pending", completed: "completed"},
+  STATUSES: {pending: "pending", completed: "completed", cancelled: "cancelled"},
   createTransactionRecord: (...args) => mockCreateTransactionRecord(...args),
-  getTransactionRecord: jest.fn().mockResolvedValue(null),
+  getTransactionRecord: (...args) => mockGetTransactionRecord(...args),
   updateTransactionStatus: jest.fn().mockResolvedValue(undefined),
 }));
 
@@ -69,6 +70,7 @@ describe("collection webhook pricing", () => {
       newBalance: 1000,
     });
     mockCreateTransactionRecord.mockResolvedValue({transactionId: "tx_1"});
+    mockGetTransactionRecord.mockResolvedValue(null);
     mockPaymentUpdate.mockResolvedValue(undefined);
   });
 
@@ -190,5 +192,44 @@ describe("collection webhook pricing", () => {
         {partnerId: "p1", linkId: null, amount: 20, currency: "KES"},
     );
     expect(mockUpdatePartnerWalletBalance).toHaveBeenCalledWith("p1", "KES", 0);
+  });
+
+  it("does not credit a collection the super admin cancelled", async () => {
+    mockPricing({});
+    const result = await processB2bPaymentWebhook(
+        {paymentId: "pay_cancelled", amount: 6, currency: "USD", completedAt: null, account: null},
+        {verifiedEvent: {status: "success"}},
+        {
+          partnerId: "p1",
+          linkId: "link_1",
+          status: "cancelled",
+          amount: 6,
+          currency: "USD",
+          rail: "paystack",
+        },
+    );
+    expect(result).toMatchObject({success: false, cancelled: true});
+    expect(mockUpdatePartnerWalletBalance).not.toHaveBeenCalled();
+    expect(mockCreateTransactionRecord).not.toHaveBeenCalled();
+  });
+
+  it("does not credit when the linked transaction is already cancelled", async () => {
+    mockPricing({});
+    mockGetTransactionRecord.mockResolvedValue({id: "txr_1", status: "cancelled"});
+    const result = await processB2bPaymentWebhook(
+        {paymentId: "pay_linked", amount: 6, currency: "USD", completedAt: null, account: null},
+        {verifiedEvent: {status: "success"}},
+        {
+          partnerId: "p1",
+          linkId: "link_1",
+          status: "pending",
+          transactionRecordId: "txr_1",
+          amount: 6,
+          currency: "USD",
+          rail: "paystack",
+        },
+    );
+    expect(result).toMatchObject({success: false, cancelled: true});
+    expect(mockUpdatePartnerWalletBalance).not.toHaveBeenCalled();
   });
 });
