@@ -4,7 +4,6 @@
  * POST /funding/merchant-payments, GET /funding/merchant-payments/:id
  */
 
-const config = require("../config");
 const { verifyFirebaseAuth } = require("../libs/auth");
 const fundingOrderService = require("../services/funding/fundingOrderService");
 const fundingRailService = require("../services/funding/fundingRailService");
@@ -28,23 +27,12 @@ const {
   TIMELINE_EVENT_TYPES,
 } = require("../utils/fundingTypes");
 
-const transakProvider = require("../services/funding/providers/transakProvider");
-const c2bFundingBridge = require("../services/funding/c2bFundingBridgeService");
-
 const logger = createLogger({ service: "fundingHttp" });
 
 /**
  * @param {import("express").Express} app
  */
 function mountFundingRoutes(app) {
-  /**
-   * GET /internal/transak/health — Transak configuration probe (no secrets).
-   */
-  app.get("/internal/transak/health", (req, res) => {
-    res.set("Cache-Control", "no-store");
-    res.status(200).json(transakProvider.getHealthStatus());
-  });
-
   /**
    * POST /funding/topup/quote — Local Topup (Paystack) fee breakdown for Deposit Review.
    * Body: { amount, currency? } — does not create a funding order.
@@ -151,7 +139,6 @@ function mountFundingRoutes(app) {
       tokenEmail: auth.decodedToken?.email,
     })).email;
     const callbackUrl = body.callbackUrl || body.redirectUrl || null;
-    const transakAccessToken = body.transakAccessToken || body.accessToken || null;
     const metadata = body.metadata && typeof body.metadata === "object" ? body.metadata : {};
     const idempotencyKey =
       req.get("Idempotency-Key") ||
@@ -192,10 +179,6 @@ function mountFundingRoutes(app) {
         res.status(400).json({ success: false, error: fxErr.message });
         return;
       }
-    } else if (provider === FUNDING_PROVIDERS.transak) {
-      chargeCurrency = FUNDING_CURRENCY;
-      chargeMeta.treasuryWallet = process.env.TRANSAK_TREASURY_WALLET || config.transak?.treasuryWallet || null;
-      chargeMeta.cryptoCurrency = process.env.TRANSAK_DEFAULT_CRYPTO || config.transak?.defaultCrypto || "USDT";
     } else if (provider === FUNDING_PROVIDERS.crossmint) {
       if (inputCurrency !== FUNDING_CURRENCY) {
         res.status(400).json({ success: false, error: "Crossmint funding supports USD only" });
@@ -267,7 +250,7 @@ function mountFundingRoutes(app) {
           correlationId: ctx.correlationId,
           userId,
           provider,
-          environment: process.env.GCLOUD_PROJECT || config.transak?.environment || "staging",
+          environment: process.env.GCLOUD_PROJECT || "staging",
           ...chargeMeta,
         },
       });
@@ -288,7 +271,6 @@ function mountFundingRoutes(app) {
           fundingOrderId: order.id,
           userId,
           correlationId: ctx.correlationId,
-          transakAccessToken,
           metadata: order.metadata,
         });
         await opsMetrics.increment("funding.checkout.initialized", 1);
@@ -333,14 +315,6 @@ function mountFundingRoutes(app) {
           feeAmount: session.raw.providerFee ?? null,
           paymentId: session.raw.paymentId || null,
           settlementCoin: session.raw.settlementCoin || "polygon_usdc",
-        };
-      }
-      if (provider === FUNDING_PROVIDERS.transak && session.raw) {
-        patch.metadata = {
-          ...order.metadata,
-          quoteId: session.raw.quote?.quoteId || order.metadata.quoteId || null,
-          cryptoAmount: session.raw.cryptoAmount || session.raw.quote?.cryptoAmount || null,
-          treasuryWallet: session.raw.treasuryWallet || order.metadata.treasuryWallet || null,
         };
       }
 

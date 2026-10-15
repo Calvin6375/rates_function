@@ -7,10 +7,9 @@ const { collection } = require("../../libs/firestore");
 const fundingOrderService = require("./fundingOrderService");
 const fundingRailService = require("./fundingRailService");
 const fundingWebhookService = require("./fundingWebhookService");
-const { FUNDING_STATUSES, isTerminalFundingStatus } = require("../../utils/fundingTypes");
+const { FUNDING_PROVIDERS, FUNDING_STATUSES, TIMELINE_EVENT_TYPES, isTerminalFundingStatus } = require("../../utils/fundingTypes");
 const { createLogger } = require("../../utils/paymentOpsLogger");
 const { recordEvent } = require("../ops/paymentTimelineService");
-const { TIMELINE_EVENT_TYPES } = require("../../utils/fundingTypes");
 const opsMetrics = require("../ops/opsMetricsService");
 
 const logger = createLogger({ service: "fundingReconciliation" });
@@ -44,6 +43,11 @@ async function reconcileStaleFundingOrders() {
 
     scanned++;
     const fundingOrderId = doc.id;
+
+    if (String(data.provider || "").toLowerCase() === FUNDING_PROVIDERS.transak) {
+      logger.info("reconcile.transak.skipped", { fundingOrderId });
+      continue;
+    }
 
     try {
       const verified = await fundingRailService.verifyPayment(data.provider, data.providerReference);

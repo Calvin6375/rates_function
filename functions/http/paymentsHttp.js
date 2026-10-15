@@ -20,14 +20,6 @@ const logger = createLogger({service: "paymentsHttp"});
 const paystackSecretKey = defineSecret(config.secrets.paystackSecretKey);
 const paystackSplitCode = defineSecret(config.secrets.paystackSplitCode);
 const paystackSecrets = [paystackSecretKey, paystackSplitCode];
-const transakApiKey = defineSecret(config.secrets.transakApiKey);
-const transakSecretKey = defineSecret(config.secrets.transakSecretKey);
-const transakTreasuryWallet = defineSecret(config.secrets.transakTreasuryWallet);
-const transakCheckoutSecrets = [
-  transakApiKey,
-  transakSecretKey,
-  transakTreasuryWallet,
-];
 const crossmintServerApiKey = defineSecret(config.secrets.crossmintServerApiKey);
 const crossmintCollectionWallet = defineSecret(config.secrets.crossmintCollectionWallet);
 const crossmintServerApiKeyProd = defineSecret(config.secrets.crossmintServerApiKeyProd);
@@ -43,7 +35,6 @@ const paylioPolygonWallet = defineSecret(config.secrets.paylioPolygonWallet);
 const paylioCheckoutSecrets = [paylioApiKey, paylioPolygonWallet];
 const fundingCheckoutSecrets = [
   ...paystackSecrets,
-  ...transakCheckoutSecrets,
   ...crossmintCheckoutSecrets,
   ...paylioCheckoutSecrets,
 ];
@@ -106,7 +97,7 @@ function assertNoLegacyIntaSendClientCheckout(data, userId) {
 
 /**
  * Callable function: Create Payment Order (C2B tourist card top-up via Paystack).
- * Always uses Paystack (not Transak). Returns the legacy response shape
+ * Returns the legacy response shape
  * expected by the Flutter app (`orderId`, `invoiceId`, `checkoutUrl`, …).
  */
 exports.createPayment = onCall(
@@ -180,13 +171,13 @@ exports.createPayment = onCall(
           userId,
           error: error.message,
           ...(error.details ? {
-            transakRequest: {
+            providerRequest: {
               method: error.details.httpMethod || null,
               url: error.details.url || null,
               params: error.details.requestParams || null,
               body: error.details.requestBody || null,
             },
-            transakResponse: {
+            providerResponse: {
               statusCode: error.details.statusCode || null,
               body: error.details.responseBody || null,
             },
@@ -362,8 +353,6 @@ exports.handlePaymentWebhook = onCall(
       memory: config.resources.memory,
       secrets: [
         paystackSecretKey,
-        transakApiKey,
-        transakSecretKey,
         crossmintServerApiKey,
         crossmintServerApiKeyProd,
         crossmintCollectionWallet,

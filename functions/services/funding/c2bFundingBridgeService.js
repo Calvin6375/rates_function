@@ -64,7 +64,6 @@ function resolveC2bFundingProvider(currency) {
  * Create a checkout for C2B tourist wallet top-up.
  * USD routes to Crossmint when FUNDING_USD_PROVIDER=crossmint. KES stays on Paystack.
  * Response matches the legacy `createPayment` callable shape for Flutter compatibility.
- * Transak remains available via REST `POST /funding/orders` with provider=transak.
  *
  * @param {Object} params
  * @param {string} params.userId
@@ -446,111 +445,6 @@ async function createC2bPaystackTopupCheckout(params) {
 }
 
 /**
- * @param {Object} params
- * @returns {Promise<Object>}
- */
-async function createC2bTransakTopupCheckout(params) {
-  const {
-    userId,
-    amount,
-    currency = FUNDING_CURRENCY,
-    email = null,
-    callbackUrl = null,
-    idempotencyKey = null,
-    correlationId = null,
-    transakAccessToken = null,
-    metadata = {},
-  } = params;
-
-  const provider = FUNDING_PROVIDERS.transak;
-  const chargeCurrency = String(currency || FUNDING_CURRENCY).toUpperCase();
-  const chargeAmount = Number(amount);
-
-  const ctx = createPaymentContext({
-    correlationId,
-    userId,
-    provider,
-    source: "createPayment",
-  });
-
-  const duplicate = await resolveIdempotentOrder(userId, idempotencyKey);
-  if (duplicate) {
-    return mapFundingOrderToCreatePaymentResponse(duplicate, { duplicate: true });
-  }
-
-  const orderId = fundingOrderService.generateFundingOrderId();
-  const claimed = await claimIdempotency(userId, idempotencyKey, orderId);
-  if (claimed) {
-    return mapFundingOrderToCreatePaymentResponse(claimed, { duplicate: true });
-  }
-
-  const treasuryWallet = process.env.TRANSAK_TREASURY_WALLET || config.transak?.treasuryWallet || null;
-  const order = await fundingOrderService.createFundingOrder({
-    id: orderId,
-    userId,
-    provider,
-    amount: chargeAmount,
-    currency: chargeCurrency,
-    correlationId: ctx.correlationId,
-    fundingRequestId: idempotencyKey,
-    metadata: {
-      ...metadata,
-      product: "tourist",
-      correlationId: ctx.correlationId,
-      userId,
-      provider,
-      environment: process.env.GCLOUD_PROJECT || config.transak?.environment || "staging",
-      source: "c2b_createPayment",
-      requestedAmount: chargeAmount,
-      requestedCurrency: chargeCurrency,
-      treasuryWallet,
-      cryptoCurrency: process.env.TRANSAK_DEFAULT_CRYPTO || config.transak?.defaultCrypto || "USDT",
-    },
-  });
-
-  const { order: updated } = await initializeProviderCheckout({
-    provider,
-    order,
-    ctx,
-    amount: chargeAmount,
-    currency: chargeCurrency,
-    email,
-    callbackUrl: resolvePaystackCallbackUrl(callbackUrl),
-    transakAccessToken,
-    metadata: order.metadata,
-  });
-
-  await recordCheckoutTimeline({
-    orderId: order.id,
-    correlationId: ctx.correlationId,
-    provider,
-    status: updated.status,
-    amount: chargeAmount,
-    currency: chargeCurrency,
-    metadata: {
-      requestedAmount: chargeAmount,
-      requestedCurrency: chargeCurrency,
-      treasuryWallet,
-      cryptoCurrency: updated.metadata?.cryptoCurrency || order.metadata.cryptoCurrency,
-      source: "createPayment",
-    },
-    checkoutUrl: updated.checkoutUrl,
-  });
-
-  logger.info("c2b.checkout.created", {
-    correlationId: ctx.correlationId,
-    fundingOrderId: order.id,
-    providerReference: updated.providerReference,
-    provider,
-    treasuryWallet,
-  });
-
-  return mapFundingOrderToCreatePaymentResponse(updated, {
-    correlationId: ctx.correlationId,
-  });
-}
-
-/**
  * @param {string} userId
  * @param {string|null} idempotencyKey
  * @returns {Promise<Object|null>}
@@ -604,7 +498,6 @@ async function initializeProviderCheckout(params) {
     lastName = null,
     clientIp = null,
     callbackUrl,
-    transakAccessToken = null,
     metadata,
   } = params;
 
@@ -624,7 +517,6 @@ async function initializeProviderCheckout(params) {
       fundingOrderId: order.id,
       userId: order.userId,
       correlationId: ctx.correlationId,
-      transakAccessToken,
       metadata,
     });
     await opsMetrics.increment("funding.checkout.initialized", 1);
@@ -641,13 +533,13 @@ async function initializeProviderCheckout(params) {
       provider,
       error: err.message,
       ...(err.details ? {
-        transakRequest: {
+        providerRequest: {
           method: err.details.httpMethod || null,
           url: err.details.url || null,
           params: err.details.requestParams || null,
           body: err.details.requestBody || null,
         },
-        transakResponse: {
+        providerResponse: {
           statusCode: err.details.statusCode || null,
           body: err.details.responseBody || null,
         },
@@ -662,15 +554,6 @@ async function initializeProviderCheckout(params) {
     providerTransactionId: session.providerTransactionId || null,
     checkoutUrl: session.checkoutUrl,
   };
-
-  if (provider === FUNDING_PROVIDERS.transak && session.raw) {
-    patch.metadata = {
-      ...metadata,
-      quoteId: session.raw.quote?.quoteId || metadata.quoteId || null,
-      cryptoAmount: session.raw.cryptoAmount || session.raw.quote?.cryptoAmount || null,
-      treasuryWallet: session.raw.treasuryWallet || metadata.treasuryWallet || null,
-    };
-  }
 
   if (provider === FUNDING_PROVIDERS.crossmint && session.raw) {
     patch.checkoutUrl = null;
@@ -926,7 +809,6 @@ module.exports = {
   createC2bPaystackTopupCheckout,
   createC2bCrossmintTopupCheckout,
   createC2bPaylioTopupCheckout,
-  createC2bTransakTopupCheckout,
   quoteLocalTopupPaystack,
   mapFundingOrderToCreatePaymentResponse,
   resolveFundingProvider,

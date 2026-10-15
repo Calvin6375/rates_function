@@ -70,7 +70,7 @@ Shared for:
 - C2B app → Deposit → **Local Topup**
 - Partner portal → Send → **Add Money**
 
-Not used for International Topup (Transak) or crypto deposit.
+Not used for international USD top-up (Crossmint or PayLio) or crypto deposit.
 
 ### Collection example (2.5%) — different
 
@@ -276,5 +276,5 @@ Existing Firestore docs pick up `local_topup` via defaults merge on read (disabl
 - AED bank disbursement automation
 - Swap/exchange fees
 - Per-partner tiers / revenue ledger
-- Transak / International Topup fees
+- International USD top-up fees (Crossmint / PayLio)
 - Crypto deposit fees

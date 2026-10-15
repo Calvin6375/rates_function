@@ -46,7 +46,7 @@ Callable `createPayment` ignores client `provider`. REST honors `body.provider`.
 
 - `PaymentService.createPayment` → Grid USD instructions **or** WebView `checkoutUrl`
 - No Crossmint SDK today
-- App may send `provider: transak` for USD; server ignores it
+- App `provider: transak` is rejected; USD checkout uses Crossmint or PayLio
 
 ## Routing
 
@@ -129,14 +129,14 @@ Default locator: `base-sepolia:0x036CbD53842c5426634e7929541eC2318f3dCF7e`. Cros
 **Keep**
 
 - Firestore index `fundingOrders` `userId` + `provider` + `status`
-- Paystack KES path, Transak REST path, Turnkey crypto deposits
+- Paystack KES path, Crossmint/PayLio USD path, Turnkey crypto deposits
 
 ## Tests
 
 From `functions/`:
 
 ```bash
-npx jest test/funding/crossmintProvider.test.js test/funding/crossmintWebhook.test.js test/funding/c2bFundingBridgeCrossmint.test.js test/funding/c2bFundingBridgeService.test.js test/funding/c2bFundingBridgeTransak.test.js
+npx jest test/funding/crossmintProvider.test.js test/funding/crossmintWebhook.test.js test/funding/c2bFundingBridgeCrossmint.test.js test/funding/c2bFundingBridgeService.test.js
 ```
 
 Cover: USD → Crossmint; KES → Paystack; create-order body exact; link PUT once; delivery.completed credits once; payment.succeeded does not credit; failed → order failed; pending → no credit; Svix reject; `FUNDING_USD_PROVIDER=paystack` USD still Paystack.

@@ -1,7 +1,7 @@
 /**
  * @fileoverview Funding Provider interface contract.
  *
- * Every external funding source (Paystack, IntaSend, Transak, Bridge, Stripe, …)
+ * Every external funding source (Paystack, IntaSend, Crossmint, PayLio, …)
  * implements this interface. Wallet, ledger, settlement, and API layers must never
  * import provider-specific modules — they call fundingRailService only.
  *

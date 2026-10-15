@@ -31,6 +31,7 @@ const FUNDING_PROVIDERS = Object.freeze({
   paystack: "paystack",
   intasend: "intasend",
   circle: "circle",
+  /** Retired. Kept so historical funding orders still have a provider id. Not registered on the rail. */
   transak: "transak",
   bridge: "bridge",
   stripe: "stripe",

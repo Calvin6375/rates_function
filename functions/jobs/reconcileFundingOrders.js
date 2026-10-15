@@ -9,8 +9,6 @@ const { reconcileStaleFundingOrders } = require("../services/funding/fundingReco
 const { createLogger } = require("../utils/paymentOpsLogger");
 
 const paystackSecretKey = defineSecret(config.secrets.paystackSecretKey);
-const transakApiKey = defineSecret(config.secrets.transakApiKey);
-const transakSecretKey = defineSecret(config.secrets.transakSecretKey);
 const crossmintServerApiKey = defineSecret(config.secrets.crossmintServerApiKey);
 const crossmintServerApiKeyProd = defineSecret(config.secrets.crossmintServerApiKeyProd);
 const crossmintCollectionWallet = defineSecret(config.secrets.crossmintCollectionWallet);
@@ -23,8 +21,6 @@ exports.reconcileFundingOrders = onSchedule(
       schedule: "*/15 * * * *",
       secrets: [
         paystackSecretKey,
-        transakApiKey,
-        transakSecretKey,
         crossmintServerApiKey,
         crossmintServerApiKeyProd,
         crossmintCollectionWallet,

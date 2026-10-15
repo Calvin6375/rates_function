@@ -26,7 +26,6 @@ const customerAuthHttp = require("./http/customerAuthHttp");
 const cryptoApi = require("./http/cryptoApi");
 const circleWebhookHttp = require("./http/circleWebhookHttp");
 const paystackWebhookHttp = require("./http/paystackWebhookHttp");
-const transakWebhookHttp = require("./http/transakWebhookHttp");
 const crossmintWebhookHttp = require("./http/crossmintWebhookHttp");
 const paylioWebhookHttp = require("./http/paylioWebhookHttp");
 const darajaCallbackHttp = require("./http/darajaCallbackHttp");
@@ -57,7 +56,6 @@ exports.handleIntaSendDisbursementWebhook =
   intasendDisbursementWebhookHttp.handleIntaSendDisbursementWebhook;
 exports.handleCircleWebhook = circleWebhookHttp.handleCircleWebhook;
 exports.handlePaystackWebhook = paystackWebhookHttp.handlePaystackWebhook;
-exports.handleTransakWebhook = transakWebhookHttp.handleTransakWebhook;
 exports.handleCrossmintWebhook = crossmintWebhookHttp.handleCrossmintWebhook;
 exports.handlePaylioWebhook = paylioWebhookHttp.handlePaylioWebhook;
 exports.handleDarajaCallback = darajaCallbackHttp.handleDarajaCallback;

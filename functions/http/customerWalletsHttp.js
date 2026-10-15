@@ -1226,9 +1226,6 @@ mountFundingOpsRoutes(app);
 
 const paystackSecretKey = defineSecret(config.secrets.paystackSecretKey);
 const paystackSplitCode = defineSecret(config.secrets.paystackSplitCode);
-const transakApiKey = defineSecret(config.secrets.transakApiKey);
-const transakSecretKey = defineSecret(config.secrets.transakSecretKey);
-const transakTreasuryWallet = defineSecret(config.secrets.transakTreasuryWallet);
 const crossmintServerApiKey = defineSecret(config.secrets.crossmintServerApiKey);
 const crossmintCollectionWallet = defineSecret(config.secrets.crossmintCollectionWallet);
 const crossmintServerApiKeyProd = defineSecret(config.secrets.crossmintServerApiKeyProd);
@@ -1246,9 +1243,6 @@ exports.api = onRequest(
     secrets: [
       paystackSecretKey,
       paystackSplitCode,
-      transakApiKey,
-      transakSecretKey,
-      transakTreasuryWallet,
       crossmintServerApiKey,
       crossmintCollectionWallet,
       crossmintServerApiKeyProd,

@@ -51,7 +51,6 @@
 | [`PAYMENT_LIFECYCLE.md`](./PAYMENT_LIFECYCLE.md) | Funding + settlement flows |
 | [`FUNDING_OPS.md`](./FUNDING_OPS.md) | Runbooks & jobs |
 | [`INTASEND.md`](./INTASEND.md) | IntaSend collection (B2B links) |
-| [`TRANSAK_TOURIST.md`](./TRANSAK_TOURIST.md) | Transak funding |
 
 ## Other
 

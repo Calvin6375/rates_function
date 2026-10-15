@@ -4,18 +4,18 @@
 
 const fundingRailService = require("../../services/funding/fundingRailService");
 const paystackProvider = require("../../services/funding/providers/paystackProvider");
-const transakProvider = require("../../services/funding/providers/transakProvider");
 
 describe("fundingRailService", () => {
-  it("registers paystack and transak providers", () => {
+  it("registers active funding providers and omits retired Transak", () => {
     const providers = fundingRailService.listProviders();
-    expect(providers).toEqual(expect.arrayContaining(["paystack", "transak"]));
+    expect(providers).toEqual(expect.arrayContaining(["paystack", "crossmint", "paylio"]));
+    expect(providers).not.toContain("transak");
   });
 
-  it("resolves transak adapter by id", () => {
-    const adapter = fundingRailService.resolveProvider("transak");
-    expect(adapter.providerId).toBe("transak");
-    expect(adapter).toBe(transakProvider);
+  it("rejects the retired Transak provider id", () => {
+    expect(() => fundingRailService.resolveProvider("transak")).toThrow(
+        "Unsupported funding provider: transak",
+    );
   });
 
   it("resolves paystack adapter by id", () => {

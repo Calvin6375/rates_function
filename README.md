@@ -146,7 +146,7 @@ Configured via Firebase params / secrets and `functions/config.js`. Common keys:
 
 | Area | Secrets / config |
 |------|------------------|
-| Paystack / Transak | `PAYSTACK_*`, `TRANSAK_*` |
+| Paystack | `PAYSTACK_*` |
 | Circle USDC | `CIRCLE_API_KEY`, `CIRCLE_ENTITY_SECRET` |
 | Daraja settlement | `DARAJA_*` |
 | IntaSend collection + Safari Tap disbursement | `INTASEND_*` |
