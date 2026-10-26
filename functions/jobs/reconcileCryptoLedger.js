@@ -1,26 +1,10 @@
 /**
- * @fileoverview Provider-aware scheduled reconciliation (Circle or Turnkey/Fuji).
+ * @fileoverview Provider-aware crypto ledger reconciliation.
+ * Invoked manually by the super-admin ops endpoint.
  */
 
-const {onSchedule} = require("firebase-functions/v2/scheduler");
-const config = require("../config");
-const {getCryptoFunctionSecrets} = require("../services/crypto/cryptoRailSecrets");
 const {
   runCryptoLedgerReconciliation,
 } = require("../services/crypto/reconcileCryptoLedgerService");
-
-exports.reconcileCryptoLedger = onSchedule(
-    {
-      schedule: "0 */6 * * *",
-      secrets: getCryptoFunctionSecrets(),
-      region: config.region,
-      cpu: config.resources.cpu,
-      memory: config.resources.memory,
-    },
-    async () => {
-      const result = await runCryptoLedgerReconciliation();
-      console.log("reconcileCryptoLedger complete", result);
-    },
-);
 
 module.exports.runCryptoLedgerReconciliation = runCryptoLedgerReconciliation;

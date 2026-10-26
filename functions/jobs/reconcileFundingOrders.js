@@ -1,40 +1,8 @@
 /**
- * @fileoverview Scheduled job — reconcile stale pending funding orders (Job A).
+ * @fileoverview Reconcile stale pending funding orders.
+ * Invoked manually by the super-admin ops endpoint.
  */
 
-const { onSchedule } = require("firebase-functions/v2/scheduler");
-const { defineSecret } = require("firebase-functions/params");
-const config = require("../config");
 const { reconcileStaleFundingOrders } = require("../services/funding/fundingReconciliationService");
-const { createLogger } = require("../utils/paymentOpsLogger");
-
-const paystackSecretKey = defineSecret(config.secrets.paystackSecretKey);
-const crossmintServerApiKey = defineSecret(config.secrets.crossmintServerApiKey);
-const crossmintServerApiKeyProd = defineSecret(config.secrets.crossmintServerApiKeyProd);
-const crossmintCollectionWallet = defineSecret(config.secrets.crossmintCollectionWallet);
-const crossmintCollectionWalletProd = defineSecret(config.secrets.crossmintCollectionWalletProd);
-const paylioApiKey = defineSecret(config.secrets.paylioApiKey);
-const logger = createLogger({ service: "reconcileFundingOrders" });
-
-exports.reconcileFundingOrders = onSchedule(
-    {
-      schedule: "*/15 * * * *",
-      secrets: [
-        paystackSecretKey,
-        crossmintServerApiKey,
-        crossmintServerApiKeyProd,
-        crossmintCollectionWallet,
-        crossmintCollectionWalletProd,
-        paylioApiKey,
-      ],
-      region: config.region,
-      cpu: config.resources.cpu,
-      memory: config.resources.memory,
-    },
-    async () => {
-      const result = await reconcileStaleFundingOrders();
-      logger.info("reconcile.complete", result);
-    },
-);
 
 module.exports.reconcileStaleFundingOrders = reconcileStaleFundingOrders;

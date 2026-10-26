@@ -161,14 +161,24 @@ async function releaseExpiredReservations() {
       .limit(100)
       .get();
 
+  const db = admin.firestore();
   let released = 0;
   for (const doc of snap.docs) {
-    await doc.ref.update({
-      status: STATUS_RELEASED,
-      releaseReason: "expired",
-      updatedAt: serverTimestamp(),
+    const didRelease = await db.runTransaction(async (tx) => {
+      const fresh = await tx.get(doc.ref);
+      if (!fresh.exists || fresh.data().status !== STATUS_RESERVED) {
+        return false;
+      }
+      tx.update(doc.ref, {
+        status: STATUS_RELEASED,
+        releaseReason: "expired",
+        updatedAt: serverTimestamp(),
+      });
+      return true;
     });
-    released++;
+    if (didRelease) {
+      released++;
+    }
   }
 
   return { released };

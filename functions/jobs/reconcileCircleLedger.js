@@ -3,18 +3,12 @@
  * Safe to run repeatedly — adjustments are idempotent by referenceId.
  */
 
-const { onSchedule } = require("firebase-functions/v2/scheduler");
-const { defineSecret } = require("firebase-functions/params");
-const config = require("../config");
 const { collection } = require("../libs/firestore");
 const ledgerService = require("../services/ledger/ledgerService");
 const circleService = require("../services/circle/circleService");
 
 const ASSET = "USDC";
 const RECON_BUCKET_MS = 6 * 60 * 60 * 1000;
-
-const circleApiKey = defineSecret(config.secrets.circleApiKey);
-const circleEntitySecret = defineSecret(config.secrets.circleEntitySecret);
 
 /**
  * Fetch Circle USDC balance for a wallet id.
@@ -107,19 +101,5 @@ async function runCircleLedgerReconciliation() {
 
   return { checked, adjusted, errors };
 }
-
-exports.reconcileCircleLedger = onSchedule(
-    {
-      schedule: "0 */6 * * *",
-      secrets: [circleApiKey, circleEntitySecret],
-      region: config.region,
-      cpu: config.resources.cpu,
-      memory: config.resources.memory,
-    },
-    async () => {
-      const result = await runCircleLedgerReconciliation();
-      console.log("reconcileCircleLedger complete", result);
-    },
-);
 
 module.exports.runCircleLedgerReconciliation = runCircleLedgerReconciliation;

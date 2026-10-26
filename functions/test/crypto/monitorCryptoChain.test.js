@@ -33,9 +33,53 @@ describe("runScheduledChainMonitor", () => {
     jest.resetModules();
     const chainMonitorService = require("../../services/crypto/chainMonitorService");
     const {runScheduledChainMonitor} = require("../../jobs/monitorCryptoChain");
-    const result = await runScheduledChainMonitor();
+    const result = await runScheduledChainMonitor({
+      address: "0xabc",
+      network: "avalanche",
+    });
     expect(result.skipped).toBeUndefined();
     expect(result.deposits.network).toBe("avalanche");
-    expect(chainMonitorService.runChainMonitor).toHaveBeenCalledTimes(1);
+    expect(chainMonitorService.runChainMonitor).toHaveBeenCalledWith({
+      address: "0xabc",
+      network: "avalanche",
+    });
+  });
+});
+
+describe("topup monitor window", () => {
+  it("queues a scan at 5 minutes and another at 10 minutes", async () => {
+    jest.resetModules();
+    const {enqueueTopupMonitorRuns, FIRST_RUN_SECONDS, SECOND_RUN_SECONDS} =
+      require("../../jobs/monitorCryptoChain");
+    const queued = [];
+    const result = await enqueueTopupMonitorRuns(
+        {address: "0xabc", network: "avalanche", intentId: "intent_1"},
+        {
+          enqueue: async (payload, options) => {
+            queued.push({payload, options});
+          },
+        },
+    );
+    expect(queued.map((row) => row.options.scheduleDelaySeconds)).toEqual([
+      FIRST_RUN_SECONDS,
+      SECOND_RUN_SECONDS,
+    ]);
+    expect(queued[0].payload.address).toBe("0xabc");
+    expect(queued[1].options.id).toBe("intent_1_10m");
+    expect(result.stopped).toBe(true);
+    expect(result.queued).toHaveLength(2);
+  });
+
+  it("ignores an intent that is already pending", async () => {
+    jest.resetModules();
+    const {pendingTopupIntent} = require("../../jobs/monitorCryptoChain");
+    const event = {
+      params: {intentId: "intent_1"},
+      data: {
+        before: {exists: true, data: () => ({status: "pending"})},
+        after: {exists: true, data: () => ({status: "pending", depositAddress: "0xabc"})},
+      },
+    };
+    expect(pendingTopupIntent(event)).toBeNull();
   });
 });

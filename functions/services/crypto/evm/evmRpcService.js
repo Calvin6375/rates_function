@@ -16,6 +16,12 @@ const {
 const {getNetworkConfig} = require("./networkConfig");
 const {fromUsdcUnits} = require("./usdcUnits");
 const {
+  listAvalancheRpcUrls,
+  isFailoverRpcError,
+  createThrottledProvider,
+  sleep,
+} = require("./avalancheRpc");
+const {
   rpcFailure,
   broadcastFailure,
   insufficientGas,
@@ -27,6 +33,9 @@ let providerOverride = null;
 
 /** @type {Map<string, import("ethers").JsonRpcProvider>} */
 const cachedProviders = new Map();
+
+/** @type {Map<string, import("ethers").JsonRpcProvider>} */
+const cachedUrlProviders = new Map();
 
 /** @type {import("ethers").JsonRpcProvider|null} */
 let cachedProvider = null;
@@ -69,6 +78,46 @@ function getProvider(networkName) {
 function resetProvider() {
   cachedProvider = null;
   cachedProviders.clear();
+  cachedUrlProviders.clear();
+}
+
+/**
+ * Avalanche mainnet reads fail over when the primary RPC is rate-limited.
+ * Other networks keep a single provider.
+ * @param {string} networkName
+ * @param {function(*): Promise<*>} operation
+ * @return {Promise<*>}
+ */
+async function withRpcProvider(networkName, operation) {
+  if (providerOverride) return operation(providerOverride);
+  const network = getNetworkConfig(networkName);
+  if (network.network !== "avalanche") {
+    return operation(getProvider(networkName));
+  }
+  const urls = listAvalancheRpcUrls(network.rpcUrl);
+  let lastError = null;
+  for (let i = 0; i < urls.length; i++) {
+    const url = urls[i];
+    const key = `${network.chainId}:${url}`;
+    if (!cachedUrlProviders.has(key)) {
+      cachedUrlProviders.set(key, createThrottledProvider(url, network.chainId));
+    }
+    try {
+      return await operation(cachedUrlProviders.get(key));
+    } catch (err) {
+      lastError = err;
+      if (!isFailoverRpcError(err) || i === urls.length - 1) {
+        throw err;
+      }
+      console.warn("Avalanche RPC failover", {
+        url,
+        next: urls[i + 1],
+        code: err.code || null,
+      });
+      await sleep(200 * (i + 1));
+    }
+  }
+  throw lastError;
 }
 
 /**
@@ -208,7 +257,7 @@ async function getAvaxBalanceWei(address, networkName) {
  */
 async function getBlockNumber(networkName) {
   try {
-    return await getProvider(networkName).getBlockNumber();
+    return await withRpcProvider(networkName, (provider) => provider.getBlockNumber());
   } catch (err) {
     throw rpcFailure(err.message || "getBlockNumber failed");
   }
@@ -220,7 +269,10 @@ async function getBlockNumber(networkName) {
  */
 async function getTransactionReceipt(txHash, networkName) {
   try {
-    return await getProvider(networkName).getTransactionReceipt(txHash);
+    return await withRpcProvider(
+        networkName,
+        (provider) => provider.getTransactionReceipt(txHash),
+    );
   } catch (err) {
     throw rpcFailure(err.message || "getTransactionReceipt failed");
   }
@@ -232,7 +284,10 @@ async function getTransactionReceipt(txHash, networkName) {
  */
 async function getTransaction(txHash, networkName) {
   try {
-    return await getProvider(networkName).getTransaction(txHash);
+    return await withRpcProvider(
+        networkName,
+        (provider) => provider.getTransaction(txHash),
+    );
   } catch (err) {
     throw rpcFailure(err.message || "getTransaction failed");
   }
@@ -351,12 +406,12 @@ function buildUsdcTransferTopics(toAddress) {
 async function getUsdcTransferLogs(fromBlock, toBlock, toAddress, networkName) {
   const network = getNetworkConfig(networkName);
   try {
-    return await getProvider(networkName).getLogs({
+    return await withRpcProvider(networkName, (provider) => provider.getLogs({
       address: network.usdcContract,
       fromBlock,
       toBlock,
       topics: buildUsdcTransferTopics(toAddress),
-    });
+    }));
   } catch (err) {
     if (err.code === "INVALID_ADDRESS") throw err;
     throw rpcFailure(err.message || "getLogs failed");

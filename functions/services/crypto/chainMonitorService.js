@@ -23,6 +23,9 @@ const config = require("../../config");
 const ASSET = "USDC";
 const PROVIDER = "turnkey";
 const LOG_SCAN_CHUNK = 2000;
+/** First scan looks back about six hours. One run can cover that window. */
+const MAINNET_LOOKBACK_BLOCKS = 6 * 60 * 30;
+const MAX_CHUNKS_PER_ADDRESS = 6;
 
 /**
  * @param {string} network
@@ -37,13 +40,23 @@ async function getCursor(network) {
 /**
  * @param {string} network
  * @param {number} lastProcessedBlock
+ * @param {string} [docId]
  */
-async function setCursor(network, lastProcessedBlock) {
-  await collection("cryptoChainCursors").doc(network).set({
+async function setCursor(network, lastProcessedBlock, docId = network) {
+  await collection("cryptoChainCursors").doc(docId).set({
     network,
     lastProcessedBlock,
     updatedAt: serverTimestamp(),
   }, {merge: true});
+}
+
+/**
+ * @param {string} network
+ * @param {string} address
+ * @returns {string}
+ */
+function addressCursorId(network, address) {
+  return `${network}__${address}`;
 }
 
 /**
@@ -231,10 +244,195 @@ async function creditDeposit(transfer, wallet, opts = {}) {
 }
 
 /**
+ * Pending customer deposit intents. The mainnet scanner does not call
+ * Avalanche until one of these exists.
+ * @param {string} networkName
+ * @returns {Promise<string[]>}
+ */
+async function listPendingDepositAddresses(networkName) {
+  const snap = await collection("cryptoDepositIntents")
+      .where("status", "==", "pending")
+      .limit(100)
+      .get();
+  const addresses = [];
+  const seen = new Set();
+  for (const doc of snap.docs) {
+    const data = doc.data() || {};
+    if (normalizeNetworkName(data.network || "avalanche-fuji") !== networkName) continue;
+    const addr = normalizeAddress(data.depositAddressLower || data.depositAddress);
+    if (!addr || seen.has(addr)) continue;
+    seen.add(addr);
+    addresses.push(addr);
+  }
+  return addresses;
+}
+
+/**
+ * @param {Array<Object>} logs
+ * @param {Set<string>} addresses
+ * @param {Map<string, Object>} byAddress
+ * @param {string} resolved
+ * @returns {Promise<{ scanned: number, credited: number, duplicates: number }>}
+ */
+async function creditMatchingLogs(logs, addresses, byAddress, resolved) {
+  let credited = 0;
+  let duplicates = 0;
+  for (const log of logs) {
+    const transfer = evmRpcService.parseUsdcTransferLog(log);
+    if (!transfer) continue;
+    if (!addresses.has(transfer.to)) continue;
+    const wallet = byAddress.get(transfer.to);
+    if (!wallet) continue;
+    const result = await creditDeposit(transfer, wallet, {network: resolved});
+    if (result.credited) credited++;
+    if (result.duplicate) duplicates++;
+  }
+  return {scanned: logs.length, credited, duplicates};
+}
+
+/**
+ * Scan one deposit address from its cursor through the confirmed head.
+ * A new address starts about six hours back so a transfer already on chain
+ * is included in the same run as the open deposit.
+ * @param {string} resolved
+ * @param {string} address
+ * @param {number} head
+ * @param {Set<string>} addresses
+ * @param {Map<string, Object>} byAddress
+ */
+async function scanPendingDepositAddress(resolved, address, head, addresses, byAddress) {
+  const cursorId = addressCursorId(resolved, address);
+  const cursor = await getCursor(cursorId);
+  let fromBlock = cursor.lastProcessedBlock > 0 ?
+    cursor.lastProcessedBlock + 1 :
+    Math.max(0, head - MAINNET_LOOKBACK_BLOCKS);
+  const maxBlocks = LOG_SCAN_CHUNK * MAX_CHUNKS_PER_ADDRESS;
+  if ((head - fromBlock + 1) > maxBlocks) {
+    fromBlock = head - maxBlocks + 1;
+  }
+  if (fromBlock > head) {
+    return {scanned: 0, credited: 0, duplicates: 0};
+  }
+
+  let scanned = 0;
+  let credited = 0;
+  let duplicates = 0;
+  let last = cursor.lastProcessedBlock;
+  for (let start = fromBlock; start <= head; start += LOG_SCAN_CHUNK) {
+    const end = Math.min(head, start + LOG_SCAN_CHUNK - 1);
+    const logs = await evmRpcService.getUsdcTransferLogs(start, end, address, resolved);
+    const batch = await creditMatchingLogs(logs, addresses, byAddress, resolved);
+    scanned += batch.scanned;
+    credited += batch.credited;
+    duplicates += batch.duplicates;
+    last = end;
+  }
+  if (last >= fromBlock) {
+    await setCursor(resolved, last, cursorId);
+  }
+  return {scanned, credited, duplicates};
+}
+
+/**
+ * Mainnet USDC logs are queried only for addresses with a pending deposit intent.
+ * @param {string} resolved
+ * @returns {Promise<Object>}
+ */
+async function processPendingMainnetDeposits(resolved) {
+  const pendingAddresses = await listPendingDepositAddresses(resolved);
+  const {addresses, byAddress} = await loadWatchedAddresses(resolved);
+  const targets = pendingAddresses.filter((address) => addresses.has(address));
+  if (!targets.length) {
+    return {
+      scanned: 0,
+      credited: 0,
+      duplicates: 0,
+      network: resolved,
+      skipped: true,
+      reason: "no-pending-deposits",
+    };
+  }
+
+  return scanLiveDepositAddresses(resolved, targets, addresses, byAddress);
+}
+
+/**
+ * Scan explicit deposit addresses. Used after a topup, including once the
+ * short watch has already marked the intent expired.
+ * @param {string} networkName
+ * @param {string[]} addressList
+ * @returns {Promise<Object>}
+ */
+async function processDepositAddresses(networkName, addressList) {
+  const resolved = normalizeNetworkName(networkName);
+  const requested = [];
+  const seen = new Set();
+  for (const raw of addressList || []) {
+    const addr = normalizeAddress(raw);
+    if (!addr || seen.has(addr)) continue;
+    seen.add(addr);
+    requested.push(addr);
+  }
+  const {addresses, byAddress} = await loadWatchedAddresses(resolved);
+  const targets = requested.filter((address) => addresses.has(address));
+  if (!targets.length) {
+    return {
+      scanned: 0,
+      credited: 0,
+      duplicates: 0,
+      network: resolved,
+      skipped: true,
+      reason: "no-live-wallet",
+    };
+  }
+  return scanLiveDepositAddresses(resolved, targets, addresses, byAddress);
+}
+
+/**
+ * @param {string} resolved
+ * @param {string[]} targets
+ * @param {Set<string>} addresses
+ * @param {Map<string, Object>} byAddress
+ * @returns {Promise<Object>}
+ */
+async function scanLiveDepositAddresses(resolved, targets, addresses, byAddress) {
+  const network = getNetworkConfig(resolved);
+  const currentBlock = await evmRpcService.getBlockNumber(resolved);
+  const head = evmRpcService.confirmedHeadBlock(currentBlock, network.confirmations);
+  let scanned = 0;
+  let credited = 0;
+  let duplicates = 0;
+
+  for (const address of targets) {
+    const batch = await scanPendingDepositAddress(
+        resolved,
+        address,
+        head,
+        addresses,
+        byAddress,
+    );
+    scanned += batch.scanned;
+    credited += batch.credited;
+    duplicates += batch.duplicates;
+  }
+
+  return {
+    scanned,
+    credited,
+    duplicates,
+    network: resolved,
+    depositAddresses: targets.length,
+  };
+}
+
+/**
  * @returns {Promise<{ scanned: number, credited: number, duplicates: number }>}
  */
 async function processConfirmedDepositsForNetwork(networkName = "avalanche-fuji") {
   const resolved = normalizeNetworkName(networkName);
+  if (resolved === "avalanche") {
+    return processPendingMainnetDeposits(resolved);
+  }
   const network = getNetworkConfig(resolved);
   const currentBlock = await evmRpcService.getBlockNumber(resolved);
   const head = evmRpcService.confirmedHeadBlock(currentBlock, network.confirmations);
@@ -378,8 +576,11 @@ async function processPendingSends() {
 /**
  * @returns {Promise<Object>}
  */
-async function runChainMonitor() {
-  const deposits = await processConfirmedMainnetDeposits();
+async function runChainMonitor(opts = {}) {
+  const address = opts && opts.address ? String(opts.address) : "";
+  const deposits = address ?
+    await processDepositAddresses(opts.network || "avalanche", [address]) :
+    await processConfirmedMainnetDeposits();
   const sends = await processPendingSends();
   return {deposits, sends};
 }
@@ -392,6 +593,7 @@ module.exports = {
   processConfirmedDeposits,
   processConfirmedDepositsForNetwork,
   processConfirmedMainnetDeposits,
+  processDepositAddresses,
   processPendingSends,
   finalizeOutboundSend,
   runChainMonitor,
