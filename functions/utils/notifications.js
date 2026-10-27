@@ -18,6 +18,8 @@ const NOTIFICATION_TYPES = {
   /** B2B partner requested go-live review from platform super admin */
   GO_LIVE_REQUESTED: "go_live_requested",
   GO_LIVE_REQUEST_ADMIN_ALERT: "go_live_request_admin_alert",
+  /** Platform admin changed a partner organization's status */
+  PARTNER_STATUS_CHANGED: "partner_status_changed",
   /** B2B partner submitted a Send / payout for ops fulfillment */
   B2B_SEND_REQUESTED: "b2b_send_requested",
   B2B_SEND_ADMIN_ALERT: "b2b_send_admin_alert",
@@ -598,12 +600,70 @@ async function notifyGoLiveRequestAdmins(params) {
   return {notificationId, pushCount};
 }
 
+/**
+ * Notify the partner org admin that a platform admin changed their status.
+ * Same store-and-push path as a go-live request, addressed to the partner.
+ *
+ * @param {Object} params
+ * @param {string} params.partnerId
+ * @param {string} [params.partnerName]
+ * @param {string} [params.previousStatus]
+ * @param {string} params.status
+ * @param {string|null} [params.orgAdminUid]
+ * @returns {Promise<{ notificationId: string|null, pushCount: number }>}
+ */
+async function notifyPartnerStatusChanged(params) {
+  const {
+    partnerId,
+    partnerName = "",
+    previousStatus = "",
+    status,
+    orgAdminUid = null,
+  } = params;
+  const uid = typeof orgAdminUid === "string" ? orgAdminUid.trim() : "";
+  if (!uid || !status) {
+    return {notificationId: null, pushCount: 0};
+  }
+
+  const name = partnerName || String(partnerId);
+  const title = "Partner status updated";
+  const message = previousStatus ?
+    `${name} status changed from ${previousStatus} to ${status}` :
+    `${name} status is now ${status}`;
+  const meta = {
+    partnerId: String(partnerId),
+    partnerName: partnerName || "",
+    previousStatus: previousStatus || "",
+    status: String(status),
+    action: "partner_status_changed",
+  };
+
+  try {
+    const created = await createNotification({
+      userId: uid,
+      type: NOTIFICATION_TYPES.PARTNER_STATUS_CHANGED,
+      title,
+      message,
+      metadata: meta,
+      sendPush: true,
+    });
+    return {
+      notificationId: created.notificationId,
+      pushCount: created.sent ? 1 : 0,
+    };
+  } catch (err) {
+    console.warn("⚠️ Failed to save partner status notification:", err.message);
+    return {notificationId: null, pushCount: 0};
+  }
+}
+
 module.exports = {
   createNotification,
   sendPushNotification,
   notifyDirectTopupAdmins,
   notifyDirectPayoutAdmins,
   notifyGoLiveRequestAdmins,
+  notifyPartnerStatusChanged,
   resolvePlatformAdminUserIds,
   markNotificationAsRead,
   getNotificationById,

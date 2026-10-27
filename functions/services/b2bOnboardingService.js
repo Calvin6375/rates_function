@@ -141,6 +141,58 @@ async function getOnboarding(uid) {
 }
 
 /**
+ * @param {unknown} value
+ * @return {string}
+ */
+function textField(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/**
+ * Business profile and account owner shown to the partner in Account Settings.
+ * `email` is the org admin login — the founder contact email on that profile.
+ *
+ * @param {string} orgAdminUid
+ * @return {Promise<{onboardingBusiness: Object|null, onboardingOwner: Object|null}>}
+ */
+async function readOrgAdminProfile(orgAdminUid) {
+  const uid = textField(orgAdminUid);
+  if (!uid) {
+    return {onboardingBusiness: null, onboardingOwner: null};
+  }
+
+  const onboarding = await getOnboarding(uid);
+  const business = onboarding?.business;
+  const onboardingBusiness = business && typeof business === "object" ? {
+    businessName: textField(
+        business.businessName || business.name || business.legalName,
+    ),
+    businessType: textField(business.businessType),
+    country: textField(business.country),
+    industry: textField(business.industry),
+  } : null;
+
+  let email = "";
+  try {
+    const userRecord = await admin.auth().getUser(uid);
+    email = textField(userRecord.email);
+  } catch (_e) {
+    email = "";
+  }
+
+  const owner = onboarding?.owner;
+  const hasOwner = Boolean(owner && typeof owner === "object");
+  const onboardingOwner = hasOwner || email ? {
+    fullName: hasOwner ? textField(owner.fullName) : "",
+    phone: hasOwner ? textField(owner.phone) : "",
+    role: hasOwner ? textField(owner.role) : "",
+    email,
+  } : null;
+
+  return {onboardingBusiness, onboardingOwner};
+}
+
+/**
  * Business name from onboarding (frontend uses businessName; some paths use name).
  *
  * @param {Object|null|undefined} onboarding
@@ -800,6 +852,7 @@ module.exports = {
   PATCHABLE_KEYS,
   ONBOARDING_STATUSES,
   getOnboarding,
+  readOrgAdminProfile,
   patchOnboarding,
   registerSelfServePartner,
   mergeRegisteredPartnerIntoOnboarding,

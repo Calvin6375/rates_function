@@ -71,6 +71,7 @@ const partnerTestLedgerService = require("../services/partnerTestLedgerService")
 const partnerProfileQrService = require("../services/partnerProfileQrService");
 const safariTapUserQrService = require("../services/safariTapUserQrService");
 const { correlationFromRequest } = require("../utils/paymentContext");
+const { notifyPartnerStatusChanged } = require("../utils/notifications");
 const { isPaylioCheckoutCurrency } = require("../utils/fundingTypes");
 
 const {
@@ -549,24 +550,19 @@ app.get("/platform/partners/:partnerId", loadFirebaseUser, requirePlatformAdmin,
       res.status(404).json({ success: false, error: "Partner not found" });
       return;
     }
-    /** Onboarding contact (fullName / phone / job title) — distinct from member role `owner`. */
+    /** Same business profile the partner sees. Distinct from member role `owner`. */
     let onboardingOwner = null;
+    let onboardingBusiness = null;
     const orgAdminUid =
       typeof partner.orgAdminUid === "string" ? partner.orgAdminUid.trim() : "";
     if (orgAdminUid) {
       try {
-        const onboarding = await b2bOnboardingService.getOnboarding(orgAdminUid);
-        const owner = onboarding?.owner;
-        if (owner && typeof owner === "object") {
-          onboardingOwner = {
-            fullName: typeof owner.fullName === "string" ? owner.fullName : "",
-            phone: typeof owner.phone === "string" ? owner.phone : "",
-            role: typeof owner.role === "string" ? owner.role : "",
-          };
-        }
+        const profile = await b2bOnboardingService.readOrgAdminProfile(orgAdminUid);
+        onboardingOwner = profile.onboardingOwner;
+        onboardingBusiness = profile.onboardingBusiness;
       } catch (ownerErr) {
         console.error(
-            "b2bPortal GET /platform/partners/:id onboarding owner:",
+            "b2bPortal GET /platform/partners/:id onboarding profile:",
             ownerErr.message,
         );
       }
@@ -575,6 +571,7 @@ app.get("/platform/partners/:partnerId", loadFirebaseUser, requirePlatformAdmin,
       success: true,
       data: {
         ...partner,
+        onboardingBusiness,
         onboardingOwner,
       },
     });
@@ -586,7 +583,27 @@ app.get("/platform/partners/:partnerId", loadFirebaseUser, requirePlatformAdmin,
 
 app.patch("/platform/partners/:partnerId", loadFirebaseUser, requirePlatformAdmin, async (req, res) => {
   try {
+    const before = await partnerService.getPartner(req.params.partnerId);
     const updated = await partnerService.updatePartner(req.params.partnerId, req.body || {});
+    const previousStatus = String(before && before.status || "").trim();
+    const nextStatus = String(updated.status || "").trim();
+    const statusWasSent = req.body && Object.prototype.hasOwnProperty.call(req.body, "status");
+    if (statusWasSent && previousStatus.toLowerCase() !== nextStatus.toLowerCase()) {
+      try {
+        await notifyPartnerStatusChanged({
+          partnerId: req.params.partnerId,
+          partnerName: updated.name,
+          previousStatus,
+          status: nextStatus,
+          orgAdminUid: updated.orgAdminUid,
+        });
+      } catch (notifyErr) {
+        console.error(
+            "b2bPortal PATCH /platform/partners status notification:",
+            notifyErr.message,
+        );
+      }
+    }
     if (String(updated.status || "").toLowerCase() === "active") {
       try {
         await b2bOnboardingService.markGoLiveDoneForPartner(req.params.partnerId);
