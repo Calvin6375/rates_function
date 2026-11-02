@@ -18,6 +18,9 @@ const NOTIFICATION_TYPES = {
   /** B2B partner requested go-live review from platform super admin */
   GO_LIVE_REQUESTED: "go_live_requested",
   GO_LIVE_REQUEST_ADMIN_ALERT: "go_live_request_admin_alert",
+  /** Safari Tap user asked to delete their account; super admin reviews */
+  SAFARI_TAP_DELETION_REQUEST_ADMIN_ALERT:
+      "safari_tap_deletion_request_admin_alert",
   /** Platform admin changed a partner organization's status */
   PARTNER_STATUS_CHANGED: "partner_status_changed",
   /** B2B partner submitted a Send / payout for ops fulfillment */
@@ -601,6 +604,78 @@ async function notifyGoLiveRequestAdmins(params) {
 }
 
 /**
+ * Notify platform super admins that a Safari Tap user asked to be deleted.
+ * Same system inbox and push path as a go-live request. Does not delete.
+ *
+ * @param {Object} params
+ * @param {string} params.userId
+ * @param {string} [params.userName]
+ * @param {string|null} [params.email]
+ * @param {string|null} [params.phoneNumber]
+ * @returns {Promise<{ notificationId: string|null, pushCount: number }>}
+ */
+async function notifySafariTapDeletionRequestAdmins(params) {
+  const {
+    userId,
+    userName = "",
+    email = null,
+    phoneNumber = null,
+  } = params;
+
+  const who = userName || email || phoneNumber || userId;
+  const title = "Safari Tap deletion request";
+  const message = `${who} requested account deletion`;
+  const meta = {
+    userId: String(userId),
+    userName: userName || "",
+    email: email || "",
+    phoneNumber: phoneNumber || "",
+    action: "safari_tap_deletion_request",
+  };
+
+  let notificationId = null;
+  try {
+    const created = await createNotification({
+      userId: null,
+      type: NOTIFICATION_TYPES.SAFARI_TAP_DELETION_REQUEST_ADMIN_ALERT,
+      title,
+      message,
+      actionUrl: "/dashboard/customers",
+      metadata: meta,
+      sendPush: false,
+    });
+    notificationId = created.notificationId;
+  } catch (err) {
+    console.warn(
+        "⚠️ Failed to save Safari Tap deletion request:",
+        err.message,
+    );
+  }
+
+  const adminUserIds = await resolvePlatformAdminUserIds();
+  let pushCount = 0;
+  for (const adminId of adminUserIds) {
+    try {
+      await sendPushNotification(adminId, {
+        notificationId: notificationId || "",
+        type: NOTIFICATION_TYPES.SAFARI_TAP_DELETION_REQUEST_ADMIN_ALERT,
+        title,
+        message,
+        data: meta,
+      });
+      pushCount += 1;
+    } catch (pushErr) {
+      console.warn(
+          `⚠️ Safari Tap deletion request push failed for ${adminId}:`,
+          pushErr.message,
+      );
+    }
+  }
+
+  return {notificationId, pushCount};
+}
+
+/**
  * Notify the partner org admin that a platform admin changed their status.
  * Same store-and-push path as a go-live request, addressed to the partner.
  *
@@ -663,6 +738,7 @@ module.exports = {
   notifyDirectTopupAdmins,
   notifyDirectPayoutAdmins,
   notifyGoLiveRequestAdmins,
+  notifySafariTapDeletionRequestAdmins,
   notifyPartnerStatusChanged,
   resolvePlatformAdminUserIds,
   markNotificationAsRead,

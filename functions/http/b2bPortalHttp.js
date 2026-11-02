@@ -1066,8 +1066,9 @@ app.patch("/platform/users/:userId", loadFirebaseUser, requireSuperAdmin, async 
 
 /**
  * DELETE /platform/users/:userId
- * Platform master admin only (Firebase `admin` claim or super-admin email):
- * deletes Firebase Auth user (if present), partner claims, and Firestore/RTDB data.
+ * Super admin manual delete after a Safari Tap user requests deletion.
+ * Removes Auth, Firestore, and RTDB. The request notification is created
+ * by POST /api/account/deletion-request, not by this route.
  */
 app.delete("/platform/users/:userId", loadFirebaseUser, requirePlatformAdmin, requireAdminRoles(), async (req, res) => {
   try {

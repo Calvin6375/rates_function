@@ -27,6 +27,7 @@ const {getPairCapabilities} = require("../services/settlementCapabilityService")
 const exchangeQuoteService = require("../services/exchangeQuoteService");
 const supportedCountriesService = require("../services/supportedCountriesService");
 const customerSelfRegistrationService = require("../services/customerSelfRegistrationService");
+const safariTapDeletionRequestService = require("../services/safariTapDeletionRequestService");
 const walletService = require("../services/walletService");
 const c2bSafariTapAdminListService = require("../services/c2bSafariTapAdminListService");
 const { mountFundingRoutes } = require("./fundingHttp");
@@ -238,6 +239,32 @@ async function handleListCustomerAccounts(req, res) {
 app.get("/accounts", requireCustomerAuth, handleListCustomerAccounts);
 /** Alias of GET /accounts */
 app.get("/wallets", requireCustomerAuth, handleListCustomerAccounts);
+
+/**
+ * POST /account/deletion-request
+ * Signed-in Safari Tap user asks to delete their account.
+ * Notifies the super admin. Does not delete the account.
+ */
+app.post("/account/deletion-request", requireCustomerAuth, async (req, res) => {
+  try {
+    const data = await safariTapDeletionRequestService.requestAccountDeletion(
+        req.userId,
+    );
+    res.status(200).json({success: true, data});
+  } catch (err) {
+    const rawCode = err.statusCode;
+    const status =
+      typeof rawCode === "number" && rawCode >= 400 && rawCode < 600 ?
+        rawCode :
+        400;
+    console.error("POST /account/deletion-request:", status, err.message);
+    res.status(status).json({
+      success: false,
+      error: err.code || "Deletion request failed",
+      message: err.message || "Deletion request failed",
+    });
+  }
+});
 
 /**
  * GET /rates

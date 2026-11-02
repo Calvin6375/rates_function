@@ -300,6 +300,33 @@ Authorization: Bearer <Firebase ID token>
 
 Alias: `GET /api/wallets` (same payload).
 
+### Account deletion request
+
+The signed-in user asks to be deleted. This does not delete the account. It notifies the super admin, who deletes the user from the admin dashboard.
+
+```http
+POST /api/account/deletion-request
+Authorization: Bearer <Firebase ID token>
+```
+
+No body. Same App Check header as `GET /api/accounts`.
+
+**200**
+
+```json
+{
+  "success": true,
+  "data": {
+    "deletionRequested": true,
+    "alreadyRequested": false,
+    "notificationId": "notif_...",
+    "message": "Deletion request sent. A platform admin will review."
+  }
+}
+```
+
+A second call returns `alreadyRequested: true` and does not send another notification. **401** without a token. **403** if the account is not a Safari Tap customer.
+
 **C2B wallets:** exactly four accounts — fiat `KES` + `USD`, crypto `USDT` + `USDC`. Rates-book currencies (ETB, GBP, …) are for quotes/exchange, not extra wallets.
 
 ```json

@@ -410,7 +410,41 @@ Do **not** call consumer `createPayment` for Add Money.
 
 ---
 
-## 11. Related code
+## 12. Delete a Safari Tap user
+
+The Safari Tap app does not delete the account. The signed-in user calls `POST /api/account/deletion-request` (see the consumer Accounts API). That writes a system notification, type `safari_tap_deletion_request_admin_alert`, title **Safari Tap deletion request**, the same inbox path as a go-live request.
+
+After you review it, delete the account yourself:
+
+```http
+DELETE /b2bPortal/platform/users/{userId}
+Authorization: Bearer <super-admin Firebase ID token>
+```
+
+```text
+DELETE https://us-central1-truepay-72060.cloudfunctions.net/b2bPortal/platform/users/USER_ID
+```
+
+No body. `{userId}` is `metadata.userId` on the notification.
+
+**200**
+
+```json
+{
+  "success": true,
+  "data": {
+    "userId": "USER_ID",
+    "authDeleted": true,
+    "authDeletedUids": ["USER_ID"]
+  }
+}
+```
+
+**403** deleting your own account, the platform owner, or an administrator when you are not the super admin. Other platform roles cannot call this.
+
+---
+
+## 13. Related code
 
 | File | Role |
 |------|------|
